@@ -1,0 +1,17 @@
+# Dependências
+/node_modules
+/functions/node_modules
+
+# Build e cache
+/build
+/.firebase
+
+# Ambiente e segredos (nunca versionar chaves de conta de serviço)
+.env
+.env.*
+**/serviceAccountKey.json
+
+# Logs e SO
+npm-debug.log*
+.DS_Store
+Thumbs.db
