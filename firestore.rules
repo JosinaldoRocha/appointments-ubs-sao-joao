@@ -1,0 +1,84 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Funções auxiliares
+    function isLoggedIn() {
+      return request.auth != null;
+    }
+    function getRole() {
+      return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.role;
+    }
+    function isRecepcao() {
+      return isLoggedIn() && getRole() == "recepcao";
+    }
+    function isAgente() {
+      return isLoggedIn() && getRole() == "agente";
+    }
+    function isDiretor() {
+      return isLoggedIn() && getRole() == "diretor";
+    }
+    function isAgenteOrRecepcao() {
+      return isLoggedIn() && getRole() in ["agente", "recepcao"];
+    }
+    function podeCriarSolicitacaoOuEspera() {
+      return isLoggedIn() && getRole() in ["agente", "recepcao", "diretor"];
+    }
+
+    // Usuários: lê o próprio perfil; recepção lê/escreve todos
+    match /usuarios/{uid} {
+      allow read:   if isLoggedIn() && (request.auth.uid == uid || isRecepcao() || isDiretor());
+      allow write:  if isRecepcao();
+      allow update: if isLoggedIn() && request.auth.uid == uid
+                       && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["fcmTokens"]);
+    }
+
+    // Profissionais: todos leem; só recepção edita
+    match /profissionais/{id} {
+      allow read:  if isLoggedIn();
+      allow write: if isRecepcao();
+    }
+
+    // Vagas: todos leem; só recepção altera
+    match /vagas/{id} {
+      allow read:  if isLoggedIn();
+      allow write: if isRecepcao();
+    }
+
+    // Solicitações: agentes criam; recepção e direção leem e editam
+    match /solicitacoes/{id} {
+      allow read:   if isLoggedIn();
+      allow create: if podeCriarSolicitacaoOuEspera();
+      allow update: if isRecepcao();
+      allow delete: if isRecepcao();
+    }
+
+    // Lista de espera: agentes criam; recepção remove
+    match /listaEspera/{id} {
+      allow read:   if isLoggedIn();
+      allow create: if podeCriarSolicitacaoOuEspera();
+      allow delete: if isRecepcao();
+    }
+
+    // Notificações pendentes: agentes/recepção criam; Cloud Function processa
+    match /notificacoesPendentes/{id} {
+      allow read:   if isRecepcao() || isDiretor();
+      allow create: if isRecepcao();
+      allow update: if false; // só a Cloud Function atualiza
+      allow delete: if false;
+    }
+
+    // Configuração global (feriados, Fernando, PCCU): todos leem; recepção edita
+    match /settings/{id} {
+      allow read:  if isLoggedIn();
+      allow write: if isRecepcao();
+    }
+
+    // Auditoria de vagas: só recepção grava e lê
+    match /auditLog/{id} {
+      allow read:   if isRecepcao();
+      allow create: if isRecepcao();
+      allow update, delete: if false;
+    }
+  }
+}
