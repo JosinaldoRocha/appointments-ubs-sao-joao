@@ -1,5 +1,84 @@
 // src/components/TabVagas.jsx
-import { SPEC_META, DAY_LABEL, MEDICO_TIPO, DEFAULT_PROF_NAMES } from "../services/scheduleConfig";
+import {
+  SPEC_META,
+  DAY_LABEL,
+  MEDICO_TIPO,
+  DEFAULT_PROF_NAMES,
+  todayKey,
+  toDateStr,
+  holidaySetFromArray,
+  nextBusinessDay,
+} from "../services/scheduleConfig";
+
+/** Ordem das seções de agendamento (prev) na tela. */
+const ORDER_DIA_ATENDIMENTO = ["segunda", "terca", "quarta", "quinta", "sexta"];
+
+/** Data no título da seção: ex. "30 de Março" (sem dia da semana). */
+function formatDataTituloSecao(isoDateStr) {
+  const raw = new Date(isoDateStr + "T12:00:00").toLocaleDateString("pt-BR", {
+    day: "numeric",
+    month: "long",
+  });
+  const i = raw.indexOf(" de ");
+  if (i === -1) return raw.charAt(0).toUpperCase() + raw.slice(1);
+  const dia = raw.slice(0, i);
+  const mes = raw.slice(i + 4);
+  return `${dia} de ${mes.charAt(0).toUpperCase() + mes.slice(1)}`;
+}
+
+/**
+ * Título da seção "Agendamento — atendimento em …" com sufixo contextual opcional.
+ * @param {string} atendimentoDia — chave do dia (ex.: "terca")
+ * @param {string | null} hoje — retorno de todayKey()
+ */
+function tituloSecaoAgendamento(atendimentoDia, hoje) {
+  const nomeDia = DAY_LABEL[atendimentoDia] || atendimentoDia;
+  let out = `Agendamento — atendimento em ${nomeDia}`;
+  if (atendimentoDia === "terca" && hoje === "segunda") {
+    out += " (Amanhã)";
+  } else if (atendimentoDia === "quinta" && hoje === "quarta") {
+    out += " (ou amanhã, se hoje for quarta-feira)";
+  } else if (atendimentoDia === "sexta" && hoje === "quinta") {
+    out += " (ou amanhã se hoje for quinta-feira)";
+  }
+  return out;
+}
+
+/** Menor data ISO entre os cartões da seção (mesmo dia da semana de atendimento). */
+function menorAtendimentoDateLista(listaSpecs) {
+  let min = null;
+  for (const s of listaSpecs) {
+    const d = s.atendimentoDate;
+    if (typeof d !== "string" || !d) continue;
+    if (!min || d < min) min = d;
+  }
+  return min;
+}
+
+/**
+ * Título da seção prev; se o atendimento não é hoje nem o próximo dia útil, acrescenta a data.
+ */
+function tituloSecaoAgendamentoComData(atendimentoDia, hojeKey, listaSpecs, feriados) {
+  const base = tituloSecaoAgendamento(atendimentoDia, hojeKey);
+  const attStr = menorAtendimentoDateLista(listaSpecs);
+  if (!attStr) return base;
+  const holidaySet = holidaySetFromArray(feriados);
+  const hojeStr = toDateStr(new Date());
+  const proximoDiaUtilStr = toDateStr(nextBusinessDay(new Date(), holidaySet));
+  if (attStr === hojeStr || attStr === proximoDiaUtilStr) return base;
+  return `${base} — ${formatDataTituloSecao(attStr)}`;
+}
+
+/** Agrupa cartões prev por `atendimentoDia`. */
+function agruparPrevPorDia(prevSpecs) {
+  const map = {};
+  for (const spec of prevSpecs) {
+    const d = spec.atendimentoDia;
+    if (!map[d]) map[d] = [];
+    map[d].push(spec);
+  }
+  return map;
+}
 
 /** Nome exibido: campo `nome` em `profissionais` (via specKey), depois rótulos padrão da agenda. */
 function nomeProfissionalFirestore(specKey, profissionaisMap) {
@@ -69,12 +148,15 @@ function hasAnyVacancy(specs) {
 export default function TabVagas({
   specs,
   profissionaisMap = {},
+  feriados = [],
   isRecepcao,
   onSlotAction,
   onSolicitar,
 }) {
   const prev = specs.filter((s) => s.windowType === "prev");
   const same = specs.filter((s) => s.windowType === "same");
+  const prevPorDia = agruparPrevPorDia(prev);
+  const diaHoje = todayKey();
   const semVagasLivres = specs.length > 0 && !hasAnyVacancy(specs);
 
   if (specs.length === 0) {
@@ -85,7 +167,7 @@ export default function TabVagas({
         </p>
         <p style={{ fontSize: 13, color: "#64748B" }}>
           Em geral, o agendamento abre no último dia útil anterior ao atendimento (feriados são
-          considerados). Nutrição e fisioterapia permitem agendar em qualquer dia útil (conforme o card).
+          considerados). Nutrição, fisioterapia e psicologia permitem agendar em qualquer dia útil (conforme o card).
         </p>
       </div>
     );
@@ -109,7 +191,7 @@ export default function TabVagas({
           <LegendItem
             color="#ECFDF5"
             border="#6EE7B7"
-            label="Nutrição e fisioterapia: agendamento em qualquer dia útil (dia de atendimento no card)"
+            label="Nutrição, fisioterapia e psicologia: agendamento em qualquer dia útil (dia de atendimento no card)"
           />
           <LegendItem color="#DCFCE7" border="#86EFAC" label="Atendimento hoje — vagas sobrando" />
         </div>
@@ -130,24 +212,27 @@ export default function TabVagas({
         </Section>
       )}
 
-      {prev.length > 0 && (
-        <Section
-          title={`Agendamento · atendimento em ${[
-            ...new Set(prev.map((s) => DAY_LABEL[s.atendimentoDia] || s.atendimentoDia)),
-          ].join(", ")}`}
-        >
-          {prev.map((spec) => (
-            <SpecCard
-              key={`prev-${spec.atendimentoDate}_${spec.key}`}
-              spec={spec}
-              profissionaisMap={profissionaisMap}
-              isRecepcao={isRecepcao}
-              onSlotAction={onSlotAction}
-              onSolicitar={onSolicitar}
-            />
-          ))}
-        </Section>
-      )}
+      {ORDER_DIA_ATENDIMENTO.map((dia) => {
+        const lista = prevPorDia[dia];
+        if (!lista?.length) return null;
+        return (
+          <Section
+            key={`prev-sec-${dia}`}
+            title={tituloSecaoAgendamentoComData(dia, diaHoje, lista, feriados)}
+          >
+            {lista.map((spec) => (
+              <SpecCard
+                key={`prev-${spec.atendimentoDate}_${spec.key}`}
+                spec={spec}
+                profissionaisMap={profissionaisMap}
+                isRecepcao={isRecepcao}
+                onSlotAction={onSlotAction}
+                onSolicitar={onSolicitar}
+              />
+            ))}
+          </Section>
+        );
+      })}
     </div>
   );
 }
@@ -198,9 +283,13 @@ function AgenteTurnoRow({
   const livres = Math.max(0, total - used - reserved);
   const wl = sess.waitlistEnabled;
   const isFisio = specKey === "fisio";
-  /** Fisioterapia: sempre há “vaga” de solicitação (lista de espera na recepção), mesmo com agenda cheia. */
+  const isPsicologaListaEspera = specKey === "psicologa" && wl;
+  /** Fisioterapia e sessões com lista de espera: solicitação pelo WhatsApp mesmo com agenda cheia. */
   const podeSolicitar =
     typeof onSolicitar === "function" && (isFisio || wl || livres > 0);
+  /** Esconde o aviso “vagas esgotadas” quando ainda há fluxo de lista de espera (fisio ou psicologia). */
+  const ocultarEsgotadoPorListaEspera =
+    (isFisio || isPsicologaListaEspera) && livres === 0;
 
   const rowStyle = {
     ...styles.agenteTurnoRow,
@@ -214,7 +303,7 @@ function AgenteTurnoRow({
         <MedicoBadge tipo={sess.medicoTipo} />
         {sess.pccuOnly && <span style={styles.pccuTag}>PCCU</span>}
       </p>
-      {!(isFisio && livres === 0) && (
+      {!ocultarEsgotadoPorListaEspera && (
         <p
           style={{
             ...styles.livresResumo,
@@ -229,22 +318,14 @@ function AgenteTurnoRow({
             : "Vagas esgotadas nesta data"}
         </p>
       )}
-      {isFisio && (
-        <p
-          style={
-            livres === 0
-              ? styles.agenteTurnoHintCheia
-              : styles.agenteTurnoHint
-          }
-        >
-          {livres > 0
-            ? "Solicite pelo WhatsApp (encaminhamento obrigatório). Se a agenda encher, a recepção pode tratar o pedido como lista de espera."
-            : "A agenda está cheia. Solicite um agendamento para a lista de espera."}
+      {isFisio && livres === 0 && (
+        <p style={styles.agenteTurnoHintCheia}>
+          A agenda está cheia. Solicite um agendamento para a lista de espera.
         </p>
       )}
-      {!isFisio && wl && (
-        <p style={styles.agenteTurnoHint}>
-          Há possibilidade de solicitar agendamento pelo WhatsApp (encaminhamento obrigatório).
+      {isPsicologaListaEspera && livres === 0 && (
+        <p style={styles.agenteTurnoHintCheia}>
+          A agenda está cheia. Solicite um agendamento para a lista de espera.
         </p>
       )}
       {podeSolicitar && (
