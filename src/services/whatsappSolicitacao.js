@@ -158,10 +158,24 @@ export function montarMensagemSolicitacaoWhatsApp(p) {
   return corpo;
 }
 
+/**
+ * O link wa.me exige número em formato internacional (E.164 sem +). No cadastro usamos
+ * apenas DDD + número (BR). No app do WhatsApp no celular, número sem código do país
+ * costuma falhar; no desktop às vezes funciona por diferença do cliente.
+ * @returns {string|null}
+ */
+export function normalizarTelefoneParaWaMe(telefoneDigitos) {
+  const d = String(telefoneDigitos || "").replace(/\D/g, "");
+  if (d.length < 10) return null;
+  if (d.startsWith("55") && d.length >= 12 && d.length <= 13) return d;
+  if (d.length >= 10 && d.length <= 11) return `55${d}`;
+  return d.length >= 10 ? d : null;
+}
+
 /** URL do wa.me ou null se o telefone for inválido. */
 export function buildWhatsAppUrl(telefoneDigitos, texto) {
-  const phone = String(telefoneDigitos || "").replace(/\D/g, "");
-  if (phone.length < 10) return null;
+  const phone = normalizarTelefoneParaWaMe(telefoneDigitos);
+  if (!phone) return null;
   return `https://wa.me/${phone}?text=${encodeURIComponent(texto)}`;
 }
 
