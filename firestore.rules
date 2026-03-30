@@ -6,23 +6,26 @@ service cloud.firestore {
     function isLoggedIn() {
       return request.auth != null;
     }
+    // Papel do usuário no documento `usuarios`: campo `rule` (aceita `role` legado).
     function getRole() {
-      return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.role;
+      let d = get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data;
+      return d.rule != null ? d.rule : d.role;
     }
     function isRecepcao() {
-      return isLoggedIn() && getRole() == "recepcao";
-    }
-    function isAgente() {
-      return isLoggedIn() && getRole() == "agente";
+      let r = getRole();
+      return isLoggedIn() && (r == "recepcao" || r == "Recepcao" || r == "RECEPCAO");
     }
     function isDiretor() {
-      return isLoggedIn() && getRole() == "diretor";
+      let r = getRole();
+      return isLoggedIn() && (r == "diretor" || r == "Diretor" || r == "DIRETOR");
     }
-    function isAgenteOrRecepcao() {
-      return isLoggedIn() && getRole() in ["agente", "recepcao"];
+    function isAgente() {
+      let r = getRole();
+      return isLoggedIn() && (r == "agente" || r == "Agente" || r == "AGENTE");
     }
-    function podeCriarSolicitacaoOuEspera() {
-      return isLoggedIn() && getRole() in ["agente", "recepcao", "diretor"];
+    // Lista de espera: agentes, direção e recepção (recepção opera pela aba Vagas)
+    function podeCriarEspera() {
+      return isLoggedIn() && (isAgente() || isRecepcao() || isDiretor());
     }
 
     // Usuários: lê o próprio perfil; recepção lê/escreve todos
@@ -45,18 +48,10 @@ service cloud.firestore {
       allow write: if isRecepcao();
     }
 
-    // Solicitações: agentes criam; recepção e direção leem e editam
-    match /solicitacoes/{id} {
-      allow read:   if isLoggedIn();
-      allow create: if podeCriarSolicitacaoOuEspera();
-      allow update: if isRecepcao();
-      allow delete: if isRecepcao();
-    }
-
     // Lista de espera: agentes criam; recepção remove
     match /listaEspera/{id} {
       allow read:   if isLoggedIn();
-      allow create: if podeCriarSolicitacaoOuEspera();
+      allow create: if podeCriarEspera();
       allow delete: if isRecepcao();
     }
 
@@ -74,11 +69,5 @@ service cloud.firestore {
       allow write: if isRecepcao();
     }
 
-    // Auditoria de vagas: só recepção grava e lê
-    match /auditLog/{id} {
-      allow read:   if isRecepcao();
-      allow create: if isRecepcao();
-      allow update, delete: if false;
-    }
   }
 }
