@@ -1,0 +1,18 @@
+// Legado — o app usa Supabase Storage para fotos da solicitação. Não é mais deployado no Firebase.
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /whatsapp_agenda_docs/{name} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+                    && request.resource.size < 6 * 1024 * 1024
+                    && request.resource.contentType.matches('image/.*');
+      allow update, delete: if false;
+    }
+    // Legado (links antigos em mensagens WhatsApp)
+    match /solicitacoes_docs/{name} {
+      allow read: if request.auth != null;
+      allow create, update, delete: if false;
+    }
+  }
+}
