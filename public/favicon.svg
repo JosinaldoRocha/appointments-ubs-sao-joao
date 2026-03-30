@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-hidden="true">
+  <defs>
+    <linearGradient id="ubsBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0E5A9E"/>
+      <stop offset="100%" stop-color="#0C447C"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#ubsBg)"/>
+  <rect x="96" y="128" width="320" height="280" rx="32" fill="#ffffff"/>
+  <rect x="96" y="128" width="320" height="76" rx="32" fill="#E6F1FB"/>
+  <rect x="96" y="168" width="320" height="36" fill="#E6F1FB"/>
+  <rect x="168" y="100" width="40" height="72" rx="14" fill="#ffffff"/>
+  <rect x="304" y="100" width="40" height="72" rx="14" fill="#ffffff"/>
+  <rect x="220" y="240" width="72" height="128" rx="12" fill="#0C447C"/>
+  <rect x="184" y="280" width="144" height="48" rx="12" fill="#0C447C"/>
+</svg>
