@@ -1,7 +1,8 @@
 // src/App.jsx
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./hooks/useAuth";
-import Login     from "./pages/Login";
+import Login from "./pages/Login";
+import RecuperarSenha from "./pages/RecuperarSenha";
 import Dashboard from "./pages/Dashboard";
 
 function Guard({ children }) {
@@ -20,6 +21,7 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/recuperar-senha" element={<RecuperarSenha />} />
           <Route path="/" element={<Guard><Dashboard /></Guard>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

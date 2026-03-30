@@ -1,19 +1,31 @@
 // src/pages/Login.jsx
-import { useState } from "react";
-import { loginComCpf, formatCpf, validateCpf } from "../services/auth";
+import { useState, useEffect } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import AppLogo from "../components/AppLogo";
+import PasswordInput from "../components/PasswordInput";
+import { loginComEmail } from "../services/auth";
+import { useAuth } from "../hooks/useAuth";
 
 export default function Login() {
-  const [cpf, setCpf]         = useState("");
-  const [senha, setSenha]     = useState("");
-  const [erro, setErro]       = useState("");
+  const [email, setEmail] = useState("");
+  const [senha, setSenha] = useState("");
+  const [erro, setErro] = useState("");
   const [loading, setLoading] = useState(false);
+  const navigate = useNavigate();
+  const { user, loading: authLoading } = useAuth();
+
+  useEffect(() => {
+    if (!authLoading && user) {
+      navigate("/", { replace: true });
+    }
+  }, [authLoading, user, navigate]);
 
   async function handleSubmit(e) {
     e.preventDefault();
     setErro("");
-    const cpfLimpo = cpf.replace(/\D/g, "");
-    if (!validateCpf(cpfLimpo)) {
-      setErro("CPF inválido.");
+    const emailNorm = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailNorm)) {
+      setErro("Informe um e-mail válido.");
       return;
     }
     if (senha.length < 6) {
@@ -22,11 +34,10 @@ export default function Login() {
     }
     setLoading(true);
     try {
-      await loginComCpf(cpfLimpo, senha);
-      // onAuthChange no AuthProvider cuida do redirecionamento
+      await loginComEmail(emailNorm, senha);
     } catch (err) {
       if (err.code === "auth/invalid-credential" || err.code === "auth/wrong-password") {
-        setErro("CPF ou senha incorretos.");
+        setErro("E-mail ou senha incorretos.");
       } else if (err.code === "auth/user-not-found") {
         setErro("Usuário não encontrado.");
       } else {
@@ -37,39 +48,49 @@ export default function Login() {
     }
   }
 
+  if (authLoading) {
+    return (
+      <div style={styles.bg}>
+        <p style={{ color: "#64748B", fontSize: 14 }}>Carregando...</p>
+      </div>
+    );
+  }
+
   return (
     <div style={styles.bg}>
       <div style={styles.card}>
         <div style={styles.logoArea}>
-          <div style={styles.logo}>+</div>
+          <AppLogo size={52} title="UBS Agendamentos" style={{ margin: "0 auto 12px" }} />
           <h1 style={styles.title}>UBS Agendamentos</h1>
-          <p style={styles.sub}>Entre com seu CPF e senha</p>
+          <p style={styles.sub}>Entre com o e-mail cadastrado pela recepção e sua senha</p>
         </div>
 
         <form onSubmit={handleSubmit} style={styles.form}>
           <div style={styles.field}>
-            <label style={styles.label}>CPF</label>
+            <label style={styles.label}>E-mail</label>
             <input
               style={styles.input}
-              type="text"
-              inputMode="numeric"
-              placeholder="000.000.000-00"
-              value={cpf}
-              onChange={(e) => setCpf(formatCpf(e.target.value))}
-              maxLength={14}
+              type="email"
+              inputMode="email"
+              placeholder="seu@email.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              maxLength={120}
               autoComplete="username"
             />
           </div>
 
           <div style={styles.field}>
-            <label style={styles.label}>Senha</label>
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="••••••••"
+            <label style={styles.label} htmlFor="login-senha">
+              Senha
+            </label>
+            <PasswordInput
+              id="login-senha"
               value={senha}
               onChange={(e) => setSenha(e.target.value)}
+              placeholder="••••••••"
               autoComplete="current-password"
+              inputStyle={styles.input}
             />
           </div>
 
@@ -80,8 +101,11 @@ export default function Login() {
           </button>
         </form>
 
+        <Link to="/recuperar-senha" style={styles.btnRedefinir}>
+          Redefinir senha
+        </Link>
         <p style={styles.hint}>
-          Esqueceu sua senha? Fale com a recepção da unidade.
+          O link de redefinição é enviado só para o e-mail da sua conta.
         </p>
       </div>
     </div>
@@ -106,34 +130,54 @@ const styles = {
     maxWidth: "360px",
   },
   logoArea: { textAlign: "center", marginBottom: "28px" },
-  logo: {
-    width: "52px", height: "52px",
-    background: "#E6F1FB", borderRadius: "14px",
-    display: "flex", alignItems: "center", justifyContent: "center",
-    fontSize: "28px", color: "#0C447C", fontWeight: "700",
-    margin: "0 auto 12px",
-  },
   title: { fontSize: "20px", fontWeight: "600", color: "#0F172A", margin: "0 0 4px" },
-  sub:   { fontSize: "13px", color: "#64748B", margin: 0 },
-  form:  { display: "flex", flexDirection: "column", gap: "16px" },
+  sub: { fontSize: "13px", color: "#64748B", margin: 0 },
+  form: { display: "flex", flexDirection: "column", gap: "16px" },
   field: { display: "flex", flexDirection: "column", gap: "4px" },
   label: { fontSize: "12px", color: "#64748B", fontWeight: "500" },
   input: {
-    padding: "10px 12px", fontSize: "15px",
-    border: "1px solid #E2E8F0", borderRadius: "8px",
-    outline: "none", background: "#fff", color: "#0F172A",
+    padding: "10px 12px",
+    fontSize: "15px",
+    border: "1px solid #E2E8F0",
+    borderRadius: "8px",
+    outline: "none",
+    background: "#fff",
+    color: "#0F172A",
   },
   erro: {
-    fontSize: "13px", color: "#DC2626",
-    background: "#FEF2F2", border: "1px solid #FECACA",
-    borderRadius: "6px", padding: "8px 12px", margin: 0,
+    fontSize: "13px",
+    color: "#DC2626",
+    background: "#FEF2F2",
+    border: "1px solid #FECACA",
+    borderRadius: "6px",
+    padding: "8px 12px",
+    margin: 0,
   },
   btn: {
     padding: "12px",
-    background: "#0C447C", color: "#fff",
-    border: "none", borderRadius: "8px",
-    fontSize: "15px", fontWeight: "600",
+    background: "#0C447C",
+    color: "#fff",
+    border: "none",
+    borderRadius: "8px",
+    fontSize: "15px",
+    fontWeight: "600",
     cursor: "pointer",
   },
-  hint: { fontSize: "12px", color: "#94A3B8", textAlign: "center", marginTop: "20px" },
+  btnRedefinir: {
+    display: "block",
+    width: "100%",
+    marginTop: "12px",
+    padding: "11px 12px",
+    fontSize: "14px",
+    fontWeight: "600",
+    textAlign: "center",
+    textDecoration: "none",
+    color: "#0C447C",
+    background: "#fff",
+    border: "1px solid #CBD5E1",
+    borderRadius: "8px",
+    outline: "none",
+    boxSizing: "border-box",
+  },
+  hint: { fontSize: "12px", color: "#94A3B8", textAlign: "center", marginTop: "10px", lineHeight: 1.45 },
 };
