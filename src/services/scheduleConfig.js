@@ -4,21 +4,23 @@
 // ─────────────────────────────────────────────────────────────────
 
 export const SPEC_META = {
-  medico:       { role: "Clínico Geral",  av: "MC", bg: "#E6F1FB", tc: "#0C447C" },
-  dentFernando: { role: "Odontologia",    av: "DF", bg: "#E1F5EE", tc: "#085041" },
-  dentPatrick:  { role: "Odontologia",    av: "DP", bg: "#E1F5EE", tc: "#085041" },
-  psicologa:    { role: "Psicologia",     av: "DK", bg: "#FBEAF0", tc: "#72243E" },
-  fisio:        { role: "Fisioterapia",   av: "DA", bg: "#FAEEDA", tc: "#633806" },
-  enfermeira:   { role: "Enfermagem",     av: "EN", bg: "#EAF3DE", tc: "#27500A" },
+  medico:         { role: "Clínico Geral",  av: "MC", bg: "#E6F1FB", tc: "#0C447C" },
+  dentFernando:   { role: "Odontologia",    av: "DF", bg: "#E1F5EE", tc: "#085041" },
+  dentPatrick:    { role: "Odontologia",    av: "DP", bg: "#E1F5EE", tc: "#085041" },
+  psicologa:      { role: "Psicologia",     av: "DK", bg: "#FBEAF0", tc: "#72243E" },
+  fisio:          { role: "Fisioterapia",   av: "DA", bg: "#FAEEDA", tc: "#633806" },
+  enfermeira:     { role: "Enfermagem",     av: "EN", bg: "#EAF3DE", tc: "#27500A" },
+  nutricionista:  { role: "Nutrição",       av: "NT", bg: "#ECFDF5", tc: "#065F46" },
 };
 
 export const DEFAULT_PROF_NAMES = {
-  medico:       "Dr. Clínico",
-  dentFernando: "Dr. Fernando",
-  dentPatrick:  "Dr. Patrick",
-  psicologa:    "Dra. Kauane",
-  fisio:        "Dra. Aracele",
-  enfermeira:   "Enfermeira",
+  medico:         "Dr. Clínico",
+  dentFernando:   "Dr. Fernando",
+  dentPatrick:    "Dr. Patrick",
+  psicologa:      "Dra. Kauane",
+  fisio:          "Dra. Aracele",
+  enfermeira:     "Enfermeira",
+  nutricionista:  "Nutricionista",
 };
 
 /** Tipos de sessão do médico (UI / filtros) */
@@ -134,7 +136,20 @@ export const BASE_SCHEDULE = {
         ],
       },
       {
+        key: "nutricionista",
+        /** Atendimento só às quintas; agendamento liberado em qualquer dia útil (ver buildVisibleSegments). */
+        agendaQualquerDiaUtil: true,
+        sessions: [
+          { label: "Manhã", total: 8 },
+          { label: "Tarde", total: 8 },
+        ],
+      },
+      {
         key: "fisio",
+        /** Solicitação via WhatsApp exige encaminhamento (foto) e dados completos — ver ModalAgendar. */
+        solicitacaoEncaminhamentoObrigatorio: true,
+        /** Agendamento liberado em qualquer dia útil (atendimento quintas e sextas). */
+        agendaQualquerDiaUtil: true,
         sessions: [{ label: "Manhã", total: 6, waitlistEnabled: true }],
       },
       {
@@ -157,6 +172,8 @@ export const BASE_SCHEDULE = {
       },
       {
         key: "fisio",
+        solicitacaoEncaminhamentoObrigatorio: true,
+        agendaQualquerDiaUtil: true,
         sessions: [{ label: "Manhã", total: 6, waitlistEnabled: true }],
       },
       {
@@ -217,7 +234,7 @@ export function todayKey() {
   return JS_DAY_TO_KEY[new Date().getDay()] || null;
 }
 
-/** Compatibilidade: solicitações antigas sem `atendimentoDate`. */
+/** Infere uma data ISO (YYYY-MM-DD) para um `dayKey` da grade, a partir de `fromDate`. */
 export function inferAtendimentoDateForDayKey(dayKey, fromDate = new Date()) {
   for (let i = 0; i < 21; i++) {
     const d = new Date(fromDate);
@@ -268,6 +285,51 @@ function mergeSessionCounts(sessions, specKey, atendimentoDateStr, vagasMap) {
   });
 }
 
+/** Agrupa por profissional + dia da semana de atendimento (ex.: fisioterapia quinta vs sexta). */
+function chaveAgendaQualquerDiaUtil(seg) {
+  return `${seg.key}::${seg.atendimentoDia}`;
+}
+
+/**
+ * Um cartão por combinação (chave + dia de atendimento) com `agendaQualquerDiaUtil`:
+ * prioriza atendimento hoje (same); senão a data de atendimento mais próxima (prev).
+ */
+function dedupeAgendaQualquerDiaUtil(segments) {
+  const groups = new Map();
+  for (const seg of segments) {
+    if (!seg.agendaQualquerDiaUtil) continue;
+    const ck = chaveAgendaQualquerDiaUtil(seg);
+    const g = groups.get(ck) || { same: null, prevs: [] };
+    if (seg.windowType === "same") g.same = seg;
+    else g.prevs.push(seg);
+    groups.set(ck, g);
+  }
+
+  function pickOne(ck) {
+    const g = groups.get(ck);
+    if (!g) return null;
+    if (g.same) return g.same;
+    if (g.prevs.length === 0) return null;
+    g.prevs.sort((a, b) => a.atendimentoDate.localeCompare(b.atendimentoDate));
+    return g.prevs[0];
+  }
+
+  const emitted = new Set();
+  const out = [];
+  for (const seg of segments) {
+    if (!seg.agendaQualquerDiaUtil) {
+      out.push(seg);
+      continue;
+    }
+    const ck = chaveAgendaQualquerDiaUtil(seg);
+    if (emitted.has(ck)) continue;
+    emitted.add(ck);
+    const one = pickOne(ck);
+    if (one) out.push(one);
+  }
+  return out;
+}
+
 /**
  * Monta cartões visíveis: janela "prev" (dia útil de agendamento) e "same" (sobras no dia do atendimento).
  */
@@ -298,7 +360,12 @@ export function buildVisibleSegments({ today, feriados, fernandoFora, vagasMap, 
         const prevBus = previousBusinessDay(cand, holidaySet);
         const prevStr = toDateStr(prevBus);
 
-        if (prevStr === todayStr) {
+        const podeAgendarPrev =
+          spec.agendaQualquerDiaUtil === true
+            ? isBusinessDay(today, holidaySet) && todayStr < attStr
+            : prevStr === todayStr;
+
+        if (podeAgendarPrev) {
           const k = `prev-${spec.key}-${atendimentoDia}-${attStr}`;
           if (!dedupe.has(k)) {
             dedupe.add(k);
@@ -329,7 +396,7 @@ export function buildVisibleSegments({ today, feriados, fernandoFora, vagasMap, 
     }
   }
 
-  return result;
+  return dedupeAgendaQualquerDiaUtil(result);
 }
 
 /** @deprecated use buildVisibleSegments */

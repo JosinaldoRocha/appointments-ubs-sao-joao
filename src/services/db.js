@@ -12,7 +12,6 @@ import {
   query,
   where,
   orderBy,
-  limit,
   onSnapshot,
   serverTimestamp,
   arrayUnion,
@@ -28,6 +27,7 @@ export async function getUser(uid) {
   return snap.exists() ? { id: snap.id, ...snap.data() } : null;
 }
 
+/** Cria documento em `usuarios/{uid}` (perfil no Firestore). O login em si é criado no Authentication. */
 export async function createUser(uid, data) {
   await setDoc(doc(db, "usuarios", uid), {
     ...data,
@@ -62,6 +62,7 @@ export async function removeDeviceToken(uid, token) {
 }
 
 // ── PROFISSIONAIS ───────────────────────────────────────────────
+/** Cada doc: { nome, role, specKey? }. `specKey` amarra à grade (medico, dentFernando, …). */
 export function listenProfissionais(callback) {
   return onSnapshot(collection(db, "profissionais"), (snap) => {
     const data = {};
@@ -74,6 +75,15 @@ export async function updateProfissional(id, data) {
   await updateDoc(doc(db, "profissionais", id), data);
 }
 
+/** Cria documento em `profissionais` (nome, specKey, role, …). */
+export async function createProfissional(data) {
+  await addDoc(collection(db, "profissionais"), data);
+}
+
+export async function deleteProfissional(id) {
+  await deleteDoc(doc(db, "profissionais", id));
+}
+
 // ── CONFIGURAÇÃO GLOBAL (feriados, Fernando, PCCU) ────────────────
 export function listenSettings(callback) {
   return onSnapshot(doc(db, "settings", SETTINGS_ID), (snap) => {
@@ -82,6 +92,8 @@ export function listenSettings(callback) {
         feriados: [],
         fernandoForaUnidade: false,
         pccuTotal: 8,
+        recepcionistaAtivoWhatsapp: "",
+        recepcionistaAtivoNome: "",
       });
       return;
     }
@@ -90,6 +102,10 @@ export function listenSettings(callback) {
       feriados: Array.isArray(d.feriados) ? d.feriados : [],
       fernandoForaUnidade: Boolean(d.fernandoForaUnidade),
       pccuTotal: typeof d.pccuTotal === "number" ? d.pccuTotal : 8,
+      recepcionistaAtivoWhatsapp:
+        typeof d.recepcionistaAtivoWhatsapp === "string" ? d.recepcionistaAtivoWhatsapp : "",
+      recepcionistaAtivoNome:
+        typeof d.recepcionistaAtivoNome === "string" ? d.recepcionistaAtivoNome : "",
     });
   });
 }
@@ -161,32 +177,6 @@ export async function getVaga(id) {
   return snap.exists() ? { id: snap.id, ...snap.data() } : null;
 }
 
-// ── SOLICITAÇÕES ─────────────────────────────────────────────────
-export function listenSolicitacoes(callback) {
-  const q = query(
-    collection(db, "solicitacoes"),
-    orderBy("criadoEm", "desc")
-  );
-  return onSnapshot(q, (snap) => {
-    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-  });
-}
-
-export async function criarSolicitacao(data) {
-  return addDoc(collection(db, "solicitacoes"), {
-    ...data,
-    status: "pendente",
-    criadoEm: serverTimestamp(),
-  });
-}
-
-export async function atualizarSolicitacao(id, data) {
-  await updateDoc(doc(db, "solicitacoes", id), {
-    ...data,
-    atualizadoEm: serverTimestamp(),
-  });
-}
-
 // ── LISTA DE ESPERA ──────────────────────────────────────────────
 export function listenListaEspera(callback) {
   const q = query(
@@ -220,21 +210,3 @@ export async function registrarNotificacaoVagasEsgotadas(specKey, specNome) {
   });
 }
 
-// ── AUDITORIA (somente recepção na UI) ───────────────────────────
-export async function addAuditLog(entry) {
-  await addDoc(collection(db, "auditLog"), {
-    ...entry,
-    criadoEm: serverTimestamp(),
-  });
-}
-
-export function listenAuditLog(callback, maxDocs = 100) {
-  const q = query(
-    collection(db, "auditLog"),
-    orderBy("criadoEm", "desc"),
-    limit(maxDocs)
-  );
-  return onSnapshot(q, (snap) => {
-    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-  });
-}

@@ -3,14 +3,9 @@ import {
   signInWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
+  sendPasswordResetEmail,
 } from "firebase/auth";
 import { auth } from "./firebase";
-
-// Converte CPF em email fictício para o Firebase Auth
-export function cpfToEmail(cpf) {
-  const clean = cpf.replace(/\D/g, "");
-  return `${clean}@ubs.local`;
-}
 
 export function formatCpf(value) {
   const digits = value.replace(/\D/g, "").slice(0, 11);
@@ -18,6 +13,16 @@ export function formatCpf(value) {
     .replace(/(\d{3})(\d)/, "$1.$2")
     .replace(/(\d{3})(\d)/, "$1.$2")
     .replace(/(\d{3})(\d{1,2})$/, "$1-$2");
+}
+
+/** Máscara celular/fixo BR — até 11 dígitos. */
+export function formatTelefoneBR(value) {
+  const d = String(value || "").replace(/\D/g, "").slice(0, 11);
+  if (d.length === 0) return "";
+  if (d.length <= 2) return `(${d}`;
+  if (d.length <= 6) return `(${d.slice(0, 2)}) ${d.slice(2)}`;
+  if (d.length <= 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
 }
 
 export function validateCpf(cpf) {
@@ -35,10 +40,14 @@ export function validateCpf(cpf) {
   return r === parseInt(c[10]);
 }
 
-export async function loginComCpf(cpf, senha) {
-  const email = cpfToEmail(cpf);
-  const cred = await signInWithEmailAndPassword(auth, email, senha);
+export async function loginComEmail(email, senha) {
+  const cred = await signInWithEmailAndPassword(auth, email.trim().toLowerCase(), senha);
   return cred.user;
+}
+
+/** Redefinição por e-mail (link do Firebase) — não exige login. */
+export async function enviarEmailRedefinicaoSenha(email) {
+  await sendPasswordResetEmail(auth, email.trim().toLowerCase());
 }
 
 export async function logout() {

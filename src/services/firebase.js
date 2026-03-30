@@ -3,7 +3,7 @@
 //  SUBSTITUA os valores abaixo pelos do seu projeto Firebase
 //  Console: https://console.firebase.google.com → Configurações do projeto
 // ─────────────────────────────────────────────────────────────────
-import { initializeApp } from "firebase/app";
+import { initializeApp, getApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 import {
   getAuth,
@@ -24,8 +24,21 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 
+/** App secundária só para `createUserWithEmailAndPassword` — não altera a sessão do app principal (recepcionista). */
+const SECONDARY_NAME = "criacaoUsuario";
+const secondaryApp = (() => {
+  try {
+    return getApp(SECONDARY_NAME);
+  } catch {
+    return initializeApp(firebaseConfig, SECONDARY_NAME);
+  }
+})();
+
+export { app };
 export const db = getFirestore(app);
 export const auth = getAuth(app);
+/** Auth isolada: use apenas para criar contas na Config.; depois `signOut(secondaryAuth)`. */
+export const secondaryAuth = getAuth(secondaryApp);
 
 // Messaging pode falhar (navegador, SW não registrado, etc.) — não quebra o app
 let messaging = null;
