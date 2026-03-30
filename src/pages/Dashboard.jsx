@@ -1,42 +1,38 @@
 // src/pages/Dashboard.jsx
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useAuth } from "../hooks/useAuth";
+import AppLogo from "../components/AppLogo";
 import { logout } from "../services/auth";
 import {
   listenVagasByAtendimentoDates,
   setVaga,
-  listenSolicitacoes,
-  criarSolicitacao,
-  atualizarSolicitacao,
-  listenListaEspera,
-  adicionarEspera,
-  removerEspera,
   listenProfissionais,
   registrarNotificacaoVagasEsgotadas,
   listenSettings,
-  addAuditLog,
+  updateSettings,
 } from "../services/db";
 import {
   buildVisibleSegments,
   vagaDocId,
   toDateStr,
   BASE_SCHEDULE,
-  inferAtendimentoDateForDayKey,
   DEFAULT_PCCU_TOTAL,
   collectAtendimentoDatesForListener,
+  SPEC_META,
 } from "../services/scheduleConfig";
+import { uploadDocumentoPacienteSolicitacao } from "../services/storageUpload";
+import {
+  montarMensagemSolicitacaoWhatsApp,
+  abrirWhatsAppComTexto,
+  abrirWhatsAppNavegandoJanela,
+} from "../services/whatsappSolicitacao";
 import TabVagas from "../components/TabVagas";
-import TabSolicit from "../components/TabSolicitacoes";
-import TabEspera from "../components/TabEspera";
 import TabConfig from "../components/TabConfig";
 import ModalAgendar from "../components/ModalAgendar";
 import Toast from "../components/Toast";
+import { isRecepcaoPerfil } from "../utils/perfilRole";
 
-const TABS = [
-  { key: "vagas", label: "Vagas" },
-  { key: "solicitacoes", label: "Solicitações" },
-  { key: "espera", label: "Lista de espera" },
-];
+const TABS = [{ key: "vagas", label: "Vagas" }];
 
 function sessionTotal(dayKey, specKey, sessIdx, pccuTotal) {
   const spec = BASE_SCHEDULE[dayKey]?.specs.find((s) => s.key === specKey);
@@ -47,19 +43,27 @@ function sessionTotal(dayKey, specKey, sessIdx, pccuTotal) {
 }
 
 export default function Dashboard() {
-  const { user, perfil } = useAuth();
-  const isRecepcao = perfil?.role === "recepcao";
-  const isDiretor = perfil?.role === "diretor";
+  const { perfil } = useAuth();
+  const isRecepcao = isRecepcaoPerfil(perfil);
 
   const [tab, setTab] = useState("vagas");
   const [vagasMap, setVagasMap] = useState({});
-  const [solicit, setSolicit] = useState([]);
-  const [espera, setEspera] = useState([]);
-  const [profNames, setProfNames] = useState({});
+  /** Documentos `profissionais/{id}`; campo opcional `specKey` liga à grade (medico, dentFernando, …). */
+  const [profissionaisMap, setProfissionaisMap] = useState({});
+  const profNames = useMemo(() => {
+    const names = {};
+    Object.values(profissionaisMap).forEach((p) => {
+      const k = p.specKey || p.id;
+      names[k] = p.nome;
+    });
+    return names;
+  }, [profissionaisMap]);
   const [settings, setSettings] = useState({
     feriados: [],
     fernandoForaUnidade: false,
     pccuTotal: DEFAULT_PCCU_TOTAL,
+    recepcionistaAtivoWhatsapp: "",
+    recepcionistaAtivoNome: "",
   });
   const [modal, setModal] = useState(null);
   const [toast, setToast] = useState(null);
@@ -72,50 +76,34 @@ export default function Dashboard() {
 
   useEffect(() => {
     const unVagas = listenVagasByAtendimentoDates(listenDates, setVagasMap);
-    const unSol = listenSolicitacoes(setSolicit);
-    const unEsp = listenListaEspera(setEspera);
-    const unProf = listenProfissionais((data) => {
-      const names = {};
-      Object.entries(data).forEach(([k, v]) => {
-        names[k] = v.nome;
-      });
-      setProfNames(names);
-    });
+    const unProf = listenProfissionais(setProfissionaisMap);
     const unSet = listenSettings(setSettings);
     return () => {
       unVagas();
-      unSol();
-      unEsp();
       unProf();
       unSet();
     };
   }, [listenDates]);
+
+  useEffect(() => {
+    if (!isRecepcao || !perfil?.telefoneWhatsapp) return;
+    const digits = String(perfil.telefoneWhatsapp).replace(/\D/g, "");
+    if (digits.length < 10) return;
+    const first = perfil.nome?.trim().split(/\s+/)[0] || "Recepção";
+    updateSettings({
+      recepcionistaAtivoWhatsapp: digits,
+      recepcionistaAtivoNome: first,
+    }).catch(() => {});
+  }, [isRecepcao, perfil?.id, perfil?.telefoneWhatsapp, perfil?.nome]);
 
   function showToast(msg, type = "info") {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3500);
   }
 
-  const logAudit = useCallback(
-    async (tipo, detalhe, meta = {}) => {
-      if (!isRecepcao || !user?.uid) return;
-      try {
-        await addAuditLog({
-          tipo,
-          detalhe,
-          usuarioId: user.uid,
-          usuarioNome: perfil?.nome || "",
-          meta,
-        });
-      } catch {
-        /* silencioso */
-      }
-    },
-    [isRecepcao, user?.uid, perfil?.nome]
-  );
-
   const handleSlotAction = useCallback(
     async ({ specKey, dayKey, sessIdx, atendimentoDate, action, silent }) => {
+      if (!isRecepcao) return;
       const total = sessionTotal(dayKey, specKey, sessIdx, settings.pccuTotal);
       if (!total) return;
 
@@ -166,18 +154,6 @@ export default function Dashboard() {
       });
 
       const nomeProf = profNames[specKey] || specKey;
-      const sessLabel =
-        BASE_SCHEDULE[dayKey]?.specs.find((s) => s.key === specKey)?.sessions[sessIdx]?.label || "";
-
-      await logAudit(`vaga_${action}`, `${nomeProf} · ${sessLabel} (${atendimentoDate})`, {
-        atendimentoDate,
-        specKey,
-        dayKey,
-        sessIdx,
-        used,
-        reserved,
-        total,
-      });
 
       if (used + reserved >= total) {
         await registrarNotificacaoVagasEsgotadas(specKey, nomeProf);
@@ -194,29 +170,7 @@ export default function Dashboard() {
         }
       }
     },
-    [vagasMap, profNames, settings.pccuTotal, logAudit]
-  );
-
-  const handleSolicit = useCallback(
-    async (id, status, specKey, dayKey, sessIdx, atendimentoDate) => {
-      const att = atendimentoDate || inferAtendimentoDateForDayKey(dayKey);
-      await atualizarSolicitacao(id, { status });
-      if (status === "aprovado") {
-        await handleSlotAction({
-          specKey,
-          dayKey,
-          sessIdx,
-          atendimentoDate: att,
-          action: "incOcupada",
-          silent: true,
-        });
-        showToast("Agendamento confirmado!", "success");
-      } else {
-        await logAudit("solicitacao_recusada", `Solicitação ${id}`, { solicitacaoId: id });
-        showToast("Solicitação recusada.", "danger");
-      }
-    },
-    [handleSlotAction, logAudit]
+    [isRecepcao, vagasMap, profNames, settings.pccuTotal]
   );
 
   const handleEnviarSolicit = useCallback(
@@ -226,42 +180,126 @@ export default function Dashboard() {
       sessIdx,
       sessLabel,
       atendimentoDate,
+      solicitacaoEncaminhamentoObrigatorio,
       paciente,
-      telefone,
+      dataNascimentoPaciente,
+      documentoPaciente,
+      telefonePaciente,
+      nomeAgenteSaude,
+      observacaoExtra,
+      medicoTipo,
+      docFile,
+      whatsappBlankWindow,
     }) => {
-      await criarSolicitacao({
-        paciente,
-        telefone,
-        agenteNome: perfil?.nome ?? "",
-        agenteId: perfil?.id,
-        specKey,
-        dayKey,
-        sessIdx,
+      const fecharPreAbaWa = () => {
+        try {
+          if (whatsappBlankWindow && !whatsappBlankWindow.closed) whatsappBlankWindow.close();
+        } catch {
+          /* ignore */
+        }
+      };
+
+      const permiteRecepcaoFisio = specKey === "fisio";
+      if (isRecepcao && !permiteRecepcaoFisio) {
+        fecharPreAbaWa();
+        showToast("O fluxo de solicitar vaga é para agentes de saúde. Use os botões de ocupação e reserva nas vagas.", "danger");
+        return;
+      }
+      const waDigits = String(settings.recepcionistaAtivoWhatsapp || "").replace(/\D/g, "");
+      if (waDigits.length < 10) {
+        fecharPreAbaWa();
+        showToast(
+          "Cadastre o WhatsApp do recepcionista em Config. → Usuários e peça para ele abrir o app neste aparelho.",
+          "danger"
+        );
+        return;
+      }
+
+      const meta = SPEC_META[specKey] || {};
+      const nomeProf = profNames[specKey] || specKey;
+      const funcao = meta.role || "";
+      const profissionalLinha =
+        funcao && nomeProf !== funcao ? `${nomeProf} (${funcao})` : nomeProf;
+
+      const encaminhamentoFisio = solicitacaoEncaminhamentoObrigatorio === true || specKey === "fisio";
+      if (encaminhamentoFisio) {
+        if (!docFile) {
+          fecharPreAbaWa();
+          showToast("A foto do encaminhamento é obrigatória.", "danger");
+          return;
+        }
+        let fotoDocumentoUrl = "";
+        try {
+          fotoDocumentoUrl = await uploadDocumentoPacienteSolicitacao(docFile);
+        } catch (e) {
+          console.error(e);
+          throw new Error(
+            e?.message ||
+              "Não foi possível enviar a imagem. Verifique o Supabase Storage, as políticas e a conexão."
+          );
+        }
+        const msg = montarMensagemSolicitacaoWhatsApp({
+          solicitacaoFisioEncaminhamento: true,
+          profissionalLinha,
+          sessLabel,
+          atendimentoDate,
+          medicoTipo,
+          paciente: paciente?.trim() || "",
+          documentoPaciente: documentoPaciente?.trim() || "",
+          telefonePaciente: telefonePaciente || "",
+          nomeAgenteSaude: nomeAgenteSaude?.trim() || "",
+          observacaoExtra: observacaoExtra?.trim() || "",
+          fotoDocumentoUrl,
+        });
+        if (whatsappBlankWindow) {
+          abrirWhatsAppNavegandoJanela(whatsappBlankWindow, waDigits, msg);
+        } else {
+          abrirWhatsAppComTexto(waDigits, msg);
+        }
+        showToast("WhatsApp aberto — envie a mensagem para a recepção.", "success");
+        setModal(null);
+        return;
+      }
+
+      let fotoDocumentoUrl = "";
+      if (docFile) {
+        try {
+          fotoDocumentoUrl = await uploadDocumentoPacienteSolicitacao(docFile);
+        } catch (e) {
+          console.error(e);
+          throw new Error(
+            e?.message ||
+              "Não foi possível enviar a imagem. Verifique o Supabase Storage, as políticas e a conexão."
+          );
+        }
+      }
+
+      const nomePac =
+        paciente?.trim() || (fotoDocumentoUrl ? "Paciente (documento em anexo)" : "");
+
+      const msg = montarMensagemSolicitacaoWhatsApp({
+        profissionalLinha,
         sessLabel,
         atendimentoDate,
-        specNome: profNames[specKey] || specKey,
+        medicoTipo,
+        paciente: nomePac,
+        dataNascimentoIso: dataNascimentoPaciente || "",
+        documentoPaciente: documentoPaciente || "",
+        observacaoExtra: observacaoExtra?.trim() || "",
+        fotoDocumentoUrl: fotoDocumentoUrl || "",
       });
-      showToast("Solicitação enviada! Aguarde a confirmação da recepção.", "success");
+
+      if (whatsappBlankWindow) {
+        abrirWhatsAppNavegandoJanela(whatsappBlankWindow, waDigits, msg);
+      } else {
+        abrirWhatsAppComTexto(waDigits, msg);
+      }
+      showToast("WhatsApp aberto — envie a mensagem para a recepção.", "success");
       setModal(null);
     },
-    [perfil, profNames]
+    [isRecepcao, profNames, settings]
   );
 
-  const handleEspera = useCallback(
-    async ({ paciente, telefone }) => {
-      await adicionarEspera({
-        paciente,
-        telefone,
-        agenteNome: perfil?.nome ?? "",
-        agenteId: perfil?.id,
-      });
-      showToast("Paciente adicionado à lista de espera.", "success");
-      setModal(null);
-    },
-    [perfil]
-  );
-
-  const pendentes = solicit.filter((s) => s.status === "pendente").length;
   const allTabs = isRecepcao
     ? [...TABS, { key: "config", label: "Config." }]
     : TABS;
@@ -278,7 +316,7 @@ export default function Dashboard() {
     <div style={styles.app}>
       <header style={styles.hdr}>
         <div style={styles.hdrLeft}>
-          <div style={styles.logo}>+</div>
+          <AppLogo size={32} title="UBS Agendamentos" />
           <div>
             <h1 style={styles.hdrTitle}>UBS Agendamentos</h1>
             <p style={styles.hdrSub}>
@@ -312,9 +350,6 @@ export default function Dashboard() {
             onClick={() => setTab(t.key)}
           >
             {t.label}
-            {t.key === "solicitacoes" && pendentes > 0 && (
-              <span style={styles.badge}>{pendentes}</span>
-            )}
           </button>
         ))}
       </nav>
@@ -323,32 +358,28 @@ export default function Dashboard() {
         {tab === "vagas" && (
           <TabVagas
             specs={specsVisiveis}
-            profNames={profNames}
+            profissionaisMap={profissionaisMap}
             isRecepcao={isRecepcao}
             onSlotAction={handleSlotAction}
-            onSolicitar={(ctx) => setModal({ type: "agendar", ...ctx })}
-            onEspera={(ctx) => setModal({ type: "espera", ...ctx })}
-          />
-        )}
-        {tab === "solicitacoes" && (
-          <TabSolicit
-            solicitacoes={solicit}
-            profNames={profNames}
-            isRecepcao={isRecepcao}
-            onHandle={handleSolicit}
-          />
-        )}
-        {tab === "espera" && (
-          <TabEspera
-            lista={espera}
-            isRecepcao={isRecepcao}
-            isAgente={!isRecepcao && !isDiretor}
-            onRemover={removerEspera}
-            onAdicionar={() => setModal({ type: "espera" })}
+            onSolicitar={
+              isRecepcao
+                ? undefined
+                : (ctx) =>
+                    setModal({
+                      ...ctx,
+                      agenteNomeDefault: perfil?.nome ?? "",
+                      type: "agendar",
+                    })
+            }
           />
         )}
         {tab === "config" && isRecepcao && (
-          <TabConfig profNames={profNames} showToast={showToast} />
+          <TabConfig
+            profNames={profNames}
+            profissionaisMap={profissionaisMap}
+            showToast={showToast}
+            isRecepcao={isRecepcao}
+          />
         )}
       </main>
 
@@ -356,8 +387,11 @@ export default function Dashboard() {
         <ModalAgendar
           ctx={modal}
           profNames={profNames}
-          onSubmit={modal.type === "espera" ? handleEspera : handleEnviarSolicit}
+          onSubmit={handleEnviarSolicit}
           onClose={() => setModal(null)}
+          recepcaoWhatsappOk={
+            String(settings.recepcionistaAtivoWhatsapp || "").replace(/\D/g, "").length >= 10
+          }
         />
       )}
 
@@ -380,18 +414,6 @@ const styles = {
   },
   hdrLeft: { display: "flex", alignItems: "center", gap: 10 },
   hdrRight: { display: "flex", alignItems: "center", gap: 8 },
-  logo: {
-    width: 32,
-    height: 32,
-    background: "#E6F1FB",
-    borderRadius: 8,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: 18,
-    color: "#0C447C",
-    fontWeight: 700,
-  },
   hdrTitle: { fontSize: 14, fontWeight: 600, color: "#0F172A", margin: 0 },
   hdrSub: { fontSize: 11, color: "#64748B", margin: 0, textTransform: "capitalize" },
   hdrHint: { fontSize: 10, color: "#0369A1", margin: "4px 0 0", maxWidth: 320 },
@@ -428,24 +450,7 @@ const styles = {
     color: "#64748B",
     borderRadius: 6,
     whiteSpace: "nowrap",
-    position: "relative",
   },
   navBtnActive: { background: "#F1F5F9", color: "#0F172A", fontWeight: 600 },
-  badge: {
-    position: "absolute",
-    top: 2,
-    right: 4,
-    minWidth: 16,
-    height: 16,
-    background: "#DC2626",
-    color: "#fff",
-    borderRadius: 8,
-    fontSize: 10,
-    fontWeight: 700,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: "0 3px",
-  },
   main: { flex: 1, padding: 14, overflowY: "auto" },
 };
