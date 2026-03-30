@@ -72,7 +72,10 @@ export const BASE_SCHEDULE = {
       },
       {
         key: "psicologa",
-        sessions: [{ label: "Manhã", total: 5 }],
+        /** Atendimento às segundas; agendamento liberado em qualquer dia útil (como fisioterapia/nutri). */
+        agendaQualquerDiaUtil: true,
+        /** Lista de espera quando a agenda enche — modal padrão (sem encaminhamento obrigatório). */
+        sessions: [{ label: "Manhã", total: 5, waitlistEnabled: true }],
       },
     ],
   },
@@ -226,6 +229,17 @@ export function previousBusinessDay(attendanceDate, holidaySet) {
   d.setDate(d.getDate() - 1);
   while (!isBusinessDay(d, holidaySet)) {
     d.setDate(d.getDate() - 1);
+  }
+  return d;
+}
+
+/** Próximo dia útil estritamente posterior a `fromDate` (meia-noite local). */
+export function nextBusinessDay(fromDate, holidaySet) {
+  const d = fromDate instanceof Date ? new Date(fromDate) : parseDateStr(fromDate);
+  d.setHours(12, 0, 0, 0);
+  d.setDate(d.getDate() + 1);
+  while (!isBusinessDay(d, holidaySet)) {
+    d.setDate(d.getDate() + 1);
   }
   return d;
 }
