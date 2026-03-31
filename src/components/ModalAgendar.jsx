@@ -1,6 +1,10 @@
 // src/components/ModalAgendar.jsx
 import { useState, useEffect } from "react";
-import { SPEC_META } from "../services/scheduleConfig";
+import { SPEC_META, toDateStr } from "../services/scheduleConfig";
+import {
+  fraseVagasEsgotadasEncaixe,
+  rotuloEncaixeModal,
+} from "../services/whatsappSolicitacao";
 import {
   digitosCpfOuSus,
   formatarCpfOuSusDigitos,
@@ -30,9 +34,19 @@ export default function ModalAgendar({
   const [erro, setErro] = useState("");
   const [enviando, setEnviando] = useState(false);
 
+  /** Data local máxima para nascimento: hoje (não permite datas futuras). */
+  const maxDataNascimento = toDateStr(new Date());
+
   const isFisioSolicitacao = ctx.specKey === "fisio" || ctx.key === "fisio";
   const isEncaminhamentoObrigatorio =
     ctx.solicitacaoEncaminhamentoObrigatorio === true || isFisioSolicitacao;
+  const isSomenteEncaixe = ctx.somenteEncaixe === true;
+  const rotuloModalEncaixe = rotuloEncaixeModal({
+    medicoTipo: ctx.medicoTipo,
+    pccuOnly: ctx.pccuOnly,
+    specKey: ctx.specKey,
+    sessLabel: ctx.sessLabel,
+  });
   const nome = profNames[ctx.specKey] || ctx.specKey || "Fisioterapeuta";
   const meta = SPEC_META[ctx.specKey] || {};
   const dataAtendimentoFmt =
@@ -62,6 +76,10 @@ export default function ModalAgendar({
     ctx.dayKey,
     ctx.sessIdx,
     ctx.solicitacaoEncaminhamentoObrigatorio,
+    ctx.somenteEncaixe,
+    ctx.pccuOnly,
+    ctx.livresEncaixe,
+    ctx.sessLabel,
   ]);
 
   useEffect(() => {
@@ -199,6 +217,10 @@ export default function ModalAgendar({
     }
 
     if (docFile) {
+      if (dataNascimento && dataNascimento > maxDataNascimento) {
+        setErro("A data de nascimento não pode ser posterior à data de hoje.");
+        return;
+      }
       const waTabDoc = window.open("about:blank", "_blank");
       if (!waTabDoc) {
         setErro(
@@ -236,6 +258,10 @@ export default function ModalAgendar({
     }
     if (!dataNascimento) {
       setErro("Informe a data de nascimento.");
+      return;
+    }
+    if (dataNascimento > maxDataNascimento) {
+      setErro("A data de nascimento não pode ser posterior à data de hoje.");
       return;
     }
     if (!isCpfOuCartaoSusCompleto(documentoPaciente)) {
@@ -277,7 +303,13 @@ export default function ModalAgendar({
           )}
           <div>
             <p style={S.title}>
-              {isEncaminhamentoObrigatorio ? "Solicitar agendamento — fisioterapia" : "Solicitar agendamento"}
+              {isEncaminhamentoObrigatorio
+                ? "Solicitar agendamento — fisioterapia"
+                : isSomenteEncaixe && rotuloModalEncaixe
+                  ? `Solicitar encaixe — ${rotuloModalEncaixe}`
+                  : isSomenteEncaixe
+                    ? "Solicitar encaixe"
+                    : "Solicitar agendamento"}
             </p>
             <p style={S.sub}>
               {nome}
@@ -304,7 +336,15 @@ export default function ModalAgendar({
           <p style={S.resumoHint}>
             {isEncaminhamentoObrigatorio
               ? "Preencha os dados do paciente e anexe a foto do encaminhamento. O nome do agente de saúde (seu cadastro) entra na mensagem do WhatsApp. Ao enviar, abre o WhatsApp da recepção com o texto pronto."
-              : "Os dados abaixo são do paciente. Ao enviar, abre o WhatsApp da recepção com a mensagem pronta para você revisar e enviar."}
+              : isSomenteEncaixe
+                ? `${fraseVagasEsgotadasEncaixe({
+                    livres: ctx.livresEncaixe ?? 0,
+                    medicoTipo: ctx.medicoTipo,
+                    pccuOnly: ctx.pccuOnly,
+                    specKey: ctx.specKey,
+                    sessLabel: ctx.sessLabel,
+                  })} Os dados abaixo são do paciente. Ao enviar, abre o WhatsApp da recepção com a mensagem pronta.`
+                : "Os dados abaixo são do paciente. Ao enviar, abre o WhatsApp da recepção com a mensagem pronta para você revisar e enviar."}
           </p>
         </div>
 
@@ -383,7 +423,11 @@ export default function ModalAgendar({
                   style={S.input}
                   type="date"
                   value={dataNascimento}
-                  onChange={(e) => setDataNascimento(e.target.value)}
+                  max={maxDataNascimento}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setDataNascimento(v && v > maxDataNascimento ? maxDataNascimento : v);
+                  }}
                   disabled={Boolean(docFile)}
                 />
               </Field>
