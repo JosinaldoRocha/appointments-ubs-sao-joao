@@ -15,10 +15,10 @@ import {
   buildVisibleSegments,
   vagaDocId,
   toDateStr,
-  BASE_SCHEDULE,
   DEFAULT_PCCU_TOTAL,
   collectAtendimentoDatesForListener,
   SPEC_META,
+  sessionTotalEffective,
 } from "../services/scheduleConfig";
 import { uploadDocumentoPacienteSolicitacao } from "../services/storageUpload";
 import {
@@ -33,14 +33,6 @@ import Toast from "../components/Toast";
 import { isRecepcaoPerfil } from "../utils/perfilRole";
 
 const TABS = [{ key: "vagas", label: "Vagas" }];
-
-function sessionTotal(dayKey, specKey, sessIdx, pccuTotal) {
-  const spec = BASE_SCHEDULE[dayKey]?.specs.find((s) => s.key === specKey);
-  const sess = spec?.sessions?.[sessIdx];
-  if (!sess) return 0;
-  if (sess.pccuOnly) return pccuTotal ?? sess.total ?? DEFAULT_PCCU_TOTAL;
-  return sess.total;
-}
 
 export default function Dashboard() {
   const { perfil } = useAuth();
@@ -104,7 +96,7 @@ export default function Dashboard() {
   const handleSlotAction = useCallback(
     async ({ specKey, dayKey, sessIdx, atendimentoDate, action, silent }) => {
       if (!isRecepcao) return;
-      const total = sessionTotal(dayKey, specKey, sessIdx, settings.pccuTotal);
+      const total = sessionTotalEffective(dayKey, specKey, sessIdx, settings.pccuTotal);
       if (!total) return;
 
       const id = vagaDocId(atendimentoDate, specKey, sessIdx);
@@ -181,6 +173,9 @@ export default function Dashboard() {
       sessLabel,
       atendimentoDate,
       solicitacaoEncaminhamentoObrigatorio,
+      somenteEncaixe,
+      pccuOnly,
+      livresEncaixe,
       paciente,
       dataNascimentoPaciente,
       documentoPaciente,
@@ -278,8 +273,11 @@ export default function Dashboard() {
         paciente?.trim() || (fotoDocumentoUrl ? "Paciente (documento em anexo)" : "");
 
       const msg = montarMensagemSolicitacaoWhatsApp({
-        profissionalLinha,
+        specKey,
         sessLabel,
+        pccuOnly: pccuOnly === true,
+        livresEncaixe: typeof livresEncaixe === "number" ? livresEncaixe : 0,
+        profissionalLinha,
         atendimentoDate,
         medicoTipo,
         paciente: nomePac,
@@ -287,6 +285,7 @@ export default function Dashboard() {
         documentoPaciente: documentoPaciente || "",
         observacaoExtra: observacaoExtra?.trim() || "",
         fotoDocumentoUrl: fotoDocumentoUrl || "",
+        somenteEncaixe: somenteEncaixe === true,
       });
 
       if (whatsappBlankWindow) {
@@ -310,15 +309,16 @@ export default function Dashboard() {
     fernandoFora: settings.fernandoForaUnidade,
     vagasMap,
     pccuTotal: settings.pccuTotal,
+    recepcao: isRecepcao,
   });
 
   return (
     <div style={styles.app}>
       <header style={styles.hdr}>
         <div style={styles.hdrLeft}>
-          <AppLogo size={32} title="UBS Agendamentos" />
+          <AppLogo size={32} title="Agendamentos UBS São João" />
           <div>
-            <h1 style={styles.hdrTitle}>UBS Agendamentos</h1>
+            <h1 style={styles.hdrTitle}>Agendamentos UBS São João</h1>
             <p style={styles.hdrSub}>
               {new Date().toLocaleDateString("pt-BR", {
                 weekday: "long",
