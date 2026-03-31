@@ -72,6 +72,67 @@ function textoLinhaObservacao(observacaoExtra, sessLabel, medicoTipo) {
   return (obsSessao || "").trim();
 }
 
+/**
+ * PCCU com a enfermeira: flag `pccuOnly` na grade ou turno “… PCCU” no rótulo.
+ */
+export function isSessaoPccuEnfermeira({ pccuOnly, specKey, sessLabel }) {
+  if (pccuOnly === true) return true;
+  if (specKey === "enfermeira" && /\bPCCU\b/i.test(String(sessLabel || ""))) return true;
+  return false;
+}
+
+/** Troca de receitas, gestantes ou PCCU (enfermeira) — mensagem de encaixe personalizada. */
+export function encaixeCasosEspecificos({ medicoTipo, pccuOnly, specKey, sessLabel }) {
+  return (
+    isSessaoPccuEnfermeira({ pccuOnly, specKey, sessLabel }) ||
+    medicoTipo === "receitas" ||
+    medicoTipo === "gestantes"
+  );
+}
+
+/**
+ * Texto quando só restam vagas de encaixe (tela agente, modal, WhatsApp).
+ * Casos específicos: gestantes, troca de receitas, PCCU com enfermeira. Demais: texto genérico.
+ */
+export function fraseVagasEsgotadasEncaixe({ livres, medicoTipo, pccuOnly, specKey, sessLabel }) {
+  const n = Math.max(0, Number(livres) || 0);
+  const enc = n === 1 ? "encaixe" : "encaixes";
+  const ctx = { medicoTipo, pccuOnly, specKey, sessLabel };
+  if (!encaixeCasosEspecificos(ctx)) {
+    return `Vagas esgotadas. Restam apenas ${n} ${enc} para paciente da zona rural ou casos agudos.`;
+  }
+  let alvo = "";
+  if (isSessaoPccuEnfermeira({ pccuOnly, specKey, sessLabel })) alvo = "exame PCCU";
+  else if (medicoTipo === "gestantes") alvo = "gestantes";
+  else if (medicoTipo === "receitas") alvo = "troca de receitas";
+  return `Vagas esgotadas. Restam apenas ${n} ${enc} para ${alvo} da zona rural ou casos agudos.`;
+}
+
+/** Rótulo curto para o título do modal (só nos três casos). */
+export function rotuloEncaixeModal({ medicoTipo, pccuOnly, specKey, sessLabel }) {
+  const ctx = { medicoTipo, pccuOnly, specKey, sessLabel };
+  if (!encaixeCasosEspecificos(ctx)) return "";
+  if (isSessaoPccuEnfermeira({ pccuOnly, specKey, sessLabel })) return "PCCU";
+  if (medicoTipo === "gestantes") return "Gestantes";
+  if (medicoTipo === "receitas") return "Troca de receitas";
+  return "";
+}
+
+/** Legenda na recepção: encaixe por programa (só nos três casos). */
+export function fraseIncluiEncaixeRecepcao({ encaixeExtra, medicoTipo, pccuOnly, specKey, sessLabel }) {
+  const n = Math.max(0, Number(encaixeExtra) || 0);
+  const enc = n === 1 ? "encaixe" : "encaixes";
+  const ctx = { medicoTipo, pccuOnly, specKey, sessLabel };
+  if (!encaixeCasosEspecificos(ctx)) {
+    return `Inclui ${n} vaga(s) de encaixe (urgência / zona rural), além da agenda fixa.`;
+  }
+  let alvo = "";
+  if (isSessaoPccuEnfermeira({ pccuOnly, specKey, sessLabel })) alvo = "exame PCCU";
+  else if (medicoTipo === "gestantes") alvo = "gestantes";
+  else if (medicoTipo === "receitas") alvo = "troca de receitas";
+  return `Inclui ${n} ${enc} para ${alvo} da zona rural ou casos agudos (além da agenda fixa).`;
+}
+
 function blocoRodapeAgenda(profLinha, atendimentoDate, sessLabel, observacaoExtra, medicoTipo) {
   const { turno } = splitTurnoObservacao(sessLabel);
   const dataCap = dataAtendimentoComTitulo(atendimentoDate);
@@ -100,6 +161,9 @@ function blocoRodapeAgenda(profLinha, atendimentoDate, sessLabel, observacaoExtr
  * @param {string} [p.nomeAgenteSaude]
  * @param {string} [p.observacaoExtra] — texto livre do solicitante (modal)
  * @param {string} [p.medicoTipo] — chave MEDICO_TIPO quando a sessão é do médico (receitas, clinico, gestantes)
+ * @param {boolean} [p.somenteEncaixe] — só restam vagas de encaixe (zona rural / agudos)
+ * @param {number} [p.livresEncaixe] — quantidade de encaixes ainda livres (para texto do encaixe)
+ * @param {boolean} [p.pccuOnly] — sessão PCCU
  */
 export function montarMensagemSolicitacaoWhatsApp(p) {
   const saud = saudacaoBomDiaOuTarde();
@@ -111,6 +175,10 @@ export function montarMensagemSolicitacaoWhatsApp(p) {
     p.observacaoExtra,
     p.medicoTipo
   );
+
+  const linhaPedido = p.somenteEncaixe
+    ? `Agendar encaixe para:\n`
+    : `Agenda um atendimento para:\n`;
 
   if (p.solicitacaoFisioEncaminhamento) {
     const nome = (p.paciente || "").trim() || "—";
@@ -137,7 +205,7 @@ export function montarMensagemSolicitacaoWhatsApp(p) {
     const url = (p.fotoDocumentoUrl || "").trim();
     return (
       `${saud}!\n\n` +
-      `Agenda um atendimento para:\n` +
+      linhaPedido +
       `${url}\n\n` +
       rodape
     );
@@ -149,7 +217,7 @@ export function montarMensagemSolicitacaoWhatsApp(p) {
 
   let corpo =
     `${saud}!\n\n` +
-    `Agenda um atendimento para:\n` +
+    linhaPedido +
     `Paciente: ${nome}\n`;
   if (docLinha) {
     corpo += `${docLinha}\n`;
