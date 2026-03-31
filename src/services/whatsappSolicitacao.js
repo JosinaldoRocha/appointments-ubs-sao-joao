@@ -138,7 +138,7 @@ export function montarMensagemSolicitacaoWhatsApp(p) {
     return (
       `${saud}!\n\n` +
       `Agenda um atendimento para:\n` +
-      `Documento do paciente (foto) — abra o link para ver a imagem:\n${url}\n\n` +
+      `${url}\n\n` +
       rodape
     );
   }
