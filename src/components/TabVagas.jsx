@@ -6,6 +6,7 @@ import {
   DEFAULT_PROF_NAMES,
   toDateStr,
 } from "../services/scheduleConfig";
+import { fraseVagasEsgotadasEncaixe } from "../services/whatsappSolicitacao";
 
 function dataHojeIso() {
   return toDateStr(new Date());
@@ -138,7 +139,7 @@ function formatDataCardAtendimento(isoDateStr) {
   return raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 
-/** Recepção: há vaga livre para ocupar ou reserva pendente que pode virar confirmada. */
+/** Recepção: há vaga livre para agendar ou reserva pendente. */
 function podePreencherVaga(reserved, used, total, livres) {
   return livres > 0 || (reserved > 0 && used < total);
 }
@@ -231,6 +232,11 @@ export default function TabVagas({
             label="Nutrição, fisioterapia e psicologia: agendamento em qualquer dia útil (dia de atendimento no card)"
           />
           <LegendItem color="#DCFCE7" border="#86EFAC" label="Atendimento hoje — vagas sobrando" />
+          <LegendItem
+            color="#FFFBEB"
+            border="#FCD34D"
+            label="Cada turno: +2 vagas de encaixe além da agenda (exceto fisioterapia)"
+          />
         </div>
       )}
 
@@ -326,6 +332,15 @@ function AgenteTurnoRow({
   const reserved = sess.reserved ?? 0;
   const total = sess.total ?? 0;
   const livres = Math.max(0, total - used - reserved);
+  const encaixeExtra = sess.encaixeExtra ?? 0;
+  const baseAgenda = Math.max(0, total - encaixeExtra);
+  const ocupadas = used + reserved;
+  /** Agente/direção: só exibe quantidade de vagas da agenda comum (sem encaixe). */
+  const livresComuns =
+    encaixeExtra > 0 ? Math.max(0, baseAgenda - ocupadas) : livres;
+  /** Agenda fixa lotada; só sobraram vagas de encaixe (zona rural / agudos). */
+  const somenteEncaixe =
+    encaixeExtra > 0 && livres > 0 && ocupadas >= baseAgenda;
   const wl = sess.waitlistEnabled;
   const isFisio = specKey === "fisio";
   const isPsicologaListaEspera = specKey === "psicologa" && wl;
@@ -350,17 +365,33 @@ function AgenteTurnoRow({
       </p>
       {!ocultarEsgotadoPorListaEspera && (
         <p
-          style={{
-            ...styles.livresResumo,
-            marginTop: 6,
-            fontSize: 14,
-            fontWeight: livres > 0 ? 600 : 700,
-            color: livres > 0 ? "#15803D" : "#B91C1C",
-          }}
+          style={
+            somenteEncaixe
+              ? { ...styles.encaixeAgenteAviso, marginTop: 6 }
+              : {
+                  ...styles.livresResumo,
+                  marginTop: 6,
+                  fontSize: 14,
+                  fontWeight: livresComuns > 0 ? 600 : 700,
+                  color: livresComuns > 0 ? "#15803D" : "#B91C1C",
+                }
+          }
         >
-          {livres > 0
-            ? `${livres} ${livres === 1 ? "vaga disponível" : "vagas disponíveis"}`
-            : "Vagas esgotadas nesta data"}
+          {somenteEncaixe ? (
+            fraseVagasEsgotadasEncaixe({
+              livres,
+              medicoTipo: sess.medicoTipo,
+              pccuOnly: sess.pccuOnly,
+              specKey,
+              sessLabel: sess.label,
+            })
+          ) : livresComuns > 0 ? (
+            `${livresComuns} ${
+              livresComuns === 1 ? "vaga disponível" : "vagas disponíveis"
+            }`
+          ) : (
+            "Vagas esgotadas nesta data"
+          )}
         </p>
       )}
       {isFisio && livres === 0 && (
@@ -376,7 +407,7 @@ function AgenteTurnoRow({
       {podeSolicitar && (
         <button
           type="button"
-          style={styles.btnSolicAgente}
+          style={somenteEncaixe ? styles.btnSolicEncaixe : styles.btnSolicAgente}
           onClick={() =>
             onSolicitar({
               specKey,
@@ -384,12 +415,15 @@ function AgenteTurnoRow({
               sessIdx,
               sessLabel: sess.label,
               medicoTipo: sess.medicoTipo,
+              pccuOnly: !!sess.pccuOnly,
+              livresEncaixe: livres,
               atendimentoDate,
               solicitacaoEncaminhamentoObrigatorio,
+              somenteEncaixe,
             })
           }
         >
-          Solicitar agendamento
+          {somenteEncaixe ? "Solicitar encaixe" : "Solicitar agendamento"}
         </button>
       )}
     </div>
@@ -494,20 +528,58 @@ function SessionRow({
   const used = sess.used ?? 0;
   const reserved = sess.reserved ?? 0;
   const total = sess.total ?? 0;
-  const ocupadas = used;
   const livres = total - used - reserved;
+  const filled = used + reserved;
+  const encaixeExtra = sess.encaixeExtra ?? 0;
+  const baseAgenda = Math.max(0, total - encaixeExtra);
+  /** Com encaixe: só mostra vagas comuns até lotar; depois só encaixe. */
+  const temEncaixe = encaixeExtra > 0;
+  const faseComuns = temEncaixe && filled < baseAgenda;
+  const faseEncaixe = temEncaixe && filled >= baseAgenda && filled < total;
+  const agendaCheia = filled >= total;
+
+  let livresRecepcao = livres;
+  let textoPill = "";
+  let pct = 0;
+  if (temEncaixe) {
+    if (faseComuns) {
+      livresRecepcao = baseAgenda - filled;
+      textoPill = `${livresRecepcao}/${baseAgenda} livres (comuns)`;
+      pct = baseAgenda ? Math.min(100, Math.round((filled / baseAgenda) * 100)) : 0;
+    } else if (!agendaCheia) {
+      livresRecepcao = total - filled;
+      textoPill = `${livresRecepcao}/${encaixeExtra} encaixe(s) livre(s)`;
+      pct = encaixeExtra
+        ? Math.min(100, Math.round(((filled - baseAgenda) / encaixeExtra) * 100))
+        : 0;
+    } else {
+      livresRecepcao = 0;
+      textoPill = `0/${total} livres`;
+      pct = 100;
+    }
+  } else {
+    textoPill = `${livres}/${total} livres`;
+    pct = total ? Math.min(100, Math.round((filled / total) * 100)) : 0;
+  }
 
   const cheio = livres <= 0;
-  const pct = total ? Math.min(100, Math.round(((used + reserved) / total) * 100)) : 0;
   const barFillBg = cheio
     ? "#22C55E"
-    : used + reserved === 0
+    : filled === 0
       ? "#22C55E"
-      : "#3B82F6";
+      : faseEncaixe
+        ? "#EA580C"
+        : "#3B82F6";
+
+  const podeConfirmarReserva = reserved > 0 && used < total && livres <= 0;
+  const podeAdd =
+    podePreencherVaga(reserved, used, total, livres) &&
+    (livresRecepcao > 0 || podeConfirmarReserva);
+  const liberarEncaixe = temEncaixe && filled > baseAgenda;
 
   return (
     <div style={styles.sessRow}>
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ width: "100%", minWidth: 0 }}>
         <div style={styles.sessTitleRow}>
           <p style={styles.sessLabel}>
             {sess.label}
@@ -517,10 +589,10 @@ function SessionRow({
           <span
             style={{
               ...styles.ratioPill,
-              color: cheio ? "#15803D" : livres > 0 ? "#166534" : "#991B1B",
+              color: cheio ? "#15803D" : livresRecepcao > 0 ? "#166534" : "#991B1B",
             }}
           >
-            {livres}/{total} livres
+            {textoPill}
           </span>
         </div>
         <div
@@ -540,13 +612,11 @@ function SessionRow({
         </div>
         <div style={styles.statsRow}>
           <span>
-            <strong style={{ color: "#166534" }}>{livres}</strong> livre(s)
+            <strong style={{ color: "#166534" }}>{livresRecepcao}</strong>{" "}
+            {temEncaixe ? (faseEncaixe ? "encaixe(s) livre(s)" : "livre(s) (comuns)") : "livre(s)"}
           </span>
           <span>
             <strong style={{ color: "#C2410C" }}>{reserved}</strong> reserva(s)
-          </span>
-          <span>
-            <strong style={{ color: "#475569" }}>{ocupadas}</strong> confirmada(s)
           </span>
         </div>
       </div>
@@ -554,13 +624,15 @@ function SessionRow({
         <div style={styles.recepPair} role="group" aria-label="Ajustar vagas preenchidas">
           <button
             type="button"
-            style={styles.btnRecepAdd}
-            disabled={!podePreencherVaga(reserved, used, total, livres)}
+            style={faseEncaixe ? styles.btnRecepAddEncaixe : styles.btnRecepAdd}
+            disabled={!podeAdd}
             title={
-              livres > 0
-                ? "Adicionar uma vaga confirmada (preenchida)"
+              livresRecepcao > 0 && livres > 0
+                ? faseEncaixe
+                  ? "Registrar agendamento de encaixe"
+                  : "Registrar agendamento (vaga comum)"
                 : reserved > 0 && used < total
-                  ? "Confirmar reserva pendente como vaga preenchida"
+                  ? "Confirmar reserva pendente como agendamento"
                   : ""
             }
             onClick={() =>
@@ -577,18 +649,20 @@ function SessionRow({
               })
             }
           >
-            + Preencher
+            {faseEncaixe ? "+ Preencher encaixe" : "+ Preencher"}
           </button>
           <button
             type="button"
-            style={styles.btnRecepRemove}
+            style={liberarEncaixe ? styles.btnRecepRemoveEncaixe : styles.btnRecepRemove}
             disabled={reserved <= 0 && used <= 0}
             title={
               reserved > 0
                 ? "Remover uma reserva pendente"
-                : used > 0
-                  ? "Liberar uma vaga confirmada"
-                  : ""
+                : liberarEncaixe
+                  ? "Cancelar agendamento de encaixe"
+                  : used > 0
+                    ? "Cancelar agendamento (vaga comum)"
+                    : ""
             }
             onClick={() =>
               liberarVaga({
@@ -602,7 +676,7 @@ function SessionRow({
               })
             }
           >
-            − Liberar
+            {liberarEncaixe ? "− Liberar encaixe" : "− Liberar"}
           </button>
         </div>
       </div>
@@ -737,9 +811,8 @@ const styles = {
   },
   sessRow: {
     display: "flex",
+    flexDirection: "column",
     alignItems: "stretch",
-    justifyContent: "space-between",
-    flexWrap: "wrap",
     gap: 12,
     padding: "12px 12px",
     background: "#F8FAFC",
@@ -751,8 +824,10 @@ const styles = {
     display: "flex",
     alignItems: "flex-start",
     justifyContent: "space-between",
-    gap: 8,
+    flexWrap: "wrap",
+    gap: "8px 12px",
     marginBottom: 8,
+    rowGap: 8,
   },
   sessLabel: {
     fontSize: 13,
@@ -764,6 +839,8 @@ const styles = {
     flexWrap: "wrap",
     gap: 4,
     lineHeight: 1.35,
+    minWidth: 0,
+    flex: "1 1 140px",
   },
   ratioPill: {
     fontSize: 11,
@@ -772,6 +849,9 @@ const styles = {
     borderRadius: 6,
     background: "#F1F5F9",
     flexShrink: 0,
+    maxWidth: "100%",
+    textAlign: "right",
+    boxSizing: "border-box",
   },
   barTrack: {
     height: 6,
@@ -824,14 +904,17 @@ const styles = {
     flexDirection: "column",
     alignItems: "stretch",
     gap: 8,
-    minWidth: 168,
+    width: "100%",
+    minWidth: 0,
     flexShrink: 0,
   },
   recepPair: {
     display: "flex",
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 8,
     width: "100%",
+    minWidth: 0,
   },
   btnRecepAdd: {
     flex: 1,
@@ -862,6 +945,36 @@ const styles = {
     lineHeight: 1.2,
     textAlign: "center",
     boxShadow: "0 1px 2px rgba(153, 27, 27, 0.1)",
+  },
+  btnRecepAddEncaixe: {
+    flex: 1,
+    minWidth: 0,
+    padding: "10px 8px",
+    fontSize: 13,
+    fontWeight: 800,
+    border: "2px solid #C2410C",
+    borderRadius: 8,
+    cursor: "pointer",
+    background: "linear-gradient(180deg, #FB923C 0%, #EA580C 100%)",
+    color: "#FFFBEB",
+    lineHeight: 1.2,
+    textAlign: "center",
+    boxShadow: "0 2px 8px rgba(234, 88, 12, 0.45)",
+  },
+  btnRecepRemoveEncaixe: {
+    flex: 1,
+    minWidth: 0,
+    padding: "10px 8px",
+    fontSize: 13,
+    fontWeight: 800,
+    border: "2px solid #6D28D9",
+    borderRadius: 8,
+    cursor: "pointer",
+    background: "linear-gradient(180deg, #A78BFA 0%, #7C3AED 100%)",
+    color: "#FAF5FF",
+    lineHeight: 1.2,
+    textAlign: "center",
+    boxShadow: "0 2px 8px rgba(124, 58, 237, 0.4)",
   },
   waitlistHint: { fontSize: 11, color: "#D97706", margin: "6px 0 0", fontWeight: 500 },
   pccuTag: {
@@ -908,5 +1021,24 @@ const styles = {
     background: "#0C447C",
     color: "#fff",
     boxShadow: "0 1px 2px rgba(12, 68, 124, 0.25)",
+  },
+  btnSolicEncaixe: {
+    marginTop: 10,
+    width: "100%",
+    padding: "10px 14px",
+    fontSize: 12,
+    fontWeight: 700,
+    border: "1px solid #B91C1C",
+    borderRadius: 8,
+    cursor: "pointer",
+    background: "linear-gradient(180deg, #EF4444 0%, #DC2626 100%)",
+    color: "#fff",
+    boxShadow: "0 2px 6px rgba(185, 28, 28, 0.35)",
+  },
+  encaixeAgenteAviso: {
+    fontSize: 14,
+    fontWeight: 600,
+    lineHeight: 1.45,
+    color: "#9A3412",
   },
 };
