@@ -99,8 +99,8 @@ export const BASE_SCHEDULE = {
       {
         key: "enfermeira",
         sessions: [
-          { label: "Manhã", total: 8 },
-          { label: "Tarde", total: 8 },
+          { label: "Manhã", total: 15 },
+          { label: "Tarde", total: 10 },
         ],
       },
     ],
@@ -120,11 +120,11 @@ export const BASE_SCHEDULE = {
         key: "enfermeira",
         sessions: [
           {
-            label: "Manhã – PCCU (exame preventivo colo do útero)",
-            total: 8,
+            label: "Manhã – PCCU",
+            total: 15,
             pccuOnly: true,
           },
-          { label: "Tarde – Enfermagem geral", total: 8 },
+          { label: "Tarde – Enfermagem geral", total: 10 },
         ],
       },
     ],
@@ -158,8 +158,8 @@ export const BASE_SCHEDULE = {
       {
         key: "enfermeira",
         sessions: [
-          { label: "Manhã", total: 8 },
-          { label: "Tarde", total: 8 },
+          { label: "Manhã", total: 15 },
+          { label: "Tarde", total: 10 },
         ],
       },
     ],
@@ -182,15 +182,33 @@ export const BASE_SCHEDULE = {
       {
         key: "enfermeira",
         sessions: [
-          { label: "Manhã", total: 8 },
-          { label: "Tarde", total: 8 },
+          { label: "Manhã", total: 15 },
+          { label: "Tarde", total: 10 },
         ],
       },
     ],
   },
 };
 
-export const DEFAULT_PCCU_TOTAL = 8;
+export const DEFAULT_PCCU_TOTAL = 15;
+
+/** Vagas extras por turno (manhã/tarde), além da agenda — urgência ou zona rural. Fisioterapia não recebe. */
+export const ENCAXE_POR_TURNO = 2;
+
+export function encaixeExtraForSpec(specKey) {
+  return specKey === "fisio" ? 0 : ENCAXE_POR_TURNO;
+}
+
+/**
+ * Total efetivo de vagas no turno (agenda base + encaixe), alinhado à UI e ao Firestore.
+ */
+export function sessionTotalEffective(dayKey, specKey, sessIdx, pccuTotal) {
+  const spec = BASE_SCHEDULE[dayKey]?.specs.find((s) => s.key === specKey);
+  const sess = spec?.sessions?.[sessIdx];
+  if (!sess) return 0;
+  const base = sess.pccuOnly ? (pccuTotal ?? sess.total ?? DEFAULT_PCCU_TOTAL) : sess.total;
+  return base + encaixeExtraForSpec(specKey);
+}
 
 /** Data local YYYY-MM-DD (evita deslocamento UTC) */
 export function toDateStr(date) {
@@ -283,9 +301,11 @@ export function collectAtendimentoDatesForListener(today, fernandoFora) {
 }
 
 function cloneSessionsWithTotals(spec, pccuTotal) {
+  const extra = encaixeExtraForSpec(spec.key);
   return spec.sessions.map((sess) => {
-    const total = sess.pccuOnly ? (pccuTotal ?? sess.total ?? DEFAULT_PCCU_TOTAL) : sess.total;
-    return { ...sess, total };
+    const base = sess.pccuOnly ? (pccuTotal ?? sess.total ?? DEFAULT_PCCU_TOTAL) : sess.total;
+    const total = base + extra;
+    return { ...sess, total, encaixeExtra: extra };
   });
 }
 
@@ -346,8 +366,16 @@ function dedupeAgendaQualquerDiaUtil(segments) {
 
 /**
  * Monta cartões visíveis: janela "prev" (dia útil de agendamento) e "same" (sobras no dia do atendimento).
+ * @param {boolean} [recepcao] — Se true, mantém cartões de atendimento no dia atual mesmo com agenda cheia (recepção precisa liberar vagas).
  */
-export function buildVisibleSegments({ today, feriados, fernandoFora, vagasMap, pccuTotal }) {
+export function buildVisibleSegments({
+  today,
+  feriados,
+  fernandoFora,
+  vagasMap,
+  pccuTotal,
+  recepcao = false,
+}) {
   const holidaySet = holidaySetFromArray(feriados);
   const todayStr = toDateStr(today);
   const dedupe = new Set();
@@ -393,7 +421,7 @@ export function buildVisibleSegments({ today, feriados, fernandoFora, vagasMap, 
           }
         }
 
-        if (attStr === todayStr && temVaga) {
+        if (attStr === todayStr && (temVaga || recepcao)) {
           const k = `same-${spec.key}-${atendimentoDia}-${attStr}`;
           if (!dedupe.has(k)) {
             dedupe.add(k);
@@ -422,5 +450,6 @@ export function getSpecsVisiveis(vagasMap, profNames, options = {}) {
     fernandoFora: options.fernandoFora ?? false,
     vagasMap,
     pccuTotal: options.pccuTotal ?? DEFAULT_PCCU_TOTAL,
+    recepcao: options.recepcao ?? false,
   });
 }

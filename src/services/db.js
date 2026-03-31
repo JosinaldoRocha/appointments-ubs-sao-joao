@@ -91,7 +91,7 @@ export function listenSettings(callback) {
       callback({
         feriados: [],
         fernandoForaUnidade: false,
-        pccuTotal: 8,
+        pccuTotal: 15,
         recepcionistaAtivoWhatsapp: "",
         recepcionistaAtivoNome: "",
       });
@@ -101,7 +101,7 @@ export function listenSettings(callback) {
     callback({
       feriados: Array.isArray(d.feriados) ? d.feriados : [],
       fernandoForaUnidade: Boolean(d.fernandoForaUnidade),
-      pccuTotal: typeof d.pccuTotal === "number" ? d.pccuTotal : 8,
+      pccuTotal: typeof d.pccuTotal === "number" ? d.pccuTotal : 15,
       recepcionistaAtivoWhatsapp:
         typeof d.recepcionistaAtivoWhatsapp === "string" ? d.recepcionistaAtivoWhatsapp : "",
       recepcionistaAtivoNome:
