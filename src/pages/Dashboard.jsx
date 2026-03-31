@@ -359,7 +359,6 @@ export default function Dashboard() {
           <TabVagas
             specs={specsVisiveis}
             profissionaisMap={profissionaisMap}
-            feriados={settings.feriados}
             isRecepcao={isRecepcao}
             onSlotAction={handleSlotAction}
             onSolicitar={

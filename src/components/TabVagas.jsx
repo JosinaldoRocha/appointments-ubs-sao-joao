@@ -4,16 +4,22 @@ import {
   DAY_LABEL,
   MEDICO_TIPO,
   DEFAULT_PROF_NAMES,
-  todayKey,
   toDateStr,
-  holidaySetFromArray,
-  nextBusinessDay,
 } from "../services/scheduleConfig";
 
-/** Ordem das seções de agendamento (prev) na tela. */
-const ORDER_DIA_ATENDIMENTO = ["segunda", "terca", "quarta", "quinta", "sexta"];
+function dataHojeIso() {
+  return toDateStr(new Date());
+}
 
-/** Data no título da seção: ex. "30 de Março" (sem dia da semana). */
+/** Amanhã no calendário local (YYYY-MM-DD). */
+function dataAmanhaIso() {
+  const d = new Date();
+  d.setHours(12, 0, 0, 0);
+  d.setDate(d.getDate() + 1);
+  return toDateStr(d);
+}
+
+/** Data no título: ex. "30 de Março" (sem dia da semana). */
 function formatDataTituloSecao(isoDateStr) {
   const raw = new Date(isoDateStr + "T12:00:00").toLocaleDateString("pt-BR", {
     day: "numeric",
@@ -26,22 +32,51 @@ function formatDataTituloSecao(isoDateStr) {
   return `${dia} de ${mes.charAt(0).toUpperCase() + mes.slice(1)}`;
 }
 
+/** Nome longo do dia da semana a partir da data ISO (ex. "Terça-feira"). */
+function nomeDiaSemanaLongo(isoDateStr) {
+  const raw = new Date(isoDateStr + "T12:00:00").toLocaleDateString("pt-BR", { weekday: "long" });
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
+const STYLE_TITULO_DESTAQUE = { color: "#0C447C", fontWeight: 700 };
+
 /**
- * Título da seção "Agendamento — atendimento em …" com sufixo contextual opcional.
- * @param {string} atendimentoDia — chave do dia (ex.: "terca")
- * @param {string | null} hoje — retorno de todayKey()
+ * Título da seção conforme a data do agendamento:
+ * - hoje → "Atendimento disponível para hoje"
+ * - amanhã → "Agendamento para amanhã - [dia da semana] - [dia de mês]"
+ * - demais → "Agendamento para [dia da semana] - [dia de mês]"
  */
-function tituloSecaoAgendamento(atendimentoDia, hoje) {
-  const nomeDia = DAY_LABEL[atendimentoDia] || atendimentoDia;
-  let out = `Agendamento — atendimento em ${nomeDia}`;
-  if (atendimentoDia === "terca" && hoje === "segunda") {
-    out += " (Amanhã)";
-  } else if (atendimentoDia === "quinta" && hoje === "quarta") {
-    out += " (ou amanhã, se hoje for quarta-feira)";
-  } else if (atendimentoDia === "sexta" && hoje === "quinta") {
-    out += " (ou amanhã se hoje for quinta-feira)";
+function TituloAgendamentoDisponivel({ isoDateStr }) {
+  if (!isoDateStr) {
+    return <span style={STYLE_TITULO_DESTAQUE}>Agendamento</span>;
   }
-  return out;
+  const hoje = dataHojeIso();
+  const amanha = dataAmanhaIso();
+
+  if (isoDateStr === hoje) {
+    return (
+      <>
+        <span style={STYLE_TITULO_DESTAQUE}>Atendimento</span>
+        {" disponível para hoje"}
+      </>
+    );
+  }
+
+  if (isoDateStr === amanha) {
+    return (
+      <>
+        <span style={STYLE_TITULO_DESTAQUE}>Agendamento</span>
+        {` para amanhã - ${nomeDiaSemanaLongo(isoDateStr)} - ${formatDataTituloSecao(isoDateStr)}`}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <span style={STYLE_TITULO_DESTAQUE}>Agendamento</span>
+      {` para ${nomeDiaSemanaLongo(isoDateStr)} - ${formatDataTituloSecao(isoDateStr)}`}
+    </>
+  );
 }
 
 /** Menor data ISO entre os cartões da seção (mesmo dia da semana de atendimento). */
@@ -55,20 +90,6 @@ function menorAtendimentoDateLista(listaSpecs) {
   return min;
 }
 
-/**
- * Título da seção prev; se o atendimento não é hoje nem o próximo dia útil, acrescenta a data.
- */
-function tituloSecaoAgendamentoComData(atendimentoDia, hojeKey, listaSpecs, feriados) {
-  const base = tituloSecaoAgendamento(atendimentoDia, hojeKey);
-  const attStr = menorAtendimentoDateLista(listaSpecs);
-  if (!attStr) return base;
-  const holidaySet = holidaySetFromArray(feriados);
-  const hojeStr = toDateStr(new Date());
-  const proximoDiaUtilStr = toDateStr(nextBusinessDay(new Date(), holidaySet));
-  if (attStr === hojeStr || attStr === proximoDiaUtilStr) return base;
-  return `${base} — ${formatDataTituloSecao(attStr)}`;
-}
-
 /** Agrupa cartões prev por `atendimentoDia`. */
 function agruparPrevPorDia(prevSpecs) {
   const map = {};
@@ -78,6 +99,23 @@ function agruparPrevPorDia(prevSpecs) {
     map[d].push(spec);
   }
   return map;
+}
+
+/** Lista `{ dia, lista }` ordenada pela menor data de atendimento (crescente). */
+function secoesPrevOrdenadasPorData(prevPorDia) {
+  return Object.entries(prevPorDia)
+    .map(([dia, lista]) => ({
+      dia,
+      lista,
+      dataMin: menorAtendimentoDateLista(lista) || "",
+    }))
+    .filter((s) => s.lista?.length)
+    .sort((a, b) => {
+      if (a.dataMin && b.dataMin) return a.dataMin.localeCompare(b.dataMin);
+      if (a.dataMin) return -1;
+      if (b.dataMin) return 1;
+      return 0;
+    });
 }
 
 /** Nome exibido: campo `nome` em `profissionais` (via specKey), depois rótulos padrão da agenda. */
@@ -148,7 +186,6 @@ function hasAnyVacancy(specs) {
 export default function TabVagas({
   specs,
   profissionaisMap = {},
-  feriados = [],
   isRecepcao,
   onSlotAction,
   onSolicitar,
@@ -156,7 +193,7 @@ export default function TabVagas({
   const prev = specs.filter((s) => s.windowType === "prev");
   const same = specs.filter((s) => s.windowType === "same");
   const prevPorDia = agruparPrevPorDia(prev);
-  const diaHoje = todayKey();
+  const prevSecoes = secoesPrevOrdenadasPorData(prevPorDia);
   const semVagasLivres = specs.length > 0 && !hasAnyVacancy(specs);
 
   if (specs.length === 0) {
@@ -198,7 +235,10 @@ export default function TabVagas({
       )}
 
       {same.length > 0 && (
-        <Section title="Atendimento hoje — vagas disponíveis agora" highlight>
+        <Section
+          sentenceTitle
+          title={<TituloAgendamentoDisponivel isoDateStr={same[0]?.atendimentoDate} />}
+        >
           {same.map((spec) => (
             <SpecCard
               key={`same-${spec.atendimentoDate}_${spec.key}`}
@@ -212,35 +252,40 @@ export default function TabVagas({
         </Section>
       )}
 
-      {ORDER_DIA_ATENDIMENTO.map((dia) => {
-        const lista = prevPorDia[dia];
-        if (!lista?.length) return null;
-        return (
-          <Section
-            key={`prev-sec-${dia}`}
-            title={tituloSecaoAgendamentoComData(dia, diaHoje, lista, feriados)}
-          >
-            {lista.map((spec) => (
-              <SpecCard
-                key={`prev-${spec.atendimentoDate}_${spec.key}`}
-                spec={spec}
-                profissionaisMap={profissionaisMap}
-                isRecepcao={isRecepcao}
-                onSlotAction={onSlotAction}
-                onSolicitar={onSolicitar}
-              />
-            ))}
-          </Section>
-        );
-      })}
+      {prevSecoes.map(({ dia, lista, dataMin }) => (
+        <Section
+          key={`prev-sec-${dia}-${dataMin || "x"}`}
+          sentenceTitle
+          title={<TituloAgendamentoDisponivel isoDateStr={dataMin} />}
+        >
+          {lista.map((spec) => (
+            <SpecCard
+              key={`prev-${spec.atendimentoDate}_${spec.key}`}
+              spec={spec}
+              profissionaisMap={profissionaisMap}
+              isRecepcao={isRecepcao}
+              onSlotAction={onSlotAction}
+              onSolicitar={onSolicitar}
+            />
+          ))}
+        </Section>
+      ))}
     </div>
   );
 }
 
-function Section({ title, children, highlight }) {
+function Section({ title, children, sentenceTitle }) {
   return (
     <div style={styles.section}>
-      <p style={{ ...styles.sectionTitle, color: highlight ? "#15803D" : "#475569" }}>{title}</p>
+      <p
+        style={{
+          ...styles.sectionTitle,
+          ...(sentenceTitle ? styles.sectionTitleSentence : {}),
+          color: "#334155",
+        }}
+      >
+        {title}
+      </p>
       <div style={styles.grid}>{children}</div>
     </div>
   );
@@ -624,6 +669,14 @@ const styles = {
     margin: "0 0 14px",
     paddingBottom: 8,
     borderBottom: "2px solid #E2E8F0",
+  },
+  /** Título em frase (agendamento disponível); sem caixa alta forçada. */
+  sectionTitleSentence: {
+    textTransform: "none",
+    letterSpacing: "normal",
+    fontSize: 14,
+    fontWeight: 500,
+    lineHeight: 1.45,
   },
   grid: {
     display: "grid",
