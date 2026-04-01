@@ -219,6 +219,45 @@ export function toDateStr(date) {
   return `${y}-${m}-${day}`;
 }
 
+/** Minutos desde meia-noite até o fim do turno da manhã (início da tarde). Padrão: 12:30. */
+const TURNO_MANHA_FIM_MINUTOS = 12 * 60 + 30;
+
+/** `"manha"` ou `"tarde"` conforme o relógio local. */
+export function turnoAtualDoRelogio(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date);
+  const min = d.getHours() * 60 + d.getMinutes();
+  return min < TURNO_MANHA_FIM_MINUTOS ? "manha" : "tarde";
+}
+
+/** A partir do rótulo da sessão (ex.: "Manhã – Clínico"), retorna `"manha"` | `"tarde"` | null. */
+export function sessaoLabelParaTurno(label) {
+  const s = String(label || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\u0300-\u036f/g, "");
+  if (s.startsWith("manha")) return "manha";
+  if (s.startsWith("tarde")) return "tarde";
+  return null;
+}
+
+/** O cartão tem pelo menos uma sessão no turno indicado. */
+export function specTemSessaoNoTurno(spec, turno) {
+  if (!turno || !spec?.sessions?.length) return false;
+  return spec.sessions.some((s) => sessaoLabelParaTurno(s.label) === turno);
+}
+
+/**
+ * Recepção: pode exibir "Atendimento finalizado" — só em card de atendimento hoje (`same`),
+ * no turno (manhã/tarde) que coincide com o relógio.
+ */
+export function recepcaoPodeMarcarAtendimentoFinalizado(spec, agora = new Date()) {
+  if (spec.windowType !== "same") return false;
+  const hoje = toDateStr(agora);
+  if (spec.atendimentoDate !== hoje) return false;
+  return specTemSessaoNoTurno(spec, turnoAtualDoRelogio(agora));
+}
+
 export function parseDateStr(iso) {
   const [y, m, d] = iso.split("-").map(Number);
   const dt = new Date(y, m - 1, d, 12, 0, 0, 0);
