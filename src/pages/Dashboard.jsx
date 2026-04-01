@@ -10,6 +10,7 @@ import {
   registrarNotificacaoVagasEsgotadas,
   listenSettings,
   updateSettings,
+  setAtendimentoEncerradoFlag,
 } from "../services/db";
 import {
   buildVisibleSegments,
@@ -56,6 +57,7 @@ export default function Dashboard() {
     pccuTotal: DEFAULT_PCCU_TOTAL,
     recepcionistaAtivoWhatsapp: "",
     recepcionistaAtivoNome: "",
+    atendimentoEncerradoPorSpecData: {},
   });
   const [modal, setModal] = useState(null);
   const [toast, setToast] = useState(null);
@@ -92,6 +94,25 @@ export default function Dashboard() {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3500);
   }
+
+  const handleToggleAtendimentoEncerrado = useCallback(
+    async (specKey, atendimentoDate, encerrar) => {
+      if (!isRecepcao) return;
+      try {
+        await setAtendimentoEncerradoFlag(specKey, atendimentoDate, encerrar);
+        showToast(
+          encerrar
+            ? "Aviso de encerramento enviado para agentes e direção."
+            : "Aviso de encerramento removido.",
+          "success"
+        );
+      } catch (e) {
+        console.error(e);
+        showToast("Não foi possível atualizar. Tente de novo.", "danger");
+      }
+    },
+    [isRecepcao]
+  );
 
   const handleSlotAction = useCallback(
     async ({ specKey, dayKey, sessIdx, atendimentoDate, action, silent }) => {
@@ -361,6 +382,10 @@ export default function Dashboard() {
             profissionaisMap={profissionaisMap}
             isRecepcao={isRecepcao}
             onSlotAction={handleSlotAction}
+            atendimentoEncerradoMap={settings.atendimentoEncerradoPorSpecData || {}}
+            onToggleAtendimentoEncerrado={
+              isRecepcao ? handleToggleAtendimentoEncerrado : undefined
+            }
             onSolicitar={
               isRecepcao
                 ? undefined
