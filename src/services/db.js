@@ -16,6 +16,7 @@ import {
   serverTimestamp,
   arrayUnion,
   arrayRemove,
+  deleteField,
 } from "firebase/firestore";
 import { db } from "./firebase";
 
@@ -94,10 +95,12 @@ export function listenSettings(callback) {
         pccuTotal: 15,
         recepcionistaAtivoWhatsapp: "",
         recepcionistaAtivoNome: "",
+        atendimentoEncerradoPorSpecData: {},
       });
       return;
     }
     const d = snap.data();
+    const encMap = d.atendimentoEncerradoPorSpecData;
     callback({
       feriados: Array.isArray(d.feriados) ? d.feriados : [],
       fernandoForaUnidade: Boolean(d.fernandoForaUnidade),
@@ -106,6 +109,8 @@ export function listenSettings(callback) {
         typeof d.recepcionistaAtivoWhatsapp === "string" ? d.recepcionistaAtivoWhatsapp : "",
       recepcionistaAtivoNome:
         typeof d.recepcionistaAtivoNome === "string" ? d.recepcionistaAtivoNome : "",
+      atendimentoEncerradoPorSpecData:
+        encMap && typeof encMap === "object" && !Array.isArray(encMap) ? { ...encMap } : {},
     });
   });
 }
@@ -114,6 +119,29 @@ export async function updateSettings(partial) {
   await setDoc(
     doc(db, "settings", SETTINGS_ID),
     { ...partial, atualizadoEm: serverTimestamp() },
+    { merge: true }
+  );
+}
+
+/** Chave única para aviso “atendimento encerrado” no card (spec + data de atendimento). */
+export function atendimentoEncerradoKey(specKey, atendimentoDate) {
+  return `${specKey}_${atendimentoDate}`;
+}
+
+/**
+ * Marca ou remove o aviso de atendimento encerrado.
+ * Usa `deleteField` no mapa aninhado para a remoção ser aplicada no Firestore com merge.
+ */
+export async function setAtendimentoEncerradoFlag(specKey, atendimentoDate, encerrar) {
+  const key = atendimentoEncerradoKey(specKey, atendimentoDate);
+  await setDoc(
+    doc(db, "settings", SETTINGS_ID),
+    {
+      atualizadoEm: serverTimestamp(),
+      atendimentoEncerradoPorSpecData: encerrar
+        ? { [key]: true }
+        : { [key]: deleteField() },
+    },
     { merge: true }
   );
 }
