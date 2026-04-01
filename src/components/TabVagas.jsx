@@ -1,11 +1,14 @@
 // src/components/TabVagas.jsx
+import { useMemo, useState, useEffect } from "react";
 import {
   SPEC_META,
   DAY_LABEL,
   MEDICO_TIPO,
   DEFAULT_PROF_NAMES,
   toDateStr,
+  recepcaoPodeMarcarAtendimentoFinalizado,
 } from "../services/scheduleConfig";
+import { atendimentoEncerradoKey } from "../services/db";
 import { fraseVagasEsgotadasEncaixe } from "../services/whatsappSolicitacao";
 
 function dataHojeIso() {
@@ -172,6 +175,19 @@ function liberarVaga({ specKey, dayKey, sessIdx, atendimentoDate, reserved, used
   }
 }
 
+/**
+ * Recepção: botão no card de atendimento hoje — marcar só no turno atual; remover aviso em qualquer
+ * horário do mesmo dia (para não bloquear após o turno).
+ */
+function recepcaoMostrarBotaoEncerrado(spec, atendimentoEncerradoMap, agora, onToggle) {
+  if (typeof onToggle !== "function" || spec.windowType !== "same") return false;
+  const hoje = toDateStr(agora);
+  if (spec.atendimentoDate !== hoje) return false;
+  const k = atendimentoEncerradoKey(spec.key, spec.atendimentoDate);
+  if (atendimentoEncerradoMap[k]) return true;
+  return recepcaoPodeMarcarAtendimentoFinalizado(spec, agora);
+}
+
 /** Há vaga livre na agenda ou sessão com solicitação por WhatsApp (ex.: fisioterapia). */
 function hasAnyVacancy(specs) {
   return specs.some((spec) =>
@@ -190,12 +206,31 @@ export default function TabVagas({
   isRecepcao,
   onSlotAction,
   onSolicitar,
+  atendimentoEncerradoMap = {},
+  onToggleAtendimentoEncerrado,
 }) {
-  const prev = specs.filter((s) => s.windowType === "prev");
-  const same = specs.filter((s) => s.windowType === "same");
+  const [agoraRecepcao, setAgoraRecepcao] = useState(() => new Date());
+  useEffect(() => {
+    const t = setInterval(() => setAgoraRecepcao(new Date()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const specsLista = useMemo(() => {
+    if (isRecepcao) return specs;
+    const map = atendimentoEncerradoMap || {};
+    return specs.filter((s) => {
+      const d = s.atendimentoDate;
+      if (typeof d !== "string" || !d) return true;
+      const k = atendimentoEncerradoKey(s.key, d);
+      return !map[k];
+    });
+  }, [specs, atendimentoEncerradoMap, isRecepcao]);
+
+  const prev = specsLista.filter((s) => s.windowType === "prev");
+  const same = specsLista.filter((s) => s.windowType === "same");
   const prevPorDia = agruparPrevPorDia(prev);
   const prevSecoes = secoesPrevOrdenadasPorData(prevPorDia);
-  const semVagasLivres = specs.length > 0 && !hasAnyVacancy(specs);
+  const semVagasLivres = specsLista.length > 0 && !hasAnyVacancy(specsLista);
 
   if (specs.length === 0) {
     return (
@@ -206,6 +241,20 @@ export default function TabVagas({
         <p style={{ fontSize: 13, color: "#64748B" }}>
           Em geral, o agendamento abre no último dia útil anterior ao atendimento (feriados são
           considerados). Nutrição, fisioterapia e psicologia permitem agendar em qualquer dia útil (conforme o card).
+        </p>
+      </div>
+    );
+  }
+
+  if (specsLista.length === 0 && !isRecepcao) {
+    return (
+      <div style={styles.empty}>
+        <p style={{ fontSize: 15, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>
+          Nenhum cartão de atendimento visível
+        </p>
+        <p style={{ fontSize: 13, color: "#64748B", lineHeight: 1.5 }}>
+          Os atendimentos de hoje marcados como encerrados pela recepção ficam ocultos aqui. Quando a
+          recepção remover o aviso, os cartões voltam a aparecer.
         </p>
       </div>
     );
@@ -253,6 +302,14 @@ export default function TabVagas({
               isRecepcao={isRecepcao}
               onSlotAction={onSlotAction}
               onSolicitar={onSolicitar}
+              atendimentoEncerradoMap={atendimentoEncerradoMap}
+              onToggleAtendimentoEncerrado={onToggleAtendimentoEncerrado}
+              mostrarBotaoEncerradoRecepcao={recepcaoMostrarBotaoEncerrado(
+                spec,
+                atendimentoEncerradoMap,
+                agoraRecepcao,
+                onToggleAtendimentoEncerrado
+              )}
             />
           ))}
         </Section>
@@ -272,6 +329,14 @@ export default function TabVagas({
               isRecepcao={isRecepcao}
               onSlotAction={onSlotAction}
               onSolicitar={onSolicitar}
+              atendimentoEncerradoMap={atendimentoEncerradoMap}
+              onToggleAtendimentoEncerrado={onToggleAtendimentoEncerrado}
+              mostrarBotaoEncerradoRecepcao={recepcaoMostrarBotaoEncerrado(
+                spec,
+                atendimentoEncerradoMap,
+                agoraRecepcao,
+                onToggleAtendimentoEncerrado
+              )}
             />
           ))}
         </Section>
@@ -430,7 +495,16 @@ function AgenteTurnoRow({
   );
 }
 
-function SpecCard({ spec, profissionaisMap, isRecepcao, onSlotAction, onSolicitar }) {
+function SpecCard({
+  spec,
+  profissionaisMap,
+  isRecepcao,
+  onSlotAction,
+  onSolicitar,
+  atendimentoEncerradoMap = {},
+  onToggleAtendimentoEncerrado,
+  mostrarBotaoEncerradoRecepcao = false,
+}) {
   const meta = SPEC_META[spec.key] || { role: "", av: "?", bg: "#F1F5F9", tc: "#475569" };
   const name = nomeProfissionalFirestore(spec.key, profissionaisMap);
   const hasSome = spec.sessions.some((s) => {
@@ -439,6 +513,14 @@ function SpecCard({ spec, profissionaisMap, isRecepcao, onSlotAction, onSolicita
     return (s.used ?? 0) + (s.reserved ?? 0) < tot;
   });
   const isSame = spec.windowType === "same";
+  const dataEncerrado =
+    typeof spec.atendimentoDate === "string" && spec.atendimentoDate
+      ? spec.atendimentoDate
+      : "";
+  const keyEncerrado =
+    dataEncerrado && atendimentoEncerradoKey(spec.key, dataEncerrado);
+  const atendimentoEncerradoAtivo =
+    !!keyEncerrado && !!atendimentoEncerradoMap[keyEncerrado];
 
   return (
     <div
@@ -511,6 +593,33 @@ function SpecCard({ spec, profissionaisMap, isRecepcao, onSlotAction, onSolicita
               onSlotAction={onSlotAction}
             />
           ))}
+
+        {isRecepcao &&
+          mostrarBotaoEncerradoRecepcao &&
+          dataEncerrado &&
+          typeof onToggleAtendimentoEncerrado === "function" && (
+            <div style={styles.cardFooterRecepcao}>
+              <button
+                type="button"
+                style={
+                  atendimentoEncerradoAtivo
+                    ? styles.btnAtendimentoEncerradoAtivo
+                    : styles.btnAtendimentoFinalizado
+                }
+                onClick={() =>
+                  onToggleAtendimentoEncerrado(
+                    spec.key,
+                    dataEncerrado,
+                    !atendimentoEncerradoAtivo
+                  )
+                }
+              >
+                {atendimentoEncerradoAtivo
+                  ? "Remover aviso de atendimento encerrado"
+                  : "Atendimento finalizado"}
+              </button>
+            </div>
+          )}
       </div>
     </div>
   );
@@ -767,6 +876,37 @@ const styles = {
   },
   cardAccent: { height: 4, width: "100%", flexShrink: 0 },
   cardBody: { padding: "14px 16px 16px", display: "flex", flexDirection: "column", gap: 0, flex: 1 },
+  cardFooterRecepcao: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTop: "1px solid #EEF2F7",
+  },
+  btnAtendimentoFinalizado: {
+    width: "100%",
+    padding: "11px 14px",
+    fontSize: 13,
+    fontWeight: 700,
+    border: "1px solid #0C447C",
+    borderRadius: 8,
+    cursor: "pointer",
+    background: "linear-gradient(180deg, #0C447C 0%, #082F56 100%)",
+    color: "#fff",
+    boxShadow: "0 2px 8px rgba(12, 68, 124, 0.35)",
+    lineHeight: 1.3,
+  },
+  btnAtendimentoEncerradoAtivo: {
+    width: "100%",
+    padding: "11px 14px",
+    fontSize: 13,
+    fontWeight: 700,
+    border: "1px solid #94A3B8",
+    borderRadius: 8,
+    cursor: "pointer",
+    background: "#F1F5F9",
+    color: "#475569",
+    boxShadow: "none",
+    lineHeight: 1.3,
+  },
   cardHeader: {
     display: "flex",
     alignItems: "flex-start",
