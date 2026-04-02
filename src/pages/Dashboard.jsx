@@ -11,15 +11,22 @@ import {
   listenSettings,
   updateSettings,
   setAtendimentoEncerradoFlag,
+  digitosWhatsappRecepcaoParaSolicitacao,
 } from "../services/db";
 import {
   buildVisibleSegments,
   vagaDocId,
   toDateStr,
   DEFAULT_PCCU_TOTAL,
+  DEFAULT_PROF_NAMES,
   collectAtendimentoDatesForListener,
   SPEC_META,
   sessionTotalEffective,
+  estaDentroExpedienteUbs,
+  MSG_FORA_EXPEDIENTE_UBS,
+  addDaysLocal,
+  shouldShowAvisoVisitaDomiciliarAmanha,
+  avisoSemAtendimentoUbAmanha,
 } from "../services/scheduleConfig";
 import { uploadDocumentoPacienteSolicitacao } from "../services/storageUpload";
 import {
@@ -31,7 +38,7 @@ import TabVagas from "../components/TabVagas";
 import TabConfig from "../components/TabConfig";
 import ModalAgendar from "../components/ModalAgendar";
 import Toast from "../components/Toast";
-import { isRecepcaoPerfil } from "../utils/perfilRole";
+import { isRecepcaoPerfil, isAgenteOuDiretorPerfil } from "../utils/perfilRole";
 
 const TABS = [{ key: "vagas", label: "Vagas" }];
 
@@ -53,10 +60,13 @@ export default function Dashboard() {
   }, [profissionaisMap]);
   const [settings, setSettings] = useState({
     feriados: [],
-    fernandoForaUnidade: false,
+    pontosFacultativos: [],
     pccuTotal: DEFAULT_PCCU_TOTAL,
+    dentQuartaVisitaDomiciliarDesde: "",
     recepcionistaAtivoWhatsapp: "",
     recepcionistaAtivoNome: "",
+    ultimoRecepcionistaWhatsapp: "",
+    ultimoRecepcionistaNome: "",
     atendimentoEncerradoPorSpecData: {},
   });
   const [modal, setModal] = useState(null);
@@ -64,8 +74,13 @@ export default function Dashboard() {
 
   const todayStr = toDateStr(new Date());
   const listenDates = useMemo(
-    () => collectAtendimentoDatesForListener(new Date(), settings.fernandoForaUnidade),
-    [todayStr, settings.fernandoForaUnidade]
+    () =>
+      collectAtendimentoDatesForListener(
+        new Date(),
+        settings.feriados,
+        settings.pontosFacultativos
+      ),
+    [todayStr, settings.feriados, settings.pontosFacultativos]
   );
 
   useEffect(() => {
@@ -87,6 +102,8 @@ export default function Dashboard() {
     updateSettings({
       recepcionistaAtivoWhatsapp: digits,
       recepcionistaAtivoNome: first,
+      ultimoRecepcionistaWhatsapp: digits,
+      ultimoRecepcionistaNome: first,
     }).catch(() => {});
   }, [isRecepcao, perfil?.id, perfil?.telefoneWhatsapp, perfil?.nome]);
 
@@ -96,10 +113,10 @@ export default function Dashboard() {
   }
 
   const handleToggleAtendimentoEncerrado = useCallback(
-    async (specKey, atendimentoDate, encerrar) => {
+    async (specKey, atendimentoDate, encerrar, turno) => {
       if (!isRecepcao) return;
       try {
-        await setAtendimentoEncerradoFlag(specKey, atendimentoDate, encerrar);
+        await setAtendimentoEncerradoFlag(specKey, atendimentoDate, encerrar, turno);
         showToast(
           encerrar
             ? "Aviso de encerramento enviado para agentes e direção."
@@ -117,7 +134,10 @@ export default function Dashboard() {
   const handleSlotAction = useCallback(
     async ({ specKey, dayKey, sessIdx, atendimentoDate, action, silent }) => {
       if (!isRecepcao) return;
-      const total = sessionTotalEffective(dayKey, specKey, sessIdx, settings.pccuTotal);
+      const total = sessionTotalEffective(dayKey, specKey, sessIdx, settings.pccuTotal, {
+        atendimentoDateStr: atendimentoDate,
+        dentQuartaVisitaDomiciliarDesde: settings.dentQuartaVisitaDomiciliarDesde,
+      });
       if (!total) return;
 
       const id = vagaDocId(atendimentoDate, specKey, sessIdx);
@@ -183,7 +203,13 @@ export default function Dashboard() {
         }
       }
     },
-    [isRecepcao, vagasMap, profNames, settings.pccuTotal]
+    [
+      isRecepcao,
+      vagasMap,
+      profNames,
+      settings.pccuTotal,
+      settings.dentQuartaVisitaDomiciliarDesde,
+    ]
   );
 
   const handleEnviarSolicit = useCallback(
@@ -221,11 +247,16 @@ export default function Dashboard() {
         showToast("O fluxo de solicitar vaga é para agentes de saúde. Use os botões de ocupação e reserva nas vagas.", "danger");
         return;
       }
-      const waDigits = String(settings.recepcionistaAtivoWhatsapp || "").replace(/\D/g, "");
+      if (!isRecepcao && !estaDentroExpedienteUbs(new Date())) {
+        fecharPreAbaWa();
+        showToast(MSG_FORA_EXPEDIENTE_UBS, "danger");
+        return;
+      }
+      const waDigits = digitosWhatsappRecepcaoParaSolicitacao(settings);
       if (waDigits.length < 10) {
         fecharPreAbaWa();
         showToast(
-          "Cadastre o WhatsApp do recepcionista em Config. → Usuários e peça para ele abrir o app neste aparelho.",
+          "Cadastre o WhatsApp do recepcionista em Config. → Usuários. O pedido será enviado para o recepcionista que estiver logado ou para o último que entrou no sistema.",
           "danger"
         );
         return;
@@ -327,11 +358,42 @@ export default function Dashboard() {
   const specsVisiveis = buildVisibleSegments({
     today: new Date(),
     feriados: settings.feriados,
-    fernandoFora: settings.fernandoForaUnidade,
+    pontosFacultativos: settings.pontosFacultativos,
     vagasMap,
     pccuTotal: settings.pccuTotal,
     recepcao: isRecepcao,
+    dentQuartaVisitaDomiciliarDesde: settings.dentQuartaVisitaDomiciliarDesde,
   });
+
+  const avisoVisitaDomiciliarAmanha = useMemo(() => {
+    if (!isAgenteOuDiretorPerfil(perfil)) return null;
+    if (!settings.dentQuartaVisitaDomiciliarDesde) return null;
+    if (!shouldShowAvisoVisitaDomiciliarAmanha(todayStr, settings.dentQuartaVisitaDomiciliarDesde)) {
+      return null;
+    }
+    const amanhaIso = addDaysLocal(todayStr, 1);
+    const nomeDent = profNames.dentFernando || DEFAULT_PROF_NAMES.dentFernando;
+    const dataFmt = new Date(amanhaIso + "T12:00:00").toLocaleDateString("pt-BR", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    });
+    return { nomeDent, dataFmt };
+  }, [perfil, todayStr, settings.dentQuartaVisitaDomiciliarDesde, profNames]);
+
+  const avisoSemAtendimentoAmanha = useMemo(() => {
+    if (!isAgenteOuDiretorPerfil(perfil)) return null;
+    const r = avisoSemAtendimentoUbAmanha(todayStr, settings.feriados, settings.pontosFacultativos);
+    if (!r) return null;
+    const dataFmt = new Date(r.iso + "T12:00:00").toLocaleDateString("pt-BR", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    });
+    return { ...r, dataFmt };
+  }, [perfil, todayStr, settings.feriados, settings.pontosFacultativos]);
 
   return (
     <div style={styles.app}>
@@ -347,12 +409,6 @@ export default function Dashboard() {
                 month: "long",
               })}
             </p>
-            {settings.feriados?.length > 0 && (
-              <p style={styles.hdrHint}>
-                {settings.feriados.length} feriado(s) cadastrado(s) — o dia útil de agendamento é
-                calculado automaticamente.
-              </p>
-            )}
           </div>
         </div>
         <div style={styles.hdrRight}>
@@ -375,6 +431,36 @@ export default function Dashboard() {
         ))}
       </nav>
 
+      {avisoVisitaDomiciliarAmanha && (
+        <div style={styles.avisoVisitaDomiciliar} role="status">
+          <strong>Aviso —</strong> amanhã ({avisoVisitaDomiciliarAmanha.dataFmt}), o{" "}
+          {avisoVisitaDomiciliarAmanha.nomeDent} não terá atendimento na unidade pela manhã: estará
+          realizando <strong>visitas domiciliares</strong>. A agenda de quarta-feira (manhã) permanece
+          reservada para esse fim.
+        </div>
+      )}
+
+      {avisoSemAtendimentoAmanha && (
+        <div style={styles.avisoFeriadoAmanha} role="status">
+          {avisoSemAtendimentoAmanha.eFeriado && avisoSemAtendimentoAmanha.ePontoFacultativo ? (
+            <>
+              <strong>Feriado e ponto facultativo —</strong> amanhã ({avisoSemAtendimentoAmanha.dataFmt}) está
+              cadastrado nas duas listas na UBS.{" "}
+            </>
+          ) : avisoSemAtendimentoAmanha.eFeriado ? (
+            <>
+              <strong>Feriado —</strong> amanhã ({avisoSemAtendimentoAmanha.dataFmt}) é feriado na UBS.{" "}
+            </>
+          ) : (
+            <>
+              <strong>Ponto facultativo —</strong> amanhã ({avisoSemAtendimentoAmanha.dataFmt}) é ponto
+              facultativo na UBS.{" "}
+            </>
+          )}
+          <strong>Não haverá atendimento agendado</strong> nesse dia.
+        </div>
+      )}
+
       <main style={styles.main}>
         {tab === "vagas" && (
           <TabVagas
@@ -396,6 +482,7 @@ export default function Dashboard() {
                       type: "agendar",
                     })
             }
+            dentQuartaVisitaDomiciliarDesde={settings.dentQuartaVisitaDomiciliarDesde}
           />
         )}
         {tab === "config" && isRecepcao && (
@@ -414,9 +501,7 @@ export default function Dashboard() {
           profNames={profNames}
           onSubmit={handleEnviarSolicit}
           onClose={() => setModal(null)}
-          recepcaoWhatsappOk={
-            String(settings.recepcionistaAtivoWhatsapp || "").replace(/\D/g, "").length >= 10
-          }
+          recepcaoWhatsappOk={digitosWhatsappRecepcaoParaSolicitacao(settings).length >= 10}
         />
       )}
 
@@ -441,7 +526,6 @@ const styles = {
   hdrRight: { display: "flex", alignItems: "center", gap: 8 },
   hdrTitle: { fontSize: 14, fontWeight: 600, color: "#0F172A", margin: 0 },
   hdrSub: { fontSize: 11, color: "#64748B", margin: 0, textTransform: "capitalize" },
-  hdrHint: { fontSize: 10, color: "#0369A1", margin: "4px 0 0", maxWidth: 320 },
   perfilBadge: {
     fontSize: 12,
     color: "#475569",
@@ -477,5 +561,25 @@ const styles = {
     whiteSpace: "nowrap",
   },
   navBtnActive: { background: "#F1F5F9", color: "#0F172A", fontWeight: 600 },
+  avisoVisitaDomiciliar: {
+    margin: "0 12px 0",
+    padding: "10px 14px",
+    fontSize: 13,
+    lineHeight: 1.45,
+    color: "#1E3A5F",
+    background: "linear-gradient(90deg, #DBEAFE 0%, #E0F2FE 100%)",
+    border: "1px solid #93C5FD",
+    borderRadius: 8,
+  },
+  avisoFeriadoAmanha: {
+    margin: "8px 12px 0",
+    padding: "10px 14px",
+    fontSize: 13,
+    lineHeight: 1.45,
+    color: "#7C2D12",
+    background: "linear-gradient(90deg, #FFEDD5 0%, #FEF3C7 100%)",
+    border: "1px solid #FDBA74",
+    borderRadius: 8,
+  },
   main: { flex: 1, padding: 14, overflowY: "auto" },
 };

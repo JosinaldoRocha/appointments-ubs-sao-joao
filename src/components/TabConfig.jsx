@@ -18,7 +18,13 @@ import {
   deleteUser as deleteAuthUser,
 } from "firebase/auth";
 import { secondaryAuth } from "../services/firebase";
-import { DEFAULT_PROF_NAMES, SPEC_META, DEFAULT_PCCU_TOTAL } from "../services/scheduleConfig";
+import {
+  DEFAULT_PROF_NAMES,
+  SPEC_META,
+  DEFAULT_PCCU_TOTAL,
+  parseDateStr,
+  normalizeFeriadosList,
+} from "../services/scheduleConfig";
 import PasswordInput from "./PasswordInput";
 
 /**
@@ -72,8 +78,11 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
 
   const [feriados, setFeriados] = useState([]);
   const [novoFeriado, setNovoFeriado] = useState("");
-  const [fernandoFora, setFernandoFora] = useState(false);
+  const [pontosFacultativos, setPontosFacultativos] = useState([]);
+  const [novoPontoFacultativo, setNovoPontoFacultativo] = useState("");
   const [pccuTotal, setPccuTotal] = useState(DEFAULT_PCCU_TOTAL);
+  /** Primeira quarta: a partir dela, visitas domiciliares em quinzena (Dr. Fernando). */
+  const [dentQuartaVisitaDomiciliarDesde, setDentQuartaVisitaDomiciliarDesde] = useState("");
   const [savingRegras, setSavingRegras] = useState(false);
 
   useEffect(() => {
@@ -83,8 +92,14 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
   useEffect(() => {
     const un = listenSettings((s) => {
       setFeriados(s.feriados || []);
-      setFernandoFora(Boolean(s.fernandoForaUnidade));
+      setPontosFacultativos(s.pontosFacultativos || []);
       setPccuTotal(typeof s.pccuTotal === "number" ? s.pccuTotal : DEFAULT_PCCU_TOTAL);
+      setDentQuartaVisitaDomiciliarDesde(
+        typeof s.dentQuartaVisitaDomiciliarDesde === "string" &&
+          /^\d{4}-\d{2}-\d{2}$/.test(s.dentQuartaVisitaDomiciliarDesde.trim())
+          ? s.dentQuartaVisitaDomiciliarDesde.trim()
+          : ""
+      );
     });
     return un;
   }, []);
@@ -136,12 +151,25 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
   }
 
   async function salvarRegras() {
+    const vVisita = (dentQuartaVisitaDomiciliarDesde || "").trim();
+    if (vVisita) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(vVisita)) {
+        showToast("Data de visitas domiciliares inválida (use AAAA-MM-DD).", "danger");
+        return;
+      }
+      if (parseDateStr(vVisita).getDay() !== 3) {
+        showToast("Selecione uma quarta-feira como data de início.", "danger");
+        return;
+      }
+    }
+
     setSavingRegras(true);
     try {
       await updateSettings({
-        feriados: [...feriados].sort(),
-        fernandoForaUnidade: fernandoFora,
+        feriados: normalizeFeriadosList(feriados),
+        pontosFacultativos: normalizeFeriadosList(pontosFacultativos),
         pccuTotal: Math.max(1, Math.min(50, Number(pccuTotal) || DEFAULT_PCCU_TOTAL)),
+        dentQuartaVisitaDomiciliarDesde: vVisita,
       });
       showToast("Calendário e regras salvos.", "success");
     } catch {
@@ -167,6 +195,24 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
 
   function removerFeriado(iso) {
     setFeriados((f) => f.filter((x) => x !== iso));
+  }
+
+  function adicionarPontoFacultativo() {
+    const v = (novoPontoFacultativo || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+      showToast("Use a data no formato AAAA-MM-DD.", "danger");
+      return;
+    }
+    if (pontosFacultativos.includes(v)) {
+      showToast("Esta data já está na lista.", "info");
+      return;
+    }
+    setPontosFacultativos((f) => [...f, v].sort());
+    setNovoPontoFacultativo("");
+  }
+
+  function removerPontoFacultativo(iso) {
+    setPontosFacultativos((f) => f.filter((x) => x !== iso));
   }
 
   async function criarUsuario() {
@@ -310,6 +356,7 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
             </button>
             .
           </p>
+          <hr style={S.sectionDivider} />
           {Object.keys(DEFAULT_PROF_NAMES).map((key, i, keys) => {
             const isFirst = i === 0;
             const isLast = i === keys.length - 1;
@@ -338,8 +385,8 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
       {section === "calendario" && (
         <div>
           <p style={S.hint}>
-            Feriados em que a UBS não agenda: o sistema usa o último dia útil antes do atendimento
-            como dia de abertura da agenda (pulando fins de semana e estas datas).
+            Feriados e pontos facultativos em que a UBS não agenda: o sistema usa o último dia útil antes
+            do atendimento como dia de abertura da agenda (pulando fins de semana e estas datas).
           </p>
 
           <p style={S.sectionTitle}>Feriados (AAAA-MM-DD)</p>
@@ -368,19 +415,70 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
             )}
           </ul>
 
-          <label style={S.checkRow}>
-            <input
-              type="checkbox"
-              checked={fernandoFora}
-              onChange={(e) => setFernandoFora(e.target.checked)}
-            />
-            <span>
-              Dr. Fernando fora da unidade (atendimento domiciliar / quinzena) — oculta vagas de
-              odontologia dele.
-            </span>
-          </label>
+          <hr style={S.sectionDivider} />
 
-          <div style={{ marginTop: 14 }}>
+          <p style={S.sectionTitle}>Pontos facultativos (AAAA-MM-DD)</p>
+          <p style={S.hintMuted}>
+            Mesma regra dos feriados: sem atendimento agendado na data; o dia útil anterior ao atendimento
+            continua sendo usado para abrir a agenda.
+          </p>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10, marginTop: 8 }}>
+            <input
+              type="date"
+              style={S.input}
+              value={novoPontoFacultativo}
+              onChange={(e) => setNovoPontoFacultativo(e.target.value)}
+            />
+            <button type="button" style={S.btnSave} onClick={adicionarPontoFacultativo}>
+              Adicionar
+            </button>
+          </div>
+          <ul style={{ listStyle: "none", padding: 0, margin: "0 0 16px" }}>
+            {pontosFacultativos.map((iso) => (
+              <li key={iso} style={S.feriadoRow}>
+                <span>{new Date(iso + "T12:00:00").toLocaleDateString("pt-BR")}</span>
+                <button type="button" style={S.btnDel} onClick={() => removerPontoFacultativo(iso)}>
+                  Remover
+                </button>
+              </li>
+            ))}
+            {pontosFacultativos.length === 0 && (
+              <li style={{ fontSize: 12, color: "#94A3B8" }}>Nenhum ponto facultativo cadastrado.</li>
+            )}
+          </ul>
+
+          <hr style={S.sectionDivider} />
+
+          <div>
+            <p style={S.sectionTitle}>Odontologia — visitas domiciliares (quartas)</p>
+            <p style={S.hintMuted}>
+              Escolha uma <strong>quarta-feira</strong> de início. A partir dela, a cada <strong>15 dias</strong>{" "}
+              (quinzenal: <strong>uma quarta sim, outra não</strong>) a manhã fica{" "}
+              <strong>reservada para visitas domiciliares</strong> (sem vagas na unidade nesse turno). No{" "}
+              <strong>dia anterior</strong> a cada quarta de visitas, agentes de saúde e direção veem um aviso no
+              sistema. Altere ou limpe a data quando precisar.
+            </p>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
+              <label style={{ ...S.label, margin: 0 }}>Primeira quarta (início)</label>
+              <input
+                type="date"
+                style={S.input}
+                value={dentQuartaVisitaDomiciliarDesde}
+                onChange={(e) => setDentQuartaVisitaDomiciliarDesde(e.target.value)}
+              />
+              <button
+                type="button"
+                style={S.btnDel}
+                onClick={() => setDentQuartaVisitaDomiciliarDesde("")}
+              >
+                Desativar regra
+              </button>
+            </div>
+          </div>
+
+          <hr style={S.sectionDivider} />
+
+          <div>
             <label style={S.label}>Vagas PCCU (quarta-feira manhã — exclusivo exame)</label>
             <input
               type="number"
@@ -392,9 +490,11 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
             />
           </div>
 
+          <hr style={S.sectionDivider} />
+
           <button
             type="button"
-            style={{ ...S.btnAdd, marginTop: 18, opacity: savingRegras ? 0.6 : 1 }}
+            style={{ ...S.btnAdd, marginTop: 0, opacity: savingRegras ? 0.6 : 1 }}
             disabled={savingRegras}
             onClick={salvarRegras}
           >
@@ -478,7 +578,9 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
             {loading ? "Criando..." : "Criar usuário"}
           </button>
 
-          <p style={{ ...S.sectionTitle, marginTop: 20 }}>Usuários cadastrados</p>
+          <hr style={S.sectionDivider} />
+
+          <p style={{ ...S.sectionTitle, marginTop: 0 }}>Usuários cadastrados</p>
           {users.map((u) => (
             <div key={u.id}>
               <div style={S.userRow}>
@@ -653,6 +755,13 @@ const S = {
     textDecoration: "underline",
   },
   sectionTitle: { fontSize: 13, fontWeight: 600, color: "#0F172A", margin: "0 0 10px" },
+  /** Separador visual entre blocos dentro de cada aba de Config. */
+  sectionDivider: {
+    border: "none",
+    borderTop: "1px solid #E2E8F0",
+    margin: "20px 0",
+    height: 0,
+  },
   profBlock: {
     borderBottom: "1px solid #E2E8F0",
     paddingTop: 16,
@@ -677,7 +786,6 @@ const S = {
   btnSave: { padding: "5px 12px", fontSize: 12, fontWeight: 600, border: "none", borderRadius: 6, cursor: "pointer", background: "#DCFCE7", color: "#166534" },
   btnDel: { padding: "5px 10px", fontSize: 11, border: "none", borderRadius: 6, cursor: "pointer", background: "#FEE2E2", color: "#991B1B" },
   feriadoRow: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", background: "#fff", borderRadius: 6, marginBottom: 4, border: "0.5px solid #E2E8F0", fontSize: 13 },
-  checkRow: { display: "flex", gap: 10, alignItems: "flex-start", fontSize: 13, color: "#334155", cursor: "pointer", marginTop: 8 },
   waRow: {
     margin: "-4px 0 10px 42px",
     padding: "8px 10px",

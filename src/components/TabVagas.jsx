@@ -7,8 +7,13 @@ import {
   DEFAULT_PROF_NAMES,
   toDateStr,
   recepcaoPodeMarcarAtendimentoFinalizado,
+  estaDentroExpedienteUbs,
+  MSG_FORA_EXPEDIENTE_UBS,
+  varianteVisitaDomiciliarNoCard,
+  specAtendimentoHojeOcultoAposTurnos,
+  specTemSessaoNoTurno,
+  agenteOcultarCardPorEncerrado,
 } from "../services/scheduleConfig";
-import { atendimentoEncerradoKey } from "../services/db";
 import { fraseVagasEsgotadasEncaixe } from "../services/whatsappSolicitacao";
 
 function dataHojeIso() {
@@ -176,16 +181,39 @@ function liberarVaga({ specKey, dayKey, sessIdx, atendimentoDate, reserved, used
 }
 
 /**
- * Recepção: botão no card de atendimento hoje — marcar só no turno atual; remover aviso em qualquer
- * horário do mesmo dia (para não bloquear após o turno).
+ * Recepção: rodapé do card — marcar no turno da manhã ou da tarde (relógio); remover em qualquer
+ * horário do mesmo dia.
  */
-function recepcaoMostrarBotaoEncerrado(spec, atendimentoEncerradoMap, agora, onToggle) {
+function recepcaoPrecisaFooterEncerrado(spec, atendimentoEncerradoMap, agora, onToggle) {
   if (typeof onToggle !== "function" || spec.windowType !== "same") return false;
   const hoje = toDateStr(agora);
   if (spec.atendimentoDate !== hoje) return false;
-  const k = atendimentoEncerradoKey(spec.key, spec.atendimentoDate);
-  if (atendimentoEncerradoMap[k]) return true;
-  return recepcaoPodeMarcarAtendimentoFinalizado(spec, agora);
+  const map = atendimentoEncerradoMap || {};
+  const base = `${spec.key}_${hoje}`;
+  const hasM = specTemSessaoNoTurno(spec, "manha");
+  const hasT = specTemSessaoNoTurno(spec, "tarde");
+  if (!hasM && !hasT) return false;
+  if (hasM && hasT) {
+    if (map[base]) return true;
+    const km = `${base}_manha`;
+    const kt = `${base}_tarde`;
+    if (map[km] || map[kt]) return true;
+    return (
+      recepcaoPodeMarcarAtendimentoFinalizado(spec, agora, "manha") ||
+      recepcaoPodeMarcarAtendimentoFinalizado(spec, agora, "tarde")
+    );
+  }
+  if (hasM && !hasT) {
+    const k = `${base}_manha`;
+    if (map[k] || map[base]) return true;
+    return recepcaoPodeMarcarAtendimentoFinalizado(spec, agora, "manha");
+  }
+  if (!hasM && hasT) {
+    const k = `${base}_tarde`;
+    if (map[k] || map[base]) return true;
+    return recepcaoPodeMarcarAtendimentoFinalizado(spec, agora, "tarde");
+  }
+  return false;
 }
 
 /** Há vaga livre na agenda ou sessão com solicitação por WhatsApp (ex.: fisioterapia). */
@@ -200,6 +228,67 @@ function hasAnyVacancy(specs) {
   );
 }
 
+/**
+ * Lista de avisos para agentes/direção: um item por turno encerrado (ou legado `turno` null).
+ */
+function listaAvisosEncerradoAgente(specs, atendimentoEncerradoMap) {
+  const map = atendimentoEncerradoMap || {};
+  const out = [];
+  for (const spec of specs) {
+    const d = spec.atendimentoDate;
+    if (typeof d !== "string" || !d) continue;
+    const base = `${spec.key}_${d}`;
+    const hasM = specTemSessaoNoTurno(spec, "manha");
+    const hasT = specTemSessaoNoTurno(spec, "tarde");
+    if (map[base]) {
+      out.push({ spec, turno: null });
+      continue;
+    }
+    if (hasM && hasT) {
+      if (map[`${base}_manha`]) out.push({ spec, turno: "manha" });
+      if (map[`${base}_tarde`]) out.push({ spec, turno: "tarde" });
+    } else if (hasM && map[`${base}_manha`]) out.push({ spec, turno: "manha" });
+    else if (hasT && map[`${base}_tarde`]) out.push({ spec, turno: "tarde" });
+  }
+  return out;
+}
+
+/** Agente/direção: aviso quando o encerramento está ativo (por turno, se aplicável). */
+function AvisoAtendimentoEncerradoAgente({ spec, turno, profissionaisMap }) {
+  const nome = nomeProfissionalFirestore(spec.key, profissionaisMap);
+  const hasM = specTemSessaoNoTurno(spec, "manha");
+  const hasT = specTemSessaoNoTurno(spec, "tarde");
+  let sufixoTurno;
+  if (turno === "manha") {
+    sufixoTurno = "da manhã";
+  } else if (turno === "tarde") {
+    sufixoTurno = "da tarde";
+  } else if (hasM && hasT) {
+    sufixoTurno = "da manhã e da tarde";
+  } else if (hasM && !hasT) {
+    sufixoTurno = "da manhã";
+  } else if (!hasM && hasT) {
+    sufixoTurno = "da tarde";
+  } else {
+    sufixoTurno = null;
+  }
+  return (
+    <div style={styles.avisoEncerradoAgente} role="status">
+      <p style={styles.avisoEncerradoAgenteLinha}>
+        {sufixoTurno != null ? (
+          <>
+            Atendimento encerrado para <strong>{nome}</strong> no turno {sufixoTurno}.
+          </>
+        ) : (
+          <>
+            Atendimento encerrado para <strong>{nome}</strong>.
+          </>
+        )}
+      </p>
+    </div>
+  );
+}
+
 export default function TabVagas({
   specs,
   profissionaisMap = {},
@@ -208,22 +297,27 @@ export default function TabVagas({
   onSolicitar,
   atendimentoEncerradoMap = {},
   onToggleAtendimentoEncerrado,
+  dentQuartaVisitaDomiciliarDesde = "",
 }) {
   const [agoraRecepcao, setAgoraRecepcao] = useState(() => new Date());
   useEffect(() => {
-    const t = setInterval(() => setAgoraRecepcao(new Date()), 60_000);
+    const t = setInterval(() => setAgoraRecepcao(new Date()), 30_000);
     return () => clearInterval(t);
   }, []);
+  const dentroExpedienteUbs = estaDentroExpedienteUbs(agoraRecepcao);
 
   const specsLista = useMemo(() => {
-    if (isRecepcao) return specs;
-    const map = atendimentoEncerradoMap || {};
-    return specs.filter((s) => {
-      const d = s.atendimentoDate;
-      if (typeof d !== "string" || !d) return true;
-      const k = atendimentoEncerradoKey(s.key, d);
-      return !map[k];
-    });
+    const base = (() => {
+      if (isRecepcao) return specs;
+      return specs.filter((s) => !agenteOcultarCardPorEncerrado(s, atendimentoEncerradoMap || {}));
+    })();
+    return base.filter((s) => !specAtendimentoHojeOcultoAposTurnos(s, agoraRecepcao));
+  }, [specs, atendimentoEncerradoMap, isRecepcao, agoraRecepcao]);
+
+  /** Cartões ocultos por flag da recepção: mensagem por turno (ou legado) para agentes e direção. */
+  const avisosEncerradoAgente = useMemo(() => {
+    if (isRecepcao) return [];
+    return listaAvisosEncerradoAgente(specs, atendimentoEncerradoMap);
   }, [specs, atendimentoEncerradoMap, isRecepcao]);
 
   const prev = specsLista.filter((s) => s.windowType === "prev");
@@ -239,22 +333,23 @@ export default function TabVagas({
           Nenhum agendamento disponível hoje
         </p>
         <p style={{ fontSize: 13, color: "#64748B" }}>
-          Em geral, o agendamento abre no último dia útil anterior ao atendimento (feriados são
-          considerados). Nutrição, fisioterapia e psicologia permitem agendar em qualquer dia útil (conforme o card).
+          Em geral, o agendamento abre no último dia útil anterior ao atendimento (feriados e pontos
+          facultativos são considerados). Nutrição, fisioterapia e psicologia permitem agendar em qualquer dia útil (conforme o card).
         </p>
       </div>
     );
   }
 
-  if (specsLista.length === 0 && !isRecepcao) {
+  if (specsLista.length === 0 && !isRecepcao && avisosEncerradoAgente.length === 0) {
     return (
       <div style={styles.empty}>
         <p style={{ fontSize: 15, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>
           Nenhum cartão de atendimento visível
         </p>
         <p style={{ fontSize: 13, color: "#64748B", lineHeight: 1.5 }}>
-          Os atendimentos de hoje marcados como encerrados pela recepção ficam ocultos aqui. Quando a
-          recepção remover o aviso, os cartões voltam a aparecer.
+          No dia do atendimento, os cartões somem após o horário do turno (manhã às 12h, tarde às 17h)
+          ou quando a recepção marcar como encerrado; nesse último caso, remover o aviso faz o cartão
+          voltar a aparecer no mesmo dia.
         </p>
       </div>
     );
@@ -262,6 +357,26 @@ export default function TabVagas({
 
   return (
     <div style={styles.wrap}>
+      {!isRecepcao && !dentroExpedienteUbs && (
+        <div style={styles.alertExpedienteUbs} role="status">
+          <p style={styles.alertExpedienteUbsTitle}>Fora do horário de expediente</p>
+          <p style={styles.alertExpedienteUbsText}>{MSG_FORA_EXPEDIENTE_UBS}</p>
+        </div>
+      )}
+
+      {!isRecepcao && avisosEncerradoAgente.length > 0 && (
+        <div style={styles.avisoEncerradoAgenteWrap}>
+          {avisosEncerradoAgente.map(({ spec, turno }) => (
+            <AvisoAtendimentoEncerradoAgente
+              key={`${spec.key}_${spec.atendimentoDate}_${turno ?? "legado"}`}
+              spec={spec}
+              turno={turno}
+              profissionaisMap={profissionaisMap}
+            />
+          ))}
+        </div>
+      )}
+
       {!isRecepcao && semVagasLivres && (
         <div style={styles.alertSemVagas} role="status">
           <p style={styles.alertSemVagasTitle}>Não há mais vagas disponíveis</p>
@@ -302,14 +417,17 @@ export default function TabVagas({
               isRecepcao={isRecepcao}
               onSlotAction={onSlotAction}
               onSolicitar={onSolicitar}
+              dentroExpedienteUbs={dentroExpedienteUbs}
               atendimentoEncerradoMap={atendimentoEncerradoMap}
               onToggleAtendimentoEncerrado={onToggleAtendimentoEncerrado}
-              mostrarBotaoEncerradoRecepcao={recepcaoMostrarBotaoEncerrado(
+              mostrarBotaoEncerradoRecepcao={recepcaoPrecisaFooterEncerrado(
                 spec,
                 atendimentoEncerradoMap,
                 agoraRecepcao,
                 onToggleAtendimentoEncerrado
               )}
+              agoraRecepcao={agoraRecepcao}
+              dentQuartaVisitaDomiciliarDesde={dentQuartaVisitaDomiciliarDesde}
             />
           ))}
         </Section>
@@ -329,14 +447,17 @@ export default function TabVagas({
               isRecepcao={isRecepcao}
               onSlotAction={onSlotAction}
               onSolicitar={onSolicitar}
+              dentroExpedienteUbs={dentroExpedienteUbs}
               atendimentoEncerradoMap={atendimentoEncerradoMap}
               onToggleAtendimentoEncerrado={onToggleAtendimentoEncerrado}
-              mostrarBotaoEncerradoRecepcao={recepcaoMostrarBotaoEncerrado(
+              mostrarBotaoEncerradoRecepcao={recepcaoPrecisaFooterEncerrado(
                 spec,
                 atendimentoEncerradoMap,
                 agoraRecepcao,
                 onToggleAtendimentoEncerrado
               )}
+              agoraRecepcao={agoraRecepcao}
+              dentQuartaVisitaDomiciliarDesde={dentQuartaVisitaDomiciliarDesde}
             />
           ))}
         </Section>
@@ -392,6 +513,8 @@ function AgenteTurnoRow({
   atendimentoDate,
   onSolicitar,
   solicitacaoEncaminhamentoObrigatorio,
+  dentroExpedienteUbs = true,
+  ocultarResumoVagas = false,
 }) {
   const used = sess.used ?? 0;
   const reserved = sess.reserved ?? 0;
@@ -411,7 +534,9 @@ function AgenteTurnoRow({
   const isPsicologaListaEspera = specKey === "psicologa" && wl;
   /** Fisioterapia e sessões com lista de espera: solicitação pelo WhatsApp mesmo com agenda cheia. */
   const podeSolicitar =
-    typeof onSolicitar === "function" && (isFisio || wl || livres > 0);
+    typeof onSolicitar === "function" &&
+    dentroExpedienteUbs &&
+    (isFisio || wl || livres > 0);
   /** Esconde o aviso “vagas esgotadas” quando ainda há fluxo de lista de espera (fisio ou psicologia). */
   const ocultarEsgotadoPorListaEspera =
     (isFisio || isPsicologaListaEspera) && livres === 0;
@@ -428,19 +553,22 @@ function AgenteTurnoRow({
         <MedicoBadge tipo={sess.medicoTipo} />
         {sess.pccuOnly && <span style={styles.pccuTag}>PCCU</span>}
       </p>
-      {!ocultarEsgotadoPorListaEspera && (
+      {!ocultarResumoVagas && !ocultarEsgotadoPorListaEspera && (
         <p
           style={
             somenteEncaixe
-              ? { ...styles.encaixeAgenteAviso, marginTop: 6 }
-              : {
-                  ...styles.livresResumo,
-                  marginTop: 6,
-                  fontSize: 14,
-                  fontWeight: livresComuns > 0 ? 600 : 700,
-                  color: livresComuns > 0 ? "#15803D" : "#B91C1C",
-                }
+              ? { ...styles.agenteDestaqueEncaixe, marginTop: 6 }
+              : livresComuns > 0
+                ? { ...styles.agenteDestaqueVagasLivres, marginTop: 6 }
+                : {
+                    ...styles.livresResumo,
+                    marginTop: 6,
+                    fontSize: 14,
+                    fontWeight: 700,
+                    color: "#B91C1C",
+                  }
           }
+          role="status"
         >
           {somenteEncaixe ? (
             fraseVagasEsgotadasEncaixe({
@@ -491,8 +619,128 @@ function AgenteTurnoRow({
           {somenteEncaixe ? "Solicitar encaixe" : "Solicitar agendamento"}
         </button>
       )}
+      {!dentroExpedienteUbs && (isFisio || wl || livres > 0) && (
+        <p style={styles.agenteTurnoHint}>
+          Solicitações apenas entre 7h e 17h (horário de expediente da UBS, inclui o almoço).
+        </p>
+      )}
     </div>
   );
+}
+
+function RecepcaoBotoesAtendimentoEncerrado({
+  spec,
+  dataEncerrado,
+  atendimentoEncerradoMap,
+  agoraRecepcao,
+  onToggleAtendimentoEncerrado,
+}) {
+  const map = atendimentoEncerradoMap || {};
+  const base = `${spec.key}_${dataEncerrado}`;
+  const hasM = specTemSessaoNoTurno(spec, "manha");
+  const hasT = specTemSessaoNoTurno(spec, "tarde");
+
+  const btnStyle = (ativo) =>
+    ativo ? styles.btnAtendimentoEncerradoAtivo : styles.btnAtendimentoFinalizado;
+
+  if (!hasM && !hasT) return null;
+
+  const turnoRemover = (turnoLinha) => {
+    const km = `${base}_manha`;
+    const kt = `${base}_tarde`;
+    if (hasM && hasT) return turnoLinha;
+    if (hasM && !hasT) {
+      if (map[km]) return "manha";
+      if (map[base]) return undefined;
+      return "manha";
+    }
+    if (!hasM && hasT) {
+      if (map[kt]) return "tarde";
+      if (map[base]) return undefined;
+      return "tarde";
+    }
+    return undefined;
+  };
+
+  const turnoMarcar = (turnoLinha) => {
+    if (hasM && hasT) return turnoLinha;
+    if (hasM && !hasT) return "manha";
+    if (!hasM && hasT) return "tarde";
+    return undefined;
+  };
+
+  const botao = (turnoLinha, labelCurto, labelRemover) => {
+    const km = `${base}_manha`;
+    const kt = `${base}_tarde`;
+    let ativo = false;
+    if (hasM && hasT) {
+      ativo = turnoLinha === "manha" ? !!map[km] : !!map[kt];
+    } else if (hasM && !hasT) {
+      ativo = !!(map[`${base}_manha`] || map[base]);
+    } else if (!hasM && hasT) {
+      ativo = !!(map[`${base}_tarde`] || map[base]);
+    }
+    const pode = recepcaoPodeMarcarAtendimentoFinalizado(spec, agoraRecepcao, turnoLinha);
+    if (!ativo && !pode) return null;
+    const textoFinal =
+      !ativo && hasM && hasT
+        ? `Atendimento finalizado — ${labelCurto}`
+        : !ativo
+          ? "Atendimento finalizado"
+          : labelRemover;
+    return (
+      <button
+        type="button"
+        key={turnoLinha}
+        style={btnStyle(ativo)}
+        onClick={() =>
+          onToggleAtendimentoEncerrado(
+            spec.key,
+            dataEncerrado,
+            !ativo,
+            ativo ? turnoRemover(turnoLinha) : turnoMarcar(turnoLinha)
+          )
+        }
+      >
+        {textoFinal}
+      </button>
+    );
+  };
+
+  if (hasM && hasT && map[base]) {
+    return (
+      <div style={styles.cardFooterRecepcao}>
+        <button
+          type="button"
+          style={btnStyle(true)}
+          onClick={() => onToggleAtendimentoEncerrado(spec.key, dataEncerrado, false)}
+        >
+          Remover aviso de atendimento encerrado
+        </button>
+      </div>
+    );
+  }
+
+  if (hasM && hasT) {
+    return (
+      <div style={styles.cardFooterRecepcao}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {botao("manha", "manhã", "Remover aviso — manhã")}
+          {botao("tarde", "tarde", "Remover aviso — tarde")}
+        </div>
+      </div>
+    );
+  }
+
+  if (hasM && !hasT) {
+    const el = botao("manha", "manhã", "Remover aviso de atendimento encerrado");
+    if (!el) return null;
+    return <div style={styles.cardFooterRecepcao}>{el}</div>;
+  }
+
+  const el = botao("tarde", "tarde", "Remover aviso de atendimento encerrado");
+  if (!el) return null;
+  return <div style={styles.cardFooterRecepcao}>{el}</div>;
 }
 
 function SpecCard({
@@ -501,9 +749,12 @@ function SpecCard({
   isRecepcao,
   onSlotAction,
   onSolicitar,
+  dentroExpedienteUbs = true,
   atendimentoEncerradoMap = {},
   onToggleAtendimentoEncerrado,
   mostrarBotaoEncerradoRecepcao = false,
+  agoraRecepcao = new Date(),
+  dentQuartaVisitaDomiciliarDesde = "",
 }) {
   const meta = SPEC_META[spec.key] || { role: "", av: "?", bg: "#F1F5F9", tc: "#475569" };
   const name = nomeProfissionalFirestore(spec.key, profissionaisMap);
@@ -512,15 +763,16 @@ function SpecCard({
     const tot = s.total ?? 0;
     return (s.used ?? 0) + (s.reserved ?? 0) < tot;
   });
+  const visitaVariant = varianteVisitaDomiciliarNoCard({
+    spec,
+    todayStr: dataHojeIso(),
+    desdeStr: dentQuartaVisitaDomiciliarDesde,
+  });
   const isSame = spec.windowType === "same";
   const dataEncerrado =
     typeof spec.atendimentoDate === "string" && spec.atendimentoDate
       ? spec.atendimentoDate
       : "";
-  const keyEncerrado =
-    dataEncerrado && atendimentoEncerradoKey(spec.key, dataEncerrado);
-  const atendimentoEncerradoAtivo =
-    !!keyEncerrado && !!atendimentoEncerradoMap[keyEncerrado];
 
   return (
     <div
@@ -530,7 +782,7 @@ function SpecCard({
         boxShadow: isSame
           ? "0 4px 14px rgba(22, 101, 52, 0.08)"
           : "0 2px 8px rgba(15, 23, 42, 0.06)",
-        opacity: hasSome ? 1 : 0.85,
+        opacity: hasSome || visitaVariant ? 1 : 0.85,
       }}
     >
       <div style={{ ...styles.cardAccent, background: meta.bg }} aria-hidden />
@@ -558,9 +810,32 @@ function SpecCard({
             >
               {isSame ? "Atend. hoje" : DAY_LABEL[spec.atendimentoDia]?.split("-")[0] || "Agenda"}
             </span>
-            {!hasSome && <span style={styles.fullBadge}>Esgotado</span>}
+            {!hasSome && visitaVariant && (
+              <span style={styles.fullBadgeVisita}>Visitas domiciliares</span>
+            )}
+            {!hasSome && !visitaVariant && <span style={styles.fullBadge}>Esgotado</span>}
           </div>
         </div>
+
+        {visitaVariant === "vespera" && (
+          <div style={styles.visitaDomicBanner} role="status">
+            <p style={styles.visitaDomicBannerTitle}>Sem vagas para amanhã</p>
+            <p style={styles.visitaDomicBannerText}>
+              Na próxima quarta-feira, <strong>{name}</strong> não atende na unidade pela manhã — a agenda
+              está dedicada a <strong>visitas domiciliares</strong>. Não é possível agendar consulta na UBS
+              nesse turno.
+            </p>
+          </div>
+        )}
+        {visitaVariant === "hoje" && (
+          <div style={styles.visitaDomicBanner} role="status">
+            <p style={styles.visitaDomicBannerTitle}>Sem atendimento na unidade hoje</p>
+            <p style={styles.visitaDomicBannerText}>
+              Nesta data, <strong>{name}</strong> não realiza consultas na UBS: o atendimento odontológico desta
+              quarta-feira é exclusivamente em <strong>visita domiciliar</strong>.
+            </p>
+          </div>
+        )}
 
         {!isRecepcao && (
           <div style={styles.cardResumoAgente}>
@@ -575,6 +850,8 @@ function SpecCard({
                 atendimentoDate={spec.atendimentoDate}
                 onSolicitar={onSolicitar}
                 solicitacaoEncaminhamentoObrigatorio={spec.solicitacaoEncaminhamentoObrigatorio}
+                dentroExpedienteUbs={dentroExpedienteUbs}
+                ocultarResumoVagas={!!visitaVariant}
               />
             ))}
           </div>
@@ -591,34 +868,22 @@ function SpecCard({
               atendimentoDate={spec.atendimentoDate}
               isRecepcao
               onSlotAction={onSlotAction}
+              somenteRotuloTurno={!!visitaVariant}
             />
           ))}
 
         {isRecepcao &&
+          !visitaVariant &&
           mostrarBotaoEncerradoRecepcao &&
           dataEncerrado &&
           typeof onToggleAtendimentoEncerrado === "function" && (
-            <div style={styles.cardFooterRecepcao}>
-              <button
-                type="button"
-                style={
-                  atendimentoEncerradoAtivo
-                    ? styles.btnAtendimentoEncerradoAtivo
-                    : styles.btnAtendimentoFinalizado
-                }
-                onClick={() =>
-                  onToggleAtendimentoEncerrado(
-                    spec.key,
-                    dataEncerrado,
-                    !atendimentoEncerradoAtivo
-                  )
-                }
-              >
-                {atendimentoEncerradoAtivo
-                  ? "Remover aviso de atendimento encerrado"
-                  : "Atendimento finalizado"}
-              </button>
-            </div>
+            <RecepcaoBotoesAtendimentoEncerrado
+              spec={spec}
+              dataEncerrado={dataEncerrado}
+              atendimentoEncerradoMap={atendimentoEncerradoMap}
+              agoraRecepcao={agoraRecepcao}
+              onToggleAtendimentoEncerrado={onToggleAtendimentoEncerrado}
+            />
           )}
       </div>
     </div>
@@ -633,7 +898,20 @@ function SessionRow({
   atendimentoDate,
   isRecepcao,
   onSlotAction,
+  somenteRotuloTurno = false,
 }) {
+  if (somenteRotuloTurno) {
+    return (
+      <div style={styles.sessRowSomenteTurno}>
+        <p style={styles.sessLabel}>
+          {sess.label}
+          <MedicoBadge tipo={sess.medicoTipo} />
+          {sess.pccuOnly && <span style={styles.pccuTag}>PCCU</span>}
+        </p>
+      </div>
+    );
+  }
+
   const used = sess.used ?? 0;
   const reserved = sess.reserved ?? 0;
   const total = sess.total ?? 0;
@@ -649,30 +927,57 @@ function SessionRow({
 
   let livresRecepcao = livres;
   let textoPill = "";
-  let pct = 0;
+  /** Barra única (sem encaixe ou só encaixe sem agenda base). */
+  let pctUnica = 0;
+  /** Duas barras: comuns cheias → 100%; depois barra só para encaixe. */
+  let pctComuns = 0;
+  let pctEncaixe = 0;
+  let mostrarBarraEncaixe = false;
+
   if (temEncaixe) {
     if (faseComuns) {
       livresRecepcao = baseAgenda - filled;
       textoPill = `${livresRecepcao}/${baseAgenda} livres (comuns)`;
-      pct = baseAgenda ? Math.min(100, Math.round((filled / baseAgenda) * 100)) : 0;
+      if (baseAgenda > 0) {
+        pctComuns = Math.min(100, Math.round((filled / baseAgenda) * 100));
+      } else {
+        pctUnica = encaixeExtra
+          ? Math.min(100, Math.round((filled / encaixeExtra) * 100))
+          : 0;
+      }
     } else if (!agendaCheia) {
       livresRecepcao = total - filled;
       textoPill = `${livresRecepcao}/${encaixeExtra} encaixe(s) livre(s)`;
-      pct = encaixeExtra
-        ? Math.min(100, Math.round(((filled - baseAgenda) / encaixeExtra) * 100))
-        : 0;
+      if (baseAgenda > 0) {
+        pctComuns = 100;
+        const usoEncaixe = Math.max(0, filled - baseAgenda);
+        pctEncaixe = encaixeExtra
+          ? Math.min(100, Math.round((usoEncaixe / encaixeExtra) * 100))
+          : 0;
+        mostrarBarraEncaixe = encaixeExtra > 0;
+      } else {
+        pctUnica = encaixeExtra
+          ? Math.min(100, Math.round((filled / encaixeExtra) * 100))
+          : 0;
+      }
     } else {
       livresRecepcao = 0;
       textoPill = `0/${total} livres`;
-      pct = 100;
+      if (baseAgenda > 0) {
+        pctComuns = 100;
+        pctEncaixe = 100;
+        mostrarBarraEncaixe = encaixeExtra > 0;
+      } else {
+        pctUnica = 100;
+      }
     }
   } else {
     textoPill = `${livres}/${total} livres`;
-    pct = total ? Math.min(100, Math.round((filled / total) * 100)) : 0;
+    pctUnica = total ? Math.min(100, Math.round((filled / total) * 100)) : 0;
   }
 
   const cheio = livres <= 0;
-  const barFillBg = cheio
+  const barFillUnica = cheio
     ? "#22C55E"
     : filled === 0
       ? "#22C55E"
@@ -704,21 +1009,60 @@ function SessionRow({
             {textoPill}
           </span>
         </div>
-        <div
-          style={{
-            ...styles.barTrack,
-            ...(cheio ? styles.barTrackCheio : {}),
-          }}
-          aria-hidden
-        >
+        {temEncaixe && baseAgenda > 0 ? (
+          <div style={styles.barrasRecepcaoStack} aria-hidden>
+            {mostrarBarraEncaixe && <p style={styles.barRecepcaoLegenda}>Agenda comum</p>}
+            <div
+              style={{
+                ...styles.barTrackRecepcao,
+                ...(cheio ? styles.barTrackCheio : {}),
+              }}
+            >
+              <div
+                style={{
+                  ...styles.barFill,
+                  width: `${pctComuns}%`,
+                  background: pctComuns >= 100 ? "#22C55E" : "#3B82F6",
+                }}
+              />
+            </div>
+            {mostrarBarraEncaixe && (
+              <>
+                <p style={styles.barRecepcaoLegendaEncaixe}>Encaixe</p>
+                <div
+                  style={{
+                    ...styles.barTrackRecepcao,
+                    ...(cheio ? styles.barTrackCheio : {}),
+                  }}
+                >
+                  <div
+                    style={{
+                      ...styles.barFill,
+                      width: `${pctEncaixe}%`,
+                      background: pctEncaixe >= 100 ? "#22C55E" : "#EA580C",
+                    }}
+                  />
+                </div>
+              </>
+            )}
+          </div>
+        ) : (
           <div
             style={{
-              ...styles.barFill,
-              width: `${pct}%`,
-              background: barFillBg,
+              ...styles.barTrack,
+              ...(cheio ? styles.barTrackCheio : {}),
             }}
-          />
-        </div>
+            aria-hidden
+          >
+            <div
+              style={{
+                ...styles.barFill,
+                width: `${pctUnica}%`,
+                background: barFillUnica,
+              }}
+            />
+          </div>
+        )}
         <div style={styles.statsRow}>
           <span>
             <strong style={{ color: "#166534" }}>{livresRecepcao}</strong>{" "}
@@ -731,6 +1075,33 @@ function SessionRow({
       </div>
       <div style={styles.sessActions}>
         <div style={styles.recepPair} role="group" aria-label="Ajustar vagas preenchidas">
+          <button
+            type="button"
+            style={liberarEncaixe ? styles.btnRecepRemoveEncaixe : styles.btnRecepRemove}
+            disabled={reserved <= 0 && used <= 0}
+            title={
+              reserved > 0
+                ? "Remover uma reserva pendente"
+                : liberarEncaixe
+                  ? "Cancelar agendamento de encaixe"
+                  : used > 0
+                    ? "Cancelar agendamento (vaga comum)"
+                    : ""
+            }
+            onClick={() =>
+              liberarVaga({
+                specKey,
+                dayKey,
+                sessIdx,
+                atendimentoDate,
+                reserved,
+                used,
+                onSlotAction,
+              })
+            }
+          >
+            {liberarEncaixe ? "− Liberar encaixe" : "− Liberar"}
+          </button>
           <button
             type="button"
             style={faseEncaixe ? styles.btnRecepAddEncaixe : styles.btnRecepAdd}
@@ -759,33 +1130,6 @@ function SessionRow({
             }
           >
             {faseEncaixe ? "+ Preencher encaixe" : "+ Preencher"}
-          </button>
-          <button
-            type="button"
-            style={liberarEncaixe ? styles.btnRecepRemoveEncaixe : styles.btnRecepRemove}
-            disabled={reserved <= 0 && used <= 0}
-            title={
-              reserved > 0
-                ? "Remover uma reserva pendente"
-                : liberarEncaixe
-                  ? "Cancelar agendamento de encaixe"
-                  : used > 0
-                    ? "Cancelar agendamento (vaga comum)"
-                    : ""
-            }
-            onClick={() =>
-              liberarVaga({
-                specKey,
-                dayKey,
-                sessIdx,
-                atendimentoDate,
-                reserved,
-                used,
-                onSlotAction,
-              })
-            }
-          >
-            {liberarEncaixe ? "− Liberar encaixe" : "− Liberar"}
           </button>
         </div>
       </div>
@@ -832,6 +1176,44 @@ const styles = {
     fontSize: 13,
     color: "#7F1D1D",
     lineHeight: 1.45,
+  },
+  alertExpedienteUbs: {
+    marginBottom: 20,
+    padding: "16px 18px",
+    borderRadius: 12,
+    border: "1px solid #FCD34D",
+    background: "linear-gradient(180deg, #FFFBEB 0%, #FEF3C7 100%)",
+  },
+  alertExpedienteUbsTitle: {
+    margin: "0 0 6px",
+    fontSize: 15,
+    fontWeight: 700,
+    color: "#92400E",
+  },
+  alertExpedienteUbsText: {
+    margin: 0,
+    fontSize: 13,
+    color: "#78350F",
+    lineHeight: 1.45,
+  },
+  avisoEncerradoAgenteWrap: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    marginBottom: 16,
+  },
+  avisoEncerradoAgente: {
+    padding: "8px 12px",
+    borderRadius: 8,
+    border: "1px solid #BFDBFE",
+    background: "linear-gradient(180deg, #EFF6FF 0%, #DBEAFE 100%)",
+  },
+  avisoEncerradoAgenteLinha: {
+    margin: 0,
+    fontSize: 12,
+    fontWeight: 600,
+    color: "#1E3A8A",
+    lineHeight: 1.35,
   },
   legend: {
     display: "flex",
@@ -949,6 +1331,36 @@ const styles = {
     textTransform: "uppercase",
     letterSpacing: "0.04em",
   },
+  fullBadgeVisita: {
+    fontSize: 10,
+    background: "#CCFBF1",
+    color: "#0F766E",
+    padding: "4px 8px",
+    borderRadius: 999,
+    fontWeight: 700,
+    textTransform: "uppercase",
+    letterSpacing: "0.04em",
+  },
+  visitaDomicBanner: {
+    margin: "0 12px 10px",
+    padding: "10px 12px",
+    borderRadius: 8,
+    background: "linear-gradient(135deg, #F0FDFA 0%, #ECFEFF 100%)",
+    border: "1px solid #99F6E4",
+  },
+  visitaDomicBannerTitle: {
+    margin: "0 0 6px",
+    fontSize: 13,
+    fontWeight: 700,
+    color: "#0F766E",
+    lineHeight: 1.3,
+  },
+  visitaDomicBannerText: {
+    margin: 0,
+    fontSize: 12,
+    lineHeight: 1.5,
+    color: "#134E4A",
+  },
   sessRow: {
     display: "flex",
     flexDirection: "column",
@@ -958,6 +1370,13 @@ const styles = {
     background: "#F8FAFC",
     borderRadius: 10,
     marginBottom: 8,
+    border: "1px solid #EEF2F7",
+  },
+  sessRowSomenteTurno: {
+    padding: "8px 12px",
+    marginBottom: 8,
+    background: "#F8FAFC",
+    borderRadius: 10,
     border: "1px solid #EEF2F7",
   },
   sessTitleRow: {
@@ -1000,6 +1419,33 @@ const styles = {
     overflow: "hidden",
     marginBottom: 8,
   },
+  /** Faixa sem margem inferior (empilhada em `barrasRecepcaoStack`). */
+  barTrackRecepcao: {
+    height: 6,
+    borderRadius: 999,
+    background: "#E2E8F0",
+    overflow: "hidden",
+    marginBottom: 0,
+  },
+  barrasRecepcaoStack: {
+    marginBottom: 8,
+  },
+  barRecepcaoLegenda: {
+    margin: "0 0 4px",
+    fontSize: 10,
+    fontWeight: 600,
+    color: "#64748B",
+    letterSpacing: "0.03em",
+    textTransform: "uppercase",
+  },
+  barRecepcaoLegendaEncaixe: {
+    margin: "10px 0 4px",
+    fontSize: 10,
+    fontWeight: 600,
+    color: "#9A3412",
+    letterSpacing: "0.03em",
+    textTransform: "uppercase",
+  },
   barTrackCheio: {
     background: "#DCFCE7",
     boxShadow: "inset 0 0 0 1px #86EFAC",
@@ -1010,6 +1456,33 @@ const styles = {
     fontSize: 14,
     fontWeight: 600,
     lineHeight: 1.35,
+  },
+  /** Agente/direção: destaque para “X vagas disponíveis”. */
+  agenteDestaqueVagasLivres: {
+    margin: 0,
+    padding: "7px 10px",
+    fontSize: 14,
+    fontWeight: 600,
+    lineHeight: 1.35,
+    letterSpacing: "-0.01em",
+    color: "#065F46",
+    background: "linear-gradient(135deg, #D1FAE5 0%, #A7F3D0 55%, #6EE7B7 100%)",
+    border: "1px solid #059669",
+    borderRadius: 8,
+    boxShadow: "0 2px 8px rgba(5, 150, 105, 0.2), inset 0 1px 0 rgba(255,255,255,0.5)",
+  },
+  /** Agente/direção: destaque para vagas só de encaixe disponíveis. */
+  agenteDestaqueEncaixe: {
+    margin: 0,
+    padding: "7px 10px",
+    fontSize: 13,
+    fontWeight: 600,
+    lineHeight: 1.4,
+    color: "#7C2D12",
+    background: "linear-gradient(135deg, #FFFBEB 0%, #FEF3C7 50%, #FDE68A 100%)",
+    border: "1px solid #D97706",
+    borderRadius: 8,
+    boxShadow: "0 2px 8px rgba(217, 119, 6, 0.16), inset 0 1px 0 rgba(255,255,255,0.6)",
   },
   cardResumoAgente: {
     padding: "12px 16px 16px",
@@ -1174,11 +1647,5 @@ const styles = {
     background: "linear-gradient(180deg, #EF4444 0%, #DC2626 100%)",
     color: "#fff",
     boxShadow: "0 2px 6px rgba(185, 28, 28, 0.35)",
-  },
-  encaixeAgenteAviso: {
-    fontSize: 14,
-    fontWeight: 600,
-    lineHeight: 1.45,
-    color: "#9A3412",
   },
 };

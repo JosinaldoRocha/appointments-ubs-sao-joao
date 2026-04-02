@@ -1,6 +1,11 @@
 // src/components/ModalAgendar.jsx
 import { useState, useEffect } from "react";
-import { SPEC_META, toDateStr } from "../services/scheduleConfig";
+import {
+  SPEC_META,
+  toDateStr,
+  estaDentroExpedienteUbs,
+  MSG_FORA_EXPEDIENTE_UBS,
+} from "../services/scheduleConfig";
 import {
   fraseVagasEsgotadasEncaixe,
   rotuloEncaixeModal,
@@ -33,6 +38,13 @@ export default function ModalAgendar({
   const [observacao, setObservacao] = useState("");
   const [erro, setErro] = useState("");
   const [enviando, setEnviando] = useState(false);
+  const [agoraExpediente, setAgoraExpediente] = useState(() => new Date());
+  const foraExpedienteUbs = !estaDentroExpedienteUbs(agoraExpediente);
+
+  useEffect(() => {
+    const t = setInterval(() => setAgoraExpediente(new Date()), 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   /** Data local máxima para nascimento: hoje (não permite datas futuras). */
   const maxDataNascimento = toDateStr(new Date());
@@ -70,6 +82,7 @@ export default function ModalAgendar({
     setObservacao("");
     setErro("");
     setEnviando(false);
+    setAgoraExpediente(new Date());
   }, [
     ctx.type,
     ctx.specKey,
@@ -158,9 +171,13 @@ export default function ModalAgendar({
 
   async function submit() {
     setErro("");
+    if (!estaDentroExpedienteUbs(new Date())) {
+      setErro(MSG_FORA_EXPEDIENTE_UBS);
+      return;
+    }
     if (!recepcaoWhatsappOk) {
       setErro(
-        "Nenhum WhatsApp da recepção disponível. Peça a um recepcionista para abrir o app e cadastrar o número em Config. → Usuários."
+        "Nenhum WhatsApp da recepção disponível. Peça para cadastrar o número em Config. → Usuários (um recepcionista precisa ter feito login ao menos uma vez com WhatsApp cadastrado)."
       );
       return;
     }
@@ -484,13 +501,15 @@ export default function ModalAgendar({
           </Field>
         </div>
 
-        {erro && <p style={S.erro}>{erro}</p>}
+        {(erro || foraExpedienteUbs) && (
+          <p style={S.erro}>{erro || MSG_FORA_EXPEDIENTE_UBS}</p>
+        )}
 
         <div style={S.actions}>
           <button style={S.btnCancel} onClick={onClose} disabled={enviando}>
             Cancelar
           </button>
-          <button style={S.btnOk} onClick={submit} disabled={enviando}>
+          <button style={S.btnOk} onClick={submit} disabled={enviando || foraExpedienteUbs}>
             {enviando ? "Enviando…" : "Enviar solicitação"}
           </button>
         </div>
