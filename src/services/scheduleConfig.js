@@ -64,7 +64,6 @@ export const BASE_SCHEDULE = {
       },
       {
         key: "dentFernando",
-        fernandoCheck: true,
         sessions: [
           { label: "Manhã", total: 8 },
           { label: "Tarde", total: 8 },
@@ -90,7 +89,6 @@ export const BASE_SCHEDULE = {
       },
       {
         key: "dentFernando",
-        fernandoCheck: true,
         sessions: [
           { label: "Manhã", total: 8 },
           { label: "Tarde", total: 8 },
@@ -113,7 +111,6 @@ export const BASE_SCHEDULE = {
       },
       {
         key: "dentFernando",
-        fernandoCheck: true,
         sessions: [{ label: "Manhã", total: 8 }],
       },
       {
@@ -201,11 +198,24 @@ export function encaixeExtraForSpec(specKey) {
 
 /**
  * Total efetivo de vagas no turno (agenda base + encaixe), alinhado à UI e ao Firestore.
+ * @param {object} [opts]
+ * @param {string} [opts.atendimentoDateStr] — YYYY-MM-DD (regra quarta manhã odonto / visitas)
+ * @param {string} [opts.dentQuartaVisitaDomiciliarDesde] — primeira quarta (AAAA-MM-DD) ou vazio
  */
-export function sessionTotalEffective(dayKey, specKey, sessIdx, pccuTotal) {
+export function sessionTotalEffective(dayKey, specKey, sessIdx, pccuTotal, opts = {}) {
   const spec = BASE_SCHEDULE[dayKey]?.specs.find((s) => s.key === specKey);
   const sess = spec?.sessions?.[sessIdx];
   if (!sess) return 0;
+  if (
+    dayKey === "quarta" &&
+    specKey === "dentFernando" &&
+    sessIdx === 0 &&
+    opts.atendimentoDateStr &&
+    opts.dentQuartaVisitaDomiciliarDesde &&
+    isDentQuartaVisitaDomiciliar(opts.atendimentoDateStr, opts.dentQuartaVisitaDomiciliarDesde)
+  ) {
+    return 0;
+  }
   const base = sess.pccuOnly ? (pccuTotal ?? sess.total ?? DEFAULT_PCCU_TOTAL) : sess.total;
   return base + encaixeExtraForSpec(specKey);
 }
@@ -219,8 +229,11 @@ export function toDateStr(date) {
   return `${y}-${m}-${day}`;
 }
 
-/** Minutos desde meia-noite até o fim do turno da manhã (início da tarde). Padrão: 12:30. */
-const TURNO_MANHA_FIM_MINUTOS = 12 * 60 + 30;
+/** Minutos desde meia-noite até o fim do turno da manhã (início da tarde). 12:00. */
+const TURNO_MANHA_FIM_MINUTOS = 12 * 60;
+
+/** Fim do turno da tarde no dia do atendimento (cartões “hoje” somem após este horário). 17:00. */
+const TURNO_TARDE_FIM_MINUTOS = 17 * 60;
 
 /** `"manha"` ou `"tarde"` conforme o relógio local. */
 export function turnoAtualDoRelogio(date = new Date()) {
@@ -248,14 +261,57 @@ export function specTemSessaoNoTurno(spec, turno) {
 }
 
 /**
- * Recepção: pode exibir "Atendimento finalizado" — só em card de atendimento hoje (`same`),
- * no turno (manhã/tarde) que coincide com o relógio.
+ * Cartão de atendimento no dia atual (`same`): deve ficar oculto para todos os usuários
+ * após o horário de encerramento do(s) turno(s) daquele profissional (manhã 12h; tarde 17h;
+ * quem tem manhã e tarde some após 17h). Sessões sem rótulo manhã/tarde contam como “dia inteiro” até 17h.
  */
-export function recepcaoPodeMarcarAtendimentoFinalizado(spec, agora = new Date()) {
+export function specAtendimentoHojeOcultoAposTurnos(spec, agora = new Date()) {
   if (spec.windowType !== "same") return false;
   const hoje = toDateStr(agora);
   if (spec.atendimentoDate !== hoje) return false;
-  return specTemSessaoNoTurno(spec, turnoAtualDoRelogio(agora));
+  const d = agora instanceof Date ? agora : new Date(agora);
+  const min = d.getHours() * 60 + d.getMinutes();
+  const hasManha = specTemSessaoNoTurno(spec, "manha");
+  const hasTarde = specTemSessaoNoTurno(spec, "tarde");
+  if (hasManha && hasTarde) return min >= TURNO_TARDE_FIM_MINUTOS;
+  if (hasManha && !hasTarde) return min >= TURNO_MANHA_FIM_MINUTOS;
+  if (!hasManha && hasTarde) return min >= TURNO_TARDE_FIM_MINUTOS;
+  return min >= TURNO_TARDE_FIM_MINUTOS;
+}
+
+/**
+ * Recepção: pode exibir "Atendimento finalizado" — só em card de atendimento hoje (`same`),
+ * quando o relógio está no turno correspondente (manhã antes de 12h, tarde a partir de 12h).
+ * `turno` explícito (`"manha"` | `"tarde"`) alinha o botão àquele turno; sem `turno`, usa o turno atual.
+ */
+export function recepcaoPodeMarcarAtendimentoFinalizado(spec, agora = new Date(), turno = null) {
+  if (spec.windowType !== "same") return false;
+  const hoje = toDateStr(agora);
+  if (spec.atendimentoDate !== hoje) return false;
+  const hasM = specTemSessaoNoTurno(spec, "manha");
+  const hasT = specTemSessaoNoTurno(spec, "tarde");
+  if (!hasM && !hasT) return false;
+  const t = turno != null ? turno : turnoAtualDoRelogio(agora);
+  if (!specTemSessaoNoTurno(spec, t)) return false;
+  return turnoAtualDoRelogio(agora) === t;
+}
+
+/**
+ * Agente/direção: o cartão some só quando o encerramento cobre o caso (legado = dia inteiro;
+ * manhã e tarde no mesmo card = ambos os flags ou chave legado).
+ */
+export function agenteOcultarCardPorEncerrado(spec, atendimentoEncerradoMap = {}) {
+  const d = spec.atendimentoDate;
+  if (typeof d !== "string" || !d) return false;
+  const map = atendimentoEncerradoMap;
+  const base = `${spec.key}_${d}`;
+  if (map[base]) return true;
+  const hasM = specTemSessaoNoTurno(spec, "manha");
+  const hasT = specTemSessaoNoTurno(spec, "tarde");
+  if (hasM && hasT) return !!(map[`${base}_manha`] && map[`${base}_tarde`]);
+  if (hasM && !hasT) return !!(map[`${base}_manha`] || map[base]);
+  if (!hasM && hasT) return !!(map[`${base}_tarde`] || map[base]);
+  return !!map[base];
 }
 
 export function parseDateStr(iso) {
@@ -264,8 +320,114 @@ export function parseDateStr(iso) {
   return dt;
 }
 
+/** Soma dias a uma data ISO local (YYYY-MM-DD). */
+export function addDaysLocal(isoStr, days) {
+  const d = parseDateStr(isoStr);
+  d.setDate(d.getDate() + days);
+  return toDateStr(d);
+}
+
+/**
+ * Intervalo entre dias de visita domiciliar (Dr. Fernando): quinzenal a partir da data informada
+ * (uma quarta sim, outra não). 14 dias corridos entre quartas consecutivas da série — alinhado ao
+ * pedido “de 15 em 15 dias” no sentido quinzenal (duas semanas no mesmo dia da semana).
+ */
+export const INTERVALO_DIAS_VISITA_DOMICILIAR_ODONTO = 14;
+
+/**
+ * Odontologia (Dr. Fernando) — quarta manhã reservada para visitas domiciliares:
+ * quartas-feiras a partir de `desdeStr`, de INTERVALO_DIAS_VISITA_DOMICILIAR_ODONTO em
+ * INTERVALO_DIAS_VISITA_DOMICILIAR_ODONTO dias (ex.: quinzenal).
+ */
+export function isDentQuartaVisitaDomiciliar(attStr, desdeStr) {
+  const raw = desdeStr != null ? String(desdeStr).trim() : "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return false;
+  const cand = parseDateStr(attStr);
+  cand.setHours(12, 0, 0, 0);
+  if (cand.getDay() !== 3) return false;
+  if (attStr < raw) return false;
+  const base = parseDateStr(raw);
+  base.setHours(12, 0, 0, 0);
+  const diffDays = Math.round((cand.getTime() - base.getTime()) / (24 * 60 * 60 * 1000));
+  if (diffDays < 0) return false;
+  return diffDays % INTERVALO_DIAS_VISITA_DOMICILIAR_ODONTO === 0;
+}
+
+/**
+ * Exibir aviso no dia **anterior** (calendário) à quarta de visitas: `hoje + 1 dia` é quarta com visitas.
+ */
+export function shouldShowAvisoVisitaDomiciliarAmanha(todayStr, desdeStr) {
+  const amanha = addDaysLocal(todayStr, 1);
+  return isDentQuartaVisitaDomiciliar(amanha, desdeStr);
+}
+
+/**
+ * Qual mensagem contextual exibir no card do dentista (quarta, visitas domiciliares).
+ * @returns {"vespera" | "hoje" | null}
+ */
+export function varianteVisitaDomiciliarNoCard({ spec, todayStr, desdeStr }) {
+  if (!desdeStr || spec.key !== "dentFernando" || spec.atendimentoDia !== "quarta") return null;
+  if (!isDentQuartaVisitaDomiciliar(spec.atendimentoDate, desdeStr)) return null;
+  if (spec.windowType === "same" && spec.atendimentoDate === todayStr) return "hoje";
+  if (spec.windowType === "prev" && addDaysLocal(todayStr, 1) === spec.atendimentoDate) return "vespera";
+  return null;
+}
+
+/** Lista única de datas ISO (AAAA-MM-DD) a partir do Firestore ou do formulário. */
+export function normalizeFeriadosList(feriados) {
+  const seen = new Set();
+  const out = [];
+  if (!Array.isArray(feriados)) return out;
+  for (const f of feriados) {
+    if (typeof f !== "string") continue;
+    const t = f.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(t) || seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+  }
+  out.sort();
+  return out;
+}
+
 export function holidaySetFromArray(feriados) {
-  return new Set(Array.isArray(feriados) ? feriados.filter(Boolean) : []);
+  return new Set(normalizeFeriadosList(feriados));
+}
+
+/** Feriados + pontos facultativos: dias em que a UBS não agenda (mesma regra de dia útil). */
+export function nonWorkingDaySet(feriados, pontosFacultativos = []) {
+  const set = new Set(normalizeFeriadosList(feriados));
+  for (const d of normalizeFeriadosList(pontosFacultativos)) set.add(d);
+  return set;
+}
+
+/**
+ * Feriados cuja data é **amanhã** (`todayStr` + 1 dia), para exibir aviso no dia anterior (calendário).
+ */
+export function feriadosQueCaemEmAmanha(todayStr, feriados) {
+  const amanha = addDaysLocal(todayStr, 1);
+  const list = Array.isArray(feriados) ? feriados : [];
+  const seen = new Set();
+  const out = [];
+  for (const f of list) {
+    if (typeof f !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(f.trim())) continue;
+    const iso = f.trim();
+    if (iso !== amanha || seen.has(iso)) continue;
+    seen.add(iso);
+    out.push(iso);
+  }
+  return out;
+}
+
+/**
+ * Amanhã é feriado e/ou ponto facultativo na UBS (para aviso no calendário).
+ * @returns {{ iso: string, eFeriado: boolean, ePontoFacultativo: boolean } | null}
+ */
+export function avisoSemAtendimentoUbAmanha(todayStr, feriados, pontosFacultativos = []) {
+  const amanha = addDaysLocal(todayStr, 1);
+  const eFeriado = normalizeFeriadosList(feriados).includes(amanha);
+  const ePontoFacultativo = normalizeFeriadosList(pontosFacultativos).includes(amanha);
+  if (!eFeriado && !ePontoFacultativo) return null;
+  return { iso: amanha, eFeriado, ePontoFacultativo };
 }
 
 export function isWeekend(date) {
@@ -322,19 +484,24 @@ export function vagaDocId(atendimentoDateStr, specKey, sessIdx) {
 }
 
 /** Datas de atendimento nos próximos dias que podem ter documentos em `vagas` (para o listener). */
-export function collectAtendimentoDatesForListener(today, fernandoFora) {
+export function collectAtendimentoDatesForListener(
+  today,
+  feriados = [],
+  pontosFacultativos = []
+) {
+  const holidaySet = nonWorkingDaySet(feriados, pontosFacultativos);
   const seen = new Set();
-  seen.add(toDateStr(today));
+  const todayStr = toDateStr(today);
+  if (!holidaySet.has(todayStr)) seen.add(todayStr);
   for (let add = 0; add < 14; add++) {
     const cand = new Date(today);
     cand.setHours(12, 0, 0, 0);
     cand.setDate(cand.getDate() + add);
+    const attStr = toDateStr(cand);
+    if (holidaySet.has(attStr)) continue;
     const dk = JS_DAY_TO_KEY[cand.getDay()];
     if (!BASE_SCHEDULE[dk]) continue;
-    const hasVisibleSpec = BASE_SCHEDULE[dk].specs.some(
-      (sp) => !(sp.fernandoCheck && fernandoFora)
-    );
-    if (hasVisibleSpec) seen.add(toDateStr(cand));
+    seen.add(attStr);
   }
   return [...seen];
 }
@@ -410,20 +577,19 @@ function dedupeAgendaQualquerDiaUtil(segments) {
 export function buildVisibleSegments({
   today,
   feriados,
-  fernandoFora,
+  pontosFacultativos = [],
   vagasMap,
   pccuTotal,
   recepcao = false,
+  dentQuartaVisitaDomiciliarDesde = "",
 }) {
-  const holidaySet = holidaySetFromArray(feriados);
+  const holidaySet = nonWorkingDaySet(feriados, pontosFacultativos);
   const todayStr = toDateStr(today);
   const dedupe = new Set();
   const result = [];
 
   for (const [atendimentoDia, dayData] of Object.entries(BASE_SCHEDULE)) {
     for (const spec of dayData.specs) {
-      if (spec.fernandoCheck && fernandoFora) continue;
-
       for (let add = 0; add < 14; add++) {
         const cand = new Date(today);
         cand.setHours(12, 0, 0, 0);
@@ -431,7 +597,21 @@ export function buildVisibleSegments({
         if (JS_DAY_TO_KEY[cand.getDay()] !== atendimentoDia) continue;
 
         const attStr = toDateStr(cand);
-        const baseSessions = cloneSessionsWithTotals(spec, pccuTotal);
+        if (holidaySet.has(attStr)) continue;
+
+        let baseSessions = cloneSessionsWithTotals(spec, pccuTotal);
+        if (
+          spec.key === "dentFernando" &&
+          atendimentoDia === "quarta" &&
+          dentQuartaVisitaDomiciliarDesde &&
+          isDentQuartaVisitaDomiciliar(attStr, dentQuartaVisitaDomiciliarDesde)
+        ) {
+          baseSessions = baseSessions.map((sess, idx) => {
+            if (idx !== 0) return sess;
+            if (sessaoLabelParaTurno(sess.label) !== "manha") return sess;
+            return { ...sess, total: 0, encaixeExtra: 0 };
+          });
+        }
         const sessions = mergeSessionCounts(baseSessions, spec.key, attStr, vagasMap);
 
         const temVaga = sessions.some(
@@ -460,7 +640,13 @@ export function buildVisibleSegments({
           }
         }
 
-        if (attStr === todayStr && (temVaga || recepcao)) {
+        const visitaDomicHojeSemVaga =
+          spec.key === "dentFernando" &&
+          atendimentoDia === "quarta" &&
+          dentQuartaVisitaDomiciliarDesde &&
+          isDentQuartaVisitaDomiciliar(attStr, dentQuartaVisitaDomiciliarDesde);
+
+        if (attStr === todayStr && (temVaga || recepcao || visitaDomicHojeSemVaga)) {
           const k = `same-${spec.key}-${atendimentoDia}-${attStr}`;
           if (!dedupe.has(k)) {
             dedupe.add(k);
@@ -486,9 +672,23 @@ export function getSpecsVisiveis(vagasMap, profNames, options = {}) {
   return buildVisibleSegments({
     today,
     feriados: options.feriados ?? [],
-    fernandoFora: options.fernandoFora ?? false,
+    pontosFacultativos: options.pontosFacultativos ?? [],
     vagasMap,
     pccuTotal: options.pccuTotal ?? DEFAULT_PCCU_TOTAL,
     recepcao: options.recepcao ?? false,
+    dentQuartaVisitaDomiciliarDesde: options.dentQuartaVisitaDomiciliarDesde ?? "",
   });
 }
+
+// ─────────────────────────────────────────────────────────────────
+//  Expediente da UBS (solicitações por agentes / direção — horário local)
+// ─────────────────────────────────────────────────────────────────
+
+/** Expediente da UBS para solicitações: 7h às 17h em horário local (inclui o horário de almoço). Intervalo [7,17). */
+export function estaDentroExpedienteUbs(data = new Date()) {
+  const min = data.getHours() * 60 + data.getMinutes();
+  return min >= 7 * 60 && min < 17 * 60;
+}
+
+export const MSG_FORA_EXPEDIENTE_UBS =
+  "Solicitações de agendamento só são permitidas no horário de expediente da UBS: 7h às 17h.";
