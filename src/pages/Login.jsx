@@ -4,15 +4,27 @@ import { Link, useNavigate } from "react-router-dom";
 import AppLogo from "../components/AppLogo";
 import PasswordInput from "../components/PasswordInput";
 import { loginComEmail } from "../services/auth";
-import { useAuth } from "../hooks/useAuth";
+import { useAuth, STORAGE_LOGOUT_SESSAO_RECEPCAO } from "../hooks/useAuth";
 
 export default function Login() {
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
   const [erro, setErro] = useState("");
+  const [avisoSessao, setAvisoSessao] = useState("");
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const { user, loading: authLoading } = useAuth();
+
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem(STORAGE_LOGOUT_SESSAO_RECEPCAO)) {
+        sessionStorage.removeItem(STORAGE_LOGOUT_SESSAO_RECEPCAO);
+        setAvisoSessao("Outro recepcionista entrou no sistema. Sua sessão foi encerrada.");
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   useEffect(() => {
     if (!authLoading && user) {
@@ -94,6 +106,11 @@ export default function Login() {
             />
           </div>
 
+          {avisoSessao && (
+            <p style={styles.avisoSessao} role="status">
+              {avisoSessao}
+            </p>
+          )}
           {erro && <p style={styles.erro}>{erro}</p>}
 
           <button style={{ ...styles.btn, opacity: loading ? 0.6 : 1 }} disabled={loading}>
@@ -143,6 +160,15 @@ const styles = {
     outline: "none",
     background: "#fff",
     color: "#0F172A",
+  },
+  avisoSessao: {
+    fontSize: "13px",
+    color: "#92400E",
+    background: "#FFFBEB",
+    border: "1px solid #FDE68A",
+    borderRadius: "6px",
+    padding: "8px 12px",
+    margin: 0,
   },
   erro: {
     fontSize: "13px",

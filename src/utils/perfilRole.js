@@ -20,3 +20,9 @@ export function isRecepcaoPerfil(perfil) {
 export function isDiretorPerfil(perfil) {
   return rulePerfil(perfil) === "diretor";
 }
+
+/** Agente de saúde ou direção — avisos operacionais (ex.: visitas domiciliares). */
+export function isAgenteOuDiretorPerfil(perfil) {
+  const r = rulePerfil(perfil);
+  return r === "agente" || r === "diretor";
+}

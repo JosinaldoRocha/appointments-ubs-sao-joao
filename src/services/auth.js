@@ -6,6 +6,7 @@ import {
   sendPasswordResetEmail,
 } from "firebase/auth";
 import { auth } from "./firebase";
+import { releaseRecepcaoSession, updateSettings } from "./db";
 
 export function formatCpf(value) {
   const digits = value.replace(/\D/g, "").slice(0, 11);
@@ -51,6 +52,16 @@ export async function enviarEmailRedefinicaoSenha(email) {
 }
 
 export async function logout() {
+  const u = auth.currentUser;
+  if (u) {
+    const released = await releaseRecepcaoSession(u.uid);
+    if (released) {
+      await updateSettings({
+        recepcionistaAtivoWhatsapp: "",
+        recepcionistaAtivoNome: "",
+      }).catch(() => {});
+    }
+  }
   await signOut(auth);
 }
 
