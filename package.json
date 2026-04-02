@@ -14,7 +14,8 @@
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
-    "deploy": "npm run build && firebase deploy"
+    "deploy": "npm run build && firebase deploy",
+    "cleanup:firestore": "node scripts/cleanup-firestore.js"
   },
   "browserslist": {
     "production": [

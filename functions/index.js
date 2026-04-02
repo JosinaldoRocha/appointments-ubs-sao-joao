@@ -1,11 +1,13 @@
 // functions/index.js
-// Cloud Function: notificações push quando vagas esgotam
+// Cloud Function: notificações push quando vagas esgotam; expiração de documentos em `vagas`
 // Deploy: firebase deploy --only functions
 
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { initializeApp } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
 const { getMessaging } = require("firebase-admin/messaging");
+const { deleteExpiredVagasInFirestore } = require("./vagasRetention");
 
 initializeApp();
 const db = getFirestore();
@@ -56,5 +58,18 @@ exports.notificarVagasEsgotadas = onDocumentCreated(
         },
       });
     }
+  }
+);
+
+/** Remove `vagas` 24h após o fim do dia local do atendimento (roda a cada 6h, TZ São Paulo). */
+exports.expirarDocumentosVagas = onSchedule(
+  {
+    schedule: "every 6 hours",
+    timeZone: "America/Sao_Paulo",
+    memory: "256MiB",
+  },
+  async () => {
+    const n = await deleteExpiredVagasInFirestore(db);
+    if (n > 0) console.log(`expirarDocumentosVagas: removidos ${n} documento(s).`);
   }
 );
