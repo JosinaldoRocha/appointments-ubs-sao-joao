@@ -13,6 +13,8 @@ import {
   specAtendimentoHojeOcultoAposTurnos,
   specTemSessaoNoTurno,
   agenteOcultarCardPorEncerrado,
+  indicesSessoesAtendimentoHojeVisiveis,
+  reservaSolicitacaoAtiva,
 } from "../services/scheduleConfig";
 import { fraseVagasEsgotadasEncaixe } from "../services/whatsappSolicitacao";
 
@@ -298,6 +300,7 @@ export default function TabVagas({
   atendimentoEncerradoMap = {},
   onToggleAtendimentoEncerrado,
   dentQuartaVisitaDomiciliarDesde = "",
+  usuarioUid = "",
 }) {
   const [agoraRecepcao, setAgoraRecepcao] = useState(() => new Date());
   useEffect(() => {
@@ -428,6 +431,7 @@ export default function TabVagas({
               )}
               agoraRecepcao={agoraRecepcao}
               dentQuartaVisitaDomiciliarDesde={dentQuartaVisitaDomiciliarDesde}
+              usuarioUid={usuarioUid}
             />
           ))}
         </Section>
@@ -458,6 +462,7 @@ export default function TabVagas({
               )}
               agoraRecepcao={agoraRecepcao}
               dentQuartaVisitaDomiciliarDesde={dentQuartaVisitaDomiciliarDesde}
+              usuarioUid={usuarioUid}
             />
           ))}
         </Section>
@@ -515,11 +520,19 @@ function AgenteTurnoRow({
   solicitacaoEncaminhamentoObrigatorio,
   dentroExpedienteUbs = true,
   ocultarResumoVagas = false,
+  usuarioUid = "",
 }) {
   const used = sess.used ?? 0;
   const reserved = sess.reserved ?? 0;
   const total = sess.total ?? 0;
-  const livres = Math.max(0, total - used - reserved);
+  const livreBruto = Math.max(0, total - used - reserved);
+  const rs = sess.reservaSolicitacao;
+  const ativaReservaSolic = rs && reservaSolicitacaoAtiva(sess);
+  const reservadaPorOutro =
+    ativaReservaSolic && usuarioUid && rs.uid !== usuarioUid;
+  const reservadaPorVoce =
+    ativaReservaSolic && usuarioUid && rs.uid === usuarioUid;
+  const livres = Math.max(0, livreBruto - (reservadaPorOutro ? 1 : 0));
   const encaixeExtra = sess.encaixeExtra ?? 0;
   const baseAgenda = Math.max(0, total - encaixeExtra);
   const ocupadas = used + reserved;
@@ -536,7 +549,8 @@ function AgenteTurnoRow({
   const podeSolicitar =
     typeof onSolicitar === "function" &&
     dentroExpedienteUbs &&
-    (isFisio || wl || livres > 0);
+    (isFisio || wl || livres > 0) &&
+    !reservadaPorOutro;
   /** Esconde o aviso “vagas esgotadas” quando ainda há fluxo de lista de espera (fisio ou psicologia). */
   const ocultarEsgotadoPorListaEspera =
     (isFisio || isPsicologaListaEspera) && livres === 0;
@@ -597,6 +611,18 @@ function AgenteTurnoRow({
           A agenda está cheia. Solicite um agendamento para a lista de espera.
         </p>
       )}
+      {reservadaPorOutro && (
+        <p style={styles.agenteReservaOutro} role="status">
+          Última vaga reservada por <strong>{rs.nome}</strong> — solicitação em andamento. Aguarde ou
+          escolha outro horário.
+        </p>
+      )}
+      {reservadaPorVoce && (
+        <p style={styles.agenteReservaVoce} role="status">
+          Você reservou esta vaga ao abrir a solicitação. Envie pelo WhatsApp ou feche o formulário
+          para liberar.
+        </p>
+      )}
       {podeSolicitar && (
         <button
           type="button"
@@ -621,7 +647,7 @@ function AgenteTurnoRow({
       )}
       {!dentroExpedienteUbs && (isFisio || wl || livres > 0) && (
         <p style={styles.agenteTurnoHint}>
-          Solicitações apenas entre 7h e 17h (horário de expediente da UBS, inclui o almoço).
+          Solicitações apenas entre 7h30 e 12h e das 14h às 17h (horário de expediente da UBS).
         </p>
       )}
     </div>
@@ -755,14 +781,23 @@ function SpecCard({
   mostrarBotaoEncerradoRecepcao = false,
   agoraRecepcao = new Date(),
   dentQuartaVisitaDomiciliarDesde = "",
+  usuarioUid = "",
 }) {
   const meta = SPEC_META[spec.key] || { role: "", av: "?", bg: "#F1F5F9", tc: "#475569" };
   const name = nomeProfissionalFirestore(spec.key, profissionaisMap);
-  const hasSome = spec.sessions.some((s) => {
-    if (s.waitlistEnabled) return true;
-    const tot = s.total ?? 0;
-    return (s.used ?? 0) + (s.reserved ?? 0) < tot;
-  });
+  const indicesSessoesUi = useMemo(() => {
+    const v = indicesSessoesAtendimentoHojeVisiveis(spec, agoraRecepcao);
+    if (v == null) return spec.sessions.map((_, i) => i);
+    return v;
+  }, [spec, agoraRecepcao]);
+  const hasSome = useMemo(() => {
+    const sessions = indicesSessoesUi.map((i) => spec.sessions[i]);
+    return sessions.some((s) => {
+      if (s.waitlistEnabled) return true;
+      const tot = s.total ?? 0;
+      return (s.used ?? 0) + (s.reserved ?? 0) < tot;
+    });
+  }, [spec.sessions, indicesSessoesUi]);
   const visitaVariant = varianteVisitaDomiciliarNoCard({
     spec,
     todayStr: dataHojeIso(),
@@ -839,30 +874,31 @@ function SpecCard({
 
         {!isRecepcao && (
           <div style={styles.cardResumoAgente}>
-            {spec.sessions.map((sess, idx) => (
+            {indicesSessoesUi.map((sessIdx, arrIdx) => (
               <AgenteTurnoRow
-                key={idx}
-                sess={sess}
-                isLast={idx === spec.sessions.length - 1}
+                key={sessIdx}
+                sess={spec.sessions[sessIdx]}
+                isLast={arrIdx === indicesSessoesUi.length - 1}
                 specKey={spec.key}
                 dayKey={spec.atendimentoDia}
-                sessIdx={idx}
+                sessIdx={sessIdx}
                 atendimentoDate={spec.atendimentoDate}
                 onSolicitar={onSolicitar}
                 solicitacaoEncaminhamentoObrigatorio={spec.solicitacaoEncaminhamentoObrigatorio}
                 dentroExpedienteUbs={dentroExpedienteUbs}
                 ocultarResumoVagas={!!visitaVariant}
+                usuarioUid={usuarioUid}
               />
             ))}
           </div>
         )}
 
         {isRecepcao &&
-          spec.sessions.map((sess, idx) => (
+          indicesSessoesUi.map((sessIdx) => (
             <SessionRow
-              key={idx}
-              sess={sess}
-              sessIdx={idx}
+              key={sessIdx}
+              sess={spec.sessions[sessIdx]}
+              sessIdx={sessIdx}
               specKey={spec.key}
               dayKey={spec.atendimentoDia}
               atendimentoDate={spec.atendimentoDate}
@@ -915,7 +951,9 @@ function SessionRow({
   const used = sess.used ?? 0;
   const reserved = sess.reserved ?? 0;
   const total = sess.total ?? 0;
-  const livres = total - used - reserved;
+  const livreBruto = Math.max(0, total - used - reserved);
+  const bloqSolic = reservaSolicitacaoAtiva(sess) ? 1 : 0;
+  const livres = Math.max(0, livreBruto - bloqSolic);
   const filled = used + reserved;
   const encaixeExtra = sess.encaixeExtra ?? 0;
   const baseAgenda = Math.max(0, total - encaixeExtra);
@@ -1504,6 +1542,28 @@ const styles = {
     fontWeight: 700,
     lineHeight: 1.35,
     color: "#B91C1C",
+  },
+  agenteReservaOutro: {
+    margin: "8px 0 0",
+    padding: "10px 12px",
+    fontSize: 13,
+    fontWeight: 600,
+    lineHeight: 1.4,
+    color: "#92400E",
+    background: "#FFFBEB",
+    border: "1px solid #FCD34D",
+    borderRadius: 8,
+  },
+  agenteReservaVoce: {
+    margin: "8px 0 0",
+    padding: "10px 12px",
+    fontSize: 13,
+    fontWeight: 600,
+    lineHeight: 1.4,
+    color: "#1E40AF",
+    background: "#EFF6FF",
+    border: "1px solid #93C5FD",
+    borderRadius: 8,
   },
   statsRow: {
     display: "flex",
