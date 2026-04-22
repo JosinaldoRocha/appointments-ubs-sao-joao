@@ -9,7 +9,12 @@
  *   - notificacoesPendentes: documentos já processados pela Cloud Function
  *
  * Opcional:
- *   --clear-lista-espera  apaga toda a coleção listaEspera (use se quiser zerar fila)
+ *   --clear-lista-espera       apaga toda a coleção listaEspera
+ *   --clear-vagas-all          apaga toda a coleção vagas (inclui vagas futuras)
+ *   --clear-notificacoes-all   apaga toda a coleção notificacoesPendentes
+ *   --reset-settings-operacionais
+ *      limpa apenas campos operacionais em settings/ubs:
+ *      recepcionistaAtivoWhatsapp, recepcionistaAtivoNome e atendimentoEncerradoPorSpecData
  *
  * Uso:
  *   node scripts/cleanup-firestore.js              # dry-run (só lista)
@@ -40,6 +45,9 @@ function parseArgs() {
   return {
     execute: argv.includes("--execute"),
     clearListaEspera: argv.includes("--clear-lista-espera"),
+    clearVagasAll: argv.includes("--clear-vagas-all"),
+    clearNotificacoesAll: argv.includes("--clear-notificacoes-all"),
+    resetSettingsOperacionais: argv.includes("--reset-settings-operacionais"),
   };
 }
 
@@ -54,8 +62,19 @@ async function deleteInBatches(db, refs) {
   }
 }
 
+async function listCollectionRefs(db, col) {
+  const snap = await db.collection(col).get();
+  return snap.docs.map((d) => d.ref);
+}
+
 async function main() {
-  const { execute, clearListaEspera } = parseArgs();
+  const {
+    execute,
+    clearListaEspera,
+    clearVagasAll,
+    clearNotificacoesAll,
+    resetSettingsOperacionais,
+  } = parseArgs();
 
   let serviceAccount;
   try {
@@ -80,38 +99,60 @@ async function main() {
     );
   }
 
-  // ── vagas (24h após fim do dia local do atendimento) ───────────
-  const vagasSnap = await db.collection("vagas").get();
-  const now = Date.now();
-  let vagasEligible = 0;
-  vagasSnap.forEach((doc) => {
-    const iso = extractDateFromVagaDoc(doc.id, doc.data());
-    if (iso && vagaDocShouldBeDeleted(iso, now)) vagasEligible += 1;
-  });
-  console.log(
-    `\n[vagas] Documentos elegíveis à exclusão (24h após o dia do atendimento): ${vagasEligible}`
-  );
-  if (vagasEligible && !execute) {
-    console.log("  (dry-run — use --execute para apagar)");
-  } else if (vagasEligible && execute) {
-    const removed = await deleteExpiredVagasInFirestore(db, now);
-    console.log(`  ✅ Apagados: ${removed}.`);
+  // ── vagas ───────────────────────────────────────────────────────
+  if (clearVagasAll) {
+    const refs = await listCollectionRefs(db, "vagas");
+    console.log(`\n[vagas] Total de documentos: ${refs.length}`);
+    if (refs.length && !execute) {
+      console.log("  (dry-run — use --execute para apagar todos)");
+    } else if (refs.length && execute) {
+      await deleteInBatches(db, refs);
+      console.log("  ✅ Coleção vagas zerada.");
+    }
+  } else {
+    const vagasSnap = await db.collection("vagas").get();
+    const now = Date.now();
+    let vagasEligible = 0;
+    vagasSnap.forEach((doc) => {
+      const iso = extractDateFromVagaDoc(doc.id, doc.data());
+      if (iso && vagaDocShouldBeDeleted(iso, now)) vagasEligible += 1;
+    });
+    console.log(
+      `\n[vagas] Documentos elegíveis à exclusão (24h após o dia do atendimento): ${vagasEligible}`
+    );
+    if (vagasEligible && !execute) {
+      console.log("  (dry-run — use --execute para apagar)");
+    } else if (vagasEligible && execute) {
+      const removed = await deleteExpiredVagasInFirestore(db, now);
+      console.log(`  ✅ Apagados: ${removed}.`);
+    }
   }
 
-  // ── notificações já processadas ───────────────────────────────
-  const notSnap = await db.collection("notificacoesPendentes").get();
-  const notToDelete = [];
-  notSnap.forEach((doc) => {
-    if (doc.data().processado === true) notToDelete.push(doc.ref);
-  });
-  console.log(
-    `\n[notificacoesPendentes] Docs com processado=true: ${notToDelete.length}`
-  );
-  if (notToDelete.length && !execute) {
-    console.log("  (dry-run — use --execute para apagar)");
-  } else if (notToDelete.length && execute) {
-    await deleteInBatches(db, notToDelete);
-    console.log("  ✅ Apagados.");
+  // ── notificações pendentes ──────────────────────────────────────
+  if (clearNotificacoesAll) {
+    const refs = await listCollectionRefs(db, "notificacoesPendentes");
+    console.log(`\n[notificacoesPendentes] Total de documentos: ${refs.length}`);
+    if (refs.length && !execute) {
+      console.log("  (dry-run — use --execute para apagar todos)");
+    } else if (refs.length && execute) {
+      await deleteInBatches(db, refs);
+      console.log("  ✅ Coleção notificacoesPendentes zerada.");
+    }
+  } else {
+    const notSnap = await db.collection("notificacoesPendentes").get();
+    const notToDelete = [];
+    notSnap.forEach((doc) => {
+      if (doc.data().processado === true) notToDelete.push(doc.ref);
+    });
+    console.log(
+      `\n[notificacoesPendentes] Docs com processado=true: ${notToDelete.length}`
+    );
+    if (notToDelete.length && !execute) {
+      console.log("  (dry-run — use --execute para apagar)");
+    } else if (notToDelete.length && execute) {
+      await deleteInBatches(db, notToDelete);
+      console.log("  ✅ Apagados.");
+    }
   }
 
   // ── lista de espera (opcional) ────────────────────────────────
@@ -128,6 +169,30 @@ async function main() {
   } else {
     console.log(
       "\n[listaEspera] Não alterado. Para apagar todos: --clear-lista-espera --execute"
+    );
+  }
+
+  // ── settings operacionais (sem mexer em feriados/regras) ───────
+  if (resetSettingsOperacionais) {
+    console.log(
+      "\n[settings/ubs] Campos operacionais alvo: recepcionistaAtivoWhatsapp, recepcionistaAtivoNome, atendimentoEncerradoPorSpecData"
+    );
+    if (!execute) {
+      console.log("  (dry-run — use --execute para aplicar)");
+    } else {
+      await db.collection("settings").doc("ubs").set(
+        {
+          recepcionistaAtivoWhatsapp: "",
+          recepcionistaAtivoNome: "",
+          atendimentoEncerradoPorSpecData: {},
+        },
+        { merge: true }
+      );
+      console.log("  ✅ Campos operacionais resetados.");
+    }
+  } else {
+    console.log(
+      "\n[settings/ubs] Não alterado. Para resetar campos operacionais: --reset-settings-operacionais --execute"
     );
   }
 
