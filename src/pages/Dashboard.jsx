@@ -636,6 +636,7 @@ export default function Dashboard() {
 
   const syncLabel = useMemo(() => {
     if (syncMode === "full") return "Modo completo (fallback)";
+    if (syncMode === "incremental" && !lastSyncAt) return "Sincronizado";
     if (!lastSyncAt) return "Sincronizando...";
     const dt = new Date(lastSyncAt);
     if (Number.isNaN(dt.getTime())) return "Sincronizando...";
