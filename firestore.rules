@@ -27,7 +27,7 @@ service cloud.firestore {
       return isAgente() || isDiretor();
     }
     /** Agente/direção: atualizações restritas em `vagas` (reserva de solicitação / confirmação). */
-    function agentVagaSóReservaSolicitacao() {
+    function agentVagaSoReservaSolicitacao() {
       let r = resource.data;
       let n = request.resource.data;
       return n.used == r.used
@@ -94,7 +94,7 @@ service cloud.firestore {
         || (isAgenteOuDiretor() && agentVagaCreateInicialReserva());
       allow update: if isRecepcao()
         || (isAgenteOuDiretor() && (
-          agentVagaSóReservaSolicitacao()
+          agentVagaSoReservaSolicitacao()
           || agentVagaLiberarReservaSolicitacao()
           || agentVagaConfirmarSolicitacao()
         ));
