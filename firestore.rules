@@ -23,6 +23,50 @@ service cloud.firestore {
       let r = getRole();
       return isLoggedIn() && (r == "agente" || r == "Agente" || r == "AGENTE");
     }
+    function isAgenteOuDiretor() {
+      return isAgente() || isDiretor();
+    }
+    /** Agente/direção: atualizações restritas em `vagas` (reserva de solicitação / confirmação). */
+    function agentVagaSóReservaSolicitacao() {
+      let r = resource.data;
+      let n = request.resource.data;
+      return n.used == r.used
+        && n.reserved == r.reserved
+        && n.total == r.total
+        && n.atendimentoDate == r.atendimentoDate
+        && n.specKey == r.specKey
+        && n.sessIdx == r.sessIdx
+        && n.dayKey == r.dayKey
+        && n.reservaSolicitacao.uid == request.auth.uid;
+    }
+    function agentVagaLiberarReservaSolicitacao() {
+      let r = resource.data;
+      let n = request.resource.data;
+      return n.used == r.used
+        && n.reserved == r.reserved
+        && n.total == r.total
+        && !("reservaSolicitacao" in n)
+        && r.get("reservaSolicitacao", null) != null
+        && r.reservaSolicitacao.uid == request.auth.uid;
+    }
+    function agentVagaConfirmarSolicitacao() {
+      let r = resource.data;
+      let n = request.resource.data;
+      return n.used == r.used + 1
+        && n.reserved == r.reserved
+        && n.total == r.total
+        && !("reservaSolicitacao" in n)
+        && r.get("reservaSolicitacao", null) != null
+        && r.reservaSolicitacao.uid == request.auth.uid
+        && n.used + n.reserved <= n.total;
+    }
+    function agentVagaCreateInicialReserva() {
+      let n = request.resource.data;
+      return n.used == 0
+        && n.reserved == 0
+        && n.total is number && n.total > 0 && n.total <= 200
+        && n.reservaSolicitacao.uid == request.auth.uid;
+    }
     // Lista de espera: agentes, direção e recepção (recepção opera pela aba Vagas)
     function podeCriarEspera() {
       return isLoggedIn() && (isAgente() || isRecepcao() || isDiretor());
@@ -42,10 +86,18 @@ service cloud.firestore {
       allow write: if isRecepcao();
     }
 
-    // Vagas: todos leem; só recepção altera
+    // Vagas: recepção altera livremente; agente/direção só reserva/libera/confirma solicitação
     match /vagas/{id} {
       allow read:  if isLoggedIn();
-      allow write: if isRecepcao();
+      allow delete: if isRecepcao();
+      allow create: if isRecepcao()
+        || (isAgenteOuDiretor() && agentVagaCreateInicialReserva());
+      allow update: if isRecepcao()
+        || (isAgenteOuDiretor() && (
+          agentVagaSóReservaSolicitacao()
+          || agentVagaLiberarReservaSolicitacao()
+          || agentVagaConfirmarSolicitacao()
+        ));
     }
 
     // Lista de espera: agentes criam; recepção remove
@@ -55,10 +107,14 @@ service cloud.firestore {
       allow delete: if isRecepcao();
     }
 
-    // Notificações pendentes: agentes/recepção criam; Cloud Function processa
+    // Notificações pendentes: recepção cria livremente; agente/direção só aviso de vagas esgotadas
     match /notificacoesPendentes/{id} {
       allow read:   if isRecepcao() || isDiretor();
-      allow create: if isRecepcao();
+      allow create: if isRecepcao()
+        || (isAgenteOuDiretor()
+          && request.resource.data.tipo == "vagas_esgotadas"
+          && request.resource.data.processado == false
+          && request.resource.data.keys().hasAll(["tipo", "specKey", "specNome", "criadoEm", "processado"]));
       allow update: if false; // só a Cloud Function atualiza
       allow delete: if false;
     }
