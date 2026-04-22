@@ -5,13 +5,22 @@ import AppLogo from "../components/AppLogo";
 import { logout } from "../services/auth";
 import {
   listenVagasByAtendimentoDates,
+  listenVagasChangesByAtendimentoDatesSince,
   setVaga,
   listenProfissionais,
   registrarNotificacaoVagasEsgotadas,
   listenSettings,
+  getVagasByAtendimentoDates,
+  getProfissionaisSnapshot,
+  getSettingsSnapshot,
+  listenProfissionaisChangesSince,
+  listenSettingsChangesSince,
   updateSettings,
   setAtendimentoEncerradoFlag,
   digitosWhatsappRecepcaoParaSolicitacao,
+  tryReservaSolicitacaoAgente,
+  liberarReservaSolicitacaoAgente,
+  confirmarSolicitacaoOcupaVaga,
 } from "../services/db";
 import {
   buildVisibleSegments,
@@ -39,11 +48,12 @@ import TabConfig from "../components/TabConfig";
 import ModalAgendar from "../components/ModalAgendar";
 import Toast from "../components/Toast";
 import { isRecepcaoPerfil, isAgenteOuDiretorPerfil } from "../utils/perfilRole";
+import { loadDashboardDailySnapshot, saveDashboardDailySnapshot } from "../services/dailySyncCache";
 
 const TABS = [{ key: "vagas", label: "Vagas" }];
 
 export default function Dashboard() {
-  const { perfil } = useAuth();
+  const { perfil, user } = useAuth();
   const isRecepcao = isRecepcaoPerfil(perfil);
 
   const [tab, setTab] = useState("vagas");
@@ -71,6 +81,8 @@ export default function Dashboard() {
   });
   const [modal, setModal] = useState(null);
   const [toast, setToast] = useState(null);
+  const [lastSyncAt, setLastSyncAt] = useState(0);
+  const [syncMode, setSyncMode] = useState("syncing");
 
   const todayStr = toDateStr(new Date());
   const listenDates = useMemo(
@@ -83,16 +95,114 @@ export default function Dashboard() {
     [todayStr, settings.feriados, settings.pontosFacultativos]
   );
 
+  const syncScopeKey = useMemo(() => {
+    const uid = user?.uid || "anon";
+    const role = isRecepcao ? "recepcao" : "agente-direcao";
+    return `${uid}:${role}`;
+  }, [user?.uid, isRecepcao]);
+
   useEffect(() => {
-    const unVagas = listenVagasByAtendimentoDates(listenDates, setVagasMap);
-    const unProf = listenProfissionais(setProfissionaisMap);
-    const unSet = listenSettings(setSettings);
+    let ativo = true;
+    let unVagas = () => {};
+    let unProf = () => {};
+    let unSet = () => {};
+    let fallbackAtivo = false;
+
+    function ativarFallbackTempoReal() {
+      if (fallbackAtivo) return;
+      fallbackAtivo = true;
+      setSyncMode("full");
+      unVagas();
+      unProf();
+      unSet();
+      unVagas = listenVagasByAtendimentoDates(listenDates, setVagasMap);
+      unProf = listenProfissionais(setProfissionaisMap);
+      unSet = listenSettings(setSettings);
+      console.warn("Sincronização incremental indisponível. Usando listeners completos.");
+    }
+
+    async function initSync() {
+      const cached = loadDashboardDailySnapshot(syncScopeKey, todayStr);
+      let baseVagas = {};
+      let baseProfissionais = {};
+      let baseSettings = null;
+      let syncFrom = 0;
+
+      if (cached) {
+        baseVagas = cached.vagasMap || {};
+        baseProfissionais = cached.profissionaisMap || {};
+        baseSettings = cached.settings || null;
+        syncFrom = Number(cached.lastSyncAt) || 0;
+      } else {
+        const [vagasSnap, profSnap, settingsSnap] = await Promise.all([
+          getVagasByAtendimentoDates(listenDates),
+          getProfissionaisSnapshot(),
+          getSettingsSnapshot(),
+        ]);
+        if (!ativo) return;
+        baseVagas = vagasSnap.data || {};
+        baseProfissionais = profSnap.data || {};
+        baseSettings = settingsSnap;
+        syncFrom = Math.max(vagasSnap.maxUpdatedAt || 0, profSnap.maxUpdatedAt || 0, settingsSnap._syncUpdatedAt || 0);
+      }
+
+      if (!ativo) return;
+      setVagasMap(baseVagas);
+      setProfissionaisMap(baseProfissionais);
+      if (baseSettings) setSettings((prev) => ({ ...prev, ...baseSettings }));
+      setLastSyncAt(syncFrom);
+      setSyncMode("incremental");
+
+      unVagas = listenVagasChangesByAtendimentoDatesSince(
+        listenDates,
+        syncFrom,
+        ({ data, maxUpdatedAt }) => {
+          setVagasMap((prev) => ({ ...prev, ...data }));
+          setLastSyncAt((prev) => Math.max(prev, maxUpdatedAt || 0));
+        },
+        ativarFallbackTempoReal
+      );
+      unProf = listenProfissionaisChangesSince(
+        syncFrom,
+        ({ data, maxUpdatedAt }) => {
+          setProfissionaisMap((prev) => ({ ...prev, ...data }));
+          setLastSyncAt((prev) => Math.max(prev, maxUpdatedAt || 0));
+        },
+        ativarFallbackTempoReal
+      );
+      unSet = listenSettingsChangesSince(
+        syncFrom,
+        ({ data, maxUpdatedAt }) => {
+          setSettings((prev) => ({ ...prev, ...data }));
+          setLastSyncAt((prev) => Math.max(prev, maxUpdatedAt || 0));
+        },
+        ativarFallbackTempoReal
+      );
+    }
+
+    initSync().catch((e) => console.error("Falha ao inicializar sincronização diária:", e));
+
     return () => {
+      ativo = false;
       unVagas();
       unProf();
       unSet();
     };
-  }, [listenDates]);
+  }, [listenDates, syncScopeKey, todayStr]);
+
+  useEffect(() => {
+    if (!syncScopeKey || !todayStr) return;
+    const t = setTimeout(() => {
+      saveDashboardDailySnapshot(syncScopeKey, {
+        dayKey: todayStr,
+        lastSyncAt,
+        vagasMap,
+        profissionaisMap,
+        settings,
+      });
+    }, 150);
+    return () => clearTimeout(t);
+  }, [syncScopeKey, todayStr, lastSyncAt, vagasMap, profissionaisMap, settings]);
 
   useEffect(() => {
     if (!isRecepcao || !perfil?.telefoneWhatsapp) return;
@@ -107,10 +217,70 @@ export default function Dashboard() {
     }).catch(() => {});
   }, [isRecepcao, perfil?.id, perfil?.telefoneWhatsapp, perfil?.nome]);
 
+  useEffect(() => {
+    if (!modal?.reservaFirestoreVagaId || !user?.uid) return undefined;
+    const id = modal.reservaFirestoreVagaId;
+    const uid = user.uid;
+    return () => {
+      liberarReservaSolicitacaoAgente(id, uid).catch(() => {});
+    };
+  }, [modal?.reservaFirestoreVagaId, user?.uid]);
+
   function showToast(msg, type = "info") {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3500);
   }
+
+  const abrirModalSolicitacao = useCallback(
+    async (ctx) => {
+      const id = vagaDocId(ctx.atendimentoDate, ctx.specKey, ctx.sessIdx);
+      const total = sessionTotalEffective(ctx.dayKey, ctx.specKey, ctx.sessIdx, settings.pccuTotal, {
+        atendimentoDateStr: ctx.atendimentoDate,
+        dentQuartaVisitaDomiciliarDesde: settings.dentQuartaVisitaDomiciliarDesde,
+      });
+      const meta = {
+        atendimentoDate: ctx.atendimentoDate,
+        specKey: ctx.specKey,
+        sessIdx: ctx.sessIdx,
+        dayKey: ctx.dayKey,
+        total,
+      };
+      let liberarId = null;
+      if (ctx.livresEncaixe === 1 && user?.uid) {
+        const nomeReserva =
+          perfil?.nome?.trim() || user?.displayName?.trim() || "Usuário";
+        try {
+          const r = await tryReservaSolicitacaoAgente(id, meta, {
+            nome: nomeReserva,
+            uid: user.uid,
+          });
+          if (!r.aplicouReserva) {
+            showToast("A última vaga não está mais disponível. Atualize a tela.", "warning");
+            return;
+          }
+          liberarId = id;
+        } catch (e) {
+          if (e?.code === "RESERVADA_OUTRO") {
+            showToast(
+              `Última vaga reservada por ${e.outroNome || "outro profissional"}. Aguarde ou escolha outro horário.`,
+              "warning"
+            );
+            return;
+          }
+          console.error(e);
+          showToast(e?.message || "Não foi possível reservar a vaga. Tente de novo.", "danger");
+          return;
+        }
+      }
+      setModal({
+        ...ctx,
+        agenteNomeDefault: perfil?.nome ?? "",
+        type: "agendar",
+        reservaFirestoreVagaId: liberarId,
+      });
+    },
+    [user, perfil, settings.pccuTotal, settings.dentQuartaVisitaDomiciliarDesde]
+  );
 
   const handleToggleAtendimentoEncerrado = useCallback(
     async (specKey, atendimentoDate, encerrar, turno) => {
@@ -262,11 +432,41 @@ export default function Dashboard() {
         return;
       }
 
+      const idVaga = vagaDocId(atendimentoDate, specKey, sessIdx);
+      const totalSlots = sessionTotalEffective(dayKey, specKey, sessIdx, settings.pccuTotal, {
+        atendimentoDateStr: atendimentoDate,
+        dentQuartaVisitaDomiciliarDesde: settings.dentQuartaVisitaDomiciliarDesde,
+      });
+      const metaVaga = {
+        atendimentoDate,
+        specKey,
+        sessIdx,
+        dayKey,
+        total: totalSlots,
+      };
+      const deveConfirmarVagaNoFirestore =
+        !isRecepcao &&
+        typeof livresEncaixe === "number" &&
+        livresEncaixe > 0 &&
+        totalSlots > 0;
+
       const meta = SPEC_META[specKey] || {};
       const nomeProf = profNames[specKey] || specKey;
       const funcao = meta.role || "";
       const profissionalLinha =
         funcao && nomeProf !== funcao ? `${nomeProf} (${funcao})` : nomeProf;
+
+      const runConfirm = async () => {
+        if (!deveConfirmarVagaNoFirestore || !user?.uid) return;
+        const r = await confirmarSolicitacaoOcupaVaga(idVaga, metaVaga, user.uid);
+        if (r.esgotou) {
+          try {
+            await registrarNotificacaoVagasEsgotadas(specKey, nomeProf);
+          } catch (e) {
+            console.error(e);
+          }
+        }
+      };
 
       const encaminhamentoFisio = solicitacaoEncaminhamentoObrigatorio === true || specKey === "fisio";
       if (encaminhamentoFisio) {
@@ -284,6 +484,25 @@ export default function Dashboard() {
             e?.message ||
               "Não foi possível enviar a imagem. Verifique o Supabase Storage, as políticas e a conexão."
           );
+        }
+        try {
+          await runConfirm();
+        } catch (e) {
+          fecharPreAbaWa();
+          if (e?.code === "RESERVADA_OUTRO") {
+            showToast(
+              `Não foi possível confirmar — vaga em uso por ${e.outroNome || "outro profissional"}. Atualize a tela.`,
+              "danger"
+            );
+            return;
+          }
+          if (e?.code === "VAGA_INDISPONIVEL") {
+            showToast("Esta vaga não está mais disponível. Atualize a tela.", "danger");
+            return;
+          }
+          console.error(e);
+          showToast(e?.message || "Não foi possível confirmar a vaga.", "danger");
+          return;
         }
         const msg = montarMensagemSolicitacaoWhatsApp({
           solicitacaoFisioEncaminhamento: true,
@@ -321,6 +540,26 @@ export default function Dashboard() {
         }
       }
 
+      try {
+        await runConfirm();
+      } catch (e) {
+        fecharPreAbaWa();
+        if (e?.code === "RESERVADA_OUTRO") {
+          showToast(
+            `Não foi possível confirmar — vaga em uso por ${e.outroNome || "outro profissional"}. Atualize a tela.`,
+            "danger"
+          );
+          return;
+        }
+        if (e?.code === "VAGA_INDISPONIVEL") {
+          showToast("Esta vaga não está mais disponível. Atualize a tela.", "danger");
+          return;
+        }
+        console.error(e);
+        showToast(e?.message || "Não foi possível confirmar a vaga.", "danger");
+        return;
+      }
+
       const nomePac =
         paciente?.trim() || (fotoDocumentoUrl ? "Paciente (documento em anexo)" : "");
 
@@ -348,7 +587,7 @@ export default function Dashboard() {
       showToast("WhatsApp aberto — envie a mensagem para a recepção.", "success");
       setModal(null);
     },
-    [isRecepcao, profNames, settings]
+    [isRecepcao, profNames, settings, user]
   );
 
   const allTabs = isRecepcao
@@ -395,6 +634,37 @@ export default function Dashboard() {
     return { ...r, dataFmt };
   }, [perfil, todayStr, settings.feriados, settings.pontosFacultativos]);
 
+  const syncLabel = useMemo(() => {
+    if (syncMode === "full") return "Modo completo (fallback)";
+    if (!lastSyncAt) return "Sincronizando...";
+    const dt = new Date(lastSyncAt);
+    if (Number.isNaN(dt.getTime())) return "Sincronizando...";
+    return `Sincronizado às ${dt.toLocaleTimeString("pt-BR", {
+      hour: "2-digit",
+      minute: "2-digit",
+    })}`;
+  }, [lastSyncAt, syncMode]);
+
+  const syncBadgeStyle = useMemo(() => {
+    if (syncMode === "full") {
+      return {
+        ...styles.syncBadge,
+        color: "#92400E",
+        background: "#FFFBEB",
+        border: "1px solid #FCD34D",
+      };
+    }
+    if (syncMode === "incremental") {
+      return {
+        ...styles.syncBadge,
+        color: "#166534",
+        background: "#ECFDF5",
+        border: "1px solid #86EFAC",
+      };
+    }
+    return styles.syncBadge;
+  }, [syncMode]);
+
   return (
     <div style={styles.app}>
       <header style={styles.hdr}>
@@ -412,6 +682,7 @@ export default function Dashboard() {
           </div>
         </div>
         <div style={styles.hdrRight}>
+          <span style={syncBadgeStyle}>{syncLabel}</span>
           <span style={styles.perfilBadge}>{perfil?.nome?.split(" ")[0]}</span>
           <button style={styles.logoutBtn} onClick={logout}>
             Sair
@@ -472,17 +743,9 @@ export default function Dashboard() {
             onToggleAtendimentoEncerrado={
               isRecepcao ? handleToggleAtendimentoEncerrado : undefined
             }
-            onSolicitar={
-              isRecepcao
-                ? undefined
-                : (ctx) =>
-                    setModal({
-                      ...ctx,
-                      agenteNomeDefault: perfil?.nome ?? "",
-                      type: "agendar",
-                    })
-            }
+            onSolicitar={isRecepcao ? undefined : abrirModalSolicitacao}
             dentQuartaVisitaDomiciliarDesde={settings.dentQuartaVisitaDomiciliarDesde}
+            usuarioUid={user?.uid ?? ""}
           />
         )}
         {tab === "config" && isRecepcao && (
@@ -524,6 +787,15 @@ const styles = {
   },
   hdrLeft: { display: "flex", alignItems: "center", gap: 10 },
   hdrRight: { display: "flex", alignItems: "center", gap: 8 },
+  syncBadge: {
+    fontSize: 11,
+    color: "#1D4ED8",
+    background: "#EFF6FF",
+    border: "1px solid #BFDBFE",
+    padding: "4px 8px",
+    borderRadius: 999,
+    whiteSpace: "nowrap",
+  },
   hdrTitle: { fontSize: 14, fontWeight: 600, color: "#0F172A", margin: 0 },
   hdrSub: { fontSize: 11, color: "#64748B", margin: 0, textTransform: "capitalize" },
   perfilBadge: {
