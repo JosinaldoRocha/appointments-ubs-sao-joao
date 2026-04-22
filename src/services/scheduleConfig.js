@@ -261,6 +261,37 @@ export function specTemSessaoNoTurno(spec, turno) {
 }
 
 /**
+ * Cartão `same` na data de hoje: índices das sessões a exibir — turno atual e o seguinte
+ * (antes de 12h: manhã + tarde quando existirem; a partir de 12h: só tarde). Turno da manhã
+ * deixa de aparecer após 12h. Sessões sem rótulo Manhã/Tarde permanecem visíveis (agenda “dia inteiro”).
+ * Demais cartões: retorna `null` → usar todas as sessões.
+ */
+export function indicesSessoesAtendimentoHojeVisiveis(spec, agora = new Date()) {
+  if (spec?.windowType !== "same") return null;
+  const hoje = toDateStr(agora);
+  if (spec.atendimentoDate !== hoje) return null;
+  const sessions = spec.sessions || [];
+  if (sessions.length === 0) return [];
+  const d = agora instanceof Date ? agora : new Date(agora);
+  const min = d.getHours() * 60 + d.getMinutes();
+  const manhaJaPassou = min >= TURNO_MANHA_FIM_MINUTOS;
+  const out = [];
+  sessions.forEach((sess, idx) => {
+    const t = sessaoLabelParaTurno(sess.label);
+    if (t == null) {
+      out.push(idx);
+      return;
+    }
+    if (manhaJaPassou) {
+      if (t === "tarde") out.push(idx);
+    } else if (t === "manha" || t === "tarde") {
+      out.push(idx);
+    }
+  });
+  return out;
+}
+
+/**
  * Cartão de atendimento no dia atual (`same`): deve ficar oculto para todos os usuários
  * após o horário de encerramento do(s) turno(s) daquele profissional (manhã 12h; tarde 17h;
  * quem tem manhã e tarde some após 17h). Sessões sem rótulo manhã/tarde contam como “dia inteiro” até 17h.
@@ -515,13 +546,28 @@ function cloneSessionsWithTotals(spec, pccuTotal) {
   });
 }
 
+/** TTL da reserva de solicitação (agente/direção) no doc `vagas` — alinhado ao backend. */
+export const RESERVA_SOLICITACAO_TTL_MS = 25 * 60 * 1000;
+
+/**
+ * `vdb` ou sessão com `reservaSolicitacao: { uid, nome, criadoEm }` (Timestamp Firestore).
+ */
+export function reservaSolicitacaoAtiva(vdb) {
+  const rs = vdb?.reservaSolicitacao;
+  if (!rs?.criadoEm) return false;
+  const ms = typeof rs.criadoEm.toMillis === "function" ? rs.criadoEm.toMillis() : 0;
+  if (!ms) return false;
+  return Date.now() - ms < RESERVA_SOLICITACAO_TTL_MS;
+}
+
 function mergeSessionCounts(sessions, specKey, atendimentoDateStr, vagasMap) {
   return sessions.map((sess, idx) => {
     const id = vagaDocId(atendimentoDateStr, specKey, idx);
     const vdb = vagasMap[id];
     const used = vdb?.used ?? 0;
     const reserved = vdb?.reserved ?? 0;
-    return { ...sess, used, reserved, sessIdx: idx };
+    const reservaSolicitacao = vdb?.reservaSolicitacao ?? null;
+    return { ...sess, used, reserved, sessIdx: idx, reservaSolicitacao };
   });
 }
 
@@ -684,11 +730,21 @@ export function getSpecsVisiveis(vagasMap, profNames, options = {}) {
 //  Expediente da UBS (solicitações por agentes / direção — horário local)
 // ─────────────────────────────────────────────────────────────────
 
-/** Expediente da UBS para solicitações: 7h às 17h em horário local (inclui o horário de almoço). Intervalo [7,17). */
+const EXP_UBS_AGENTE_INICIO_MANHA_MIN = 7 * 60 + 30; // 7:30
+const EXP_UBS_AGENTE_FIM_MANHA_MIN = 12 * 60; // 12:00 (intervalo [início, fim) em minutos do dia)
+const EXP_UBS_AGENTE_INICIO_TARDE_MIN = 14 * 60; // 14:00
+const EXP_UBS_AGENTE_FIM_TARDE_MIN = 17 * 60; // 17:00
+
+/**
+ * Dois períodos: 7h30–12h e 14h–17h (horário local). Fora do almoço (12h–14h) não permite solicitação.
+ */
 export function estaDentroExpedienteUbs(data = new Date()) {
-  const min = data.getHours() * 60 + data.getMinutes();
-  return min >= 7 * 60 && min < 17 * 60;
+  const d = data instanceof Date ? data : new Date(data);
+  const min = d.getHours() * 60 + d.getMinutes();
+  const manha = min >= EXP_UBS_AGENTE_INICIO_MANHA_MIN && min < EXP_UBS_AGENTE_FIM_MANHA_MIN;
+  const tarde = min >= EXP_UBS_AGENTE_INICIO_TARDE_MIN && min < EXP_UBS_AGENTE_FIM_TARDE_MIN;
+  return manha || tarde;
 }
 
 export const MSG_FORA_EXPEDIENTE_UBS =
-  "Solicitações de agendamento só são permitidas no horário de expediente da UBS: 7h às 17h.";
+  "Solicitações de agendamento só são permitidas no horário de expediente da UBS: 7h30 às 12h e das 14h às 17h.";
