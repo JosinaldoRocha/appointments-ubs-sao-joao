@@ -1,5 +1,5 @@
 // src/components/TabVagas.jsx
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, memo } from "react";
 import {
   SPEC_META,
   DAY_LABEL,
@@ -15,6 +15,14 @@ import {
   agenteOcultarCardPorEncerrado,
   indicesSessoesAtendimentoHojeVisiveis,
   reservaSolicitacaoAtiva,
+  diasAtendimentoDefaultParaSpec,
+  suspensaoRegistroNaoExpirado,
+  specSuspensaoAfetaAgenda,
+  ORDEM_DIA_SEMANA_GRADE,
+  normalizeAtendimentoDiasTurnosParaSpec,
+  turnosDefaultParaSpecNoDia,
+  parseAtendimentoSuspensoSlotKey,
+  suspensaoPontualSlotVisivelParaAgente,
 } from "../services/scheduleConfig";
 import { fraseVagasEsgotadasEncaixe } from "../services/whatsappSolicitacao";
 
@@ -28,6 +36,12 @@ function dataAmanhaIso() {
   d.setHours(12, 0, 0, 0);
   d.setDate(d.getDate() + 1);
   return toDateStr(d);
+}
+
+function profissionalDocPorSpecKey(profissionaisMap, specKey) {
+  return (
+    Object.values(profissionaisMap || {}).find((p) => p.specKey === specKey || p.id === specKey) || null
+  );
 }
 
 /** Data no título: ex. "30 de Março" (sem dia da semana). */
@@ -101,6 +115,21 @@ function menorAtendimentoDateLista(listaSpecs) {
   return min;
 }
 
+/** Primeiro cartão de cada `spec.key` na ordem: seção "hoje" e depois prev por data. */
+function primeiroCartaoPorSpecEmOrdem(same, prevSecoes) {
+  const id = (spec) => `${spec.windowType}|${spec.atendimentoDate}|${spec.key}|${spec.atendimentoDia}`;
+  const first = {};
+  for (const s of same || []) {
+    if (first[s.key] == null) first[s.key] = id(s);
+  }
+  for (const sec of prevSecoes || []) {
+    for (const s of sec.lista || []) {
+      if (first[s.key] == null) first[s.key] = id(s);
+    }
+  }
+  return (spec) => first[spec.key] === id(spec);
+}
+
 /** Agrupa cartões prev por `atendimentoDia`. */
 function agruparPrevPorDia(prevSpecs) {
   const map = {};
@@ -155,6 +184,7 @@ function podePreencherVaga(reserved, used, total, livres) {
 }
 
 function preencherVaga({
+  vagaId,
   specKey,
   dayKey,
   sessIdx,
@@ -166,19 +196,19 @@ function preencherVaga({
   onSlotAction,
 }) {
   if (livres > 0) {
-    onSlotAction({ specKey, dayKey, sessIdx, atendimentoDate, action: "incOcupada" });
+    onSlotAction({ vagaId, specKey, dayKey, sessIdx, atendimentoDate, action: "incOcupada" });
     return;
   }
   if (reserved > 0 && used < total) {
-    onSlotAction({ specKey, dayKey, sessIdx, atendimentoDate, action: "confirmarReserva" });
+    onSlotAction({ vagaId, specKey, dayKey, sessIdx, atendimentoDate, action: "confirmarReserva" });
   }
 }
 
-function liberarVaga({ specKey, dayKey, sessIdx, atendimentoDate, reserved, used, onSlotAction }) {
+function liberarVaga({ vagaId, specKey, dayKey, sessIdx, atendimentoDate, reserved, used, onSlotAction }) {
   if (reserved > 0) {
-    onSlotAction({ specKey, dayKey, sessIdx, atendimentoDate, action: "decReserva" });
+    onSlotAction({ vagaId, specKey, dayKey, sessIdx, atendimentoDate, action: "decReserva" });
   } else if (used > 0) {
-    onSlotAction({ specKey, dayKey, sessIdx, atendimentoDate, action: "decOcupada" });
+    onSlotAction({ vagaId, specKey, dayKey, sessIdx, atendimentoDate, action: "decOcupada" });
   }
 }
 
@@ -255,6 +285,74 @@ function listaAvisosEncerradoAgente(specs, atendimentoEncerradoMap) {
   return out;
 }
 
+function labelEscopoSuspensaoPontual(escopo) {
+  if (escopo === "dia") return "dia inteiro";
+  if (escopo === "manha") return "manhã";
+  if (escopo === "tarde") return "tarde";
+  return escopo;
+}
+
+function AvisoSuspensaoPontualAgente({ specKey, data, escopo, motivo, profissionaisMap }) {
+  const nome = nomeProfissionalFirestore(specKey, profissionaisMap);
+  const meta = SPEC_META[specKey];
+  const role = meta?.role || "";
+  const dataFmt = new Date(`${data}T12:00:00`).toLocaleDateString("pt-BR", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+  const turnoTxt = labelEscopoSuspensaoPontual(escopo);
+  const corpoTurno =
+    escopo === "dia"
+      ? "nesta data não haverá atendimento na UBS durante o dia inteiro."
+      : `não haverá atendimento na UBS no turno da ${turnoTxt}.`;
+  return (
+    <div style={styles.avisoSuspensaoAgente} role="status">
+      <p style={styles.avisoSuspensaoAgenteLinha}>
+        <strong>Suspensão pontual</strong> — {nome}
+        {role ? ` (${role})` : ""}: em <strong>{dataFmt}</strong> {corpoTurno}
+        {motivo ? (
+          <>
+            {" "}
+            <em style={{ fontWeight: 500 }}>Motivo:</em> {motivo}
+          </>
+        ) : null}
+      </p>
+    </div>
+  );
+}
+
+function AvisoSuspensaoAgente({ specKey, entry, profissionaisMap }) {
+  const nome = nomeProfissionalFirestore(specKey, profissionaisMap);
+  const meta = SPEC_META[specKey];
+  const role = meta?.role || "";
+  const desdeFmt = entry?.desde
+    ? new Date(`${entry.desde}T12:00:00`).toLocaleDateString("pt-BR", {
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+      })
+    : "";
+  let fim = "";
+  if (entry?.indefinido) fim = "Prazo indeterminado.";
+  else if (entry?.ate)
+    fim = `Até ${new Date(`${entry.ate}T12:00:00`).toLocaleDateString("pt-BR", {
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    })}.`;
+  else fim = "Sem data fim cadastrada.";
+  return (
+    <div style={styles.avisoSuspensaoAgente} role="status">
+      <p style={styles.avisoSuspensaoAgenteLinha}>
+        <strong>Atendimento suspenso</strong> — {nome}
+        {role ? ` (${role})` : ""}: sem agendamento na UBS a partir de <strong>{desdeFmt}</strong>. {fim}
+      </p>
+    </div>
+  );
+}
+
 /** Agente/direção: aviso quando o encerramento está ativo (por turno, se aplicável). */
 function AvisoAtendimentoEncerradoAgente({ spec, turno, profissionaisMap }) {
   const nome = nomeProfissionalFirestore(spec.key, profissionaisMap);
@@ -299,14 +397,83 @@ export default function TabVagas({
   onSolicitar,
   atendimentoEncerradoMap = {},
   onToggleAtendimentoEncerrado,
+  atendimentoSuspensoPorSpec = {},
+  atendimentoSuspensoSlots = {},
+  atendimentoDiasAtivosPorSpec = {},
+  onSuspenderAtendimentoSpec,
+  onRemoverSuspensaoPontual,
+  onReativarAtendimentoSpec,
   dentQuartaVisitaDomiciliarDesde = "",
   usuarioUid = "",
 }) {
   const [agoraRecepcao, setAgoraRecepcao] = useState(() => new Date());
+  const [modalSuspenderSpecKey, setModalSuspenderSpecKey] = useState(null);
+  const [modalReativarSpecKey, setModalReativarSpecKey] = useState(null);
+  const [suspendModo, setSuspendModo] = useState("pontual");
+  const [suspendPontualData, setSuspendPontualData] = useState("");
+  const [suspendPontualEscopo, setSuspendPontualEscopo] = useState("manha");
+  const [suspendPontualMotivo, setSuspendPontualMotivo] = useState("");
+  const [suspendFormDesde, setSuspendFormDesde] = useState("");
+  const [suspendFormIndef, setSuspendFormIndef] = useState(true);
+  const [suspendFormAte, setSuspendFormAte] = useState("");
+  const [reativarDiasSel, setReativarDiasSel] = useState(() => new Set());
+  /** `{ [dia]: { manha, tarde } }` só para dias marcados na reativação */
+  const [reativarTurnosPorDia, setReativarTurnosPorDia] = useState({});
+
   useEffect(() => {
     const t = setInterval(() => setAgoraRecepcao(new Date()), 30_000);
     return () => clearInterval(t);
   }, []);
+
+  useEffect(() => {
+    if (!modalSuspenderSpecKey) return;
+    const hoje = dataHojeIso();
+    setSuspendModo("pontual");
+    setSuspendPontualData(hoje);
+    setSuspendPontualEscopo("manha");
+    setSuspendPontualMotivo("");
+    setSuspendFormDesde(hoje);
+    setSuspendFormIndef(true);
+    setSuspendFormAte("");
+  }, [modalSuspenderSpecKey]);
+
+  useEffect(() => {
+    if (!modalReativarSpecKey) return;
+    const sk = modalReativarSpecKey;
+    const def = diasAtendimentoDefaultParaSpec(sk);
+    const cfg = atendimentoDiasAtivosPorSpec?.[sk];
+    const fromCfg = Array.isArray(cfg) ? cfg.filter((d) => ORDEM_DIA_SEMANA_GRADE.includes(d)) : [];
+    const initialDias = fromCfg.length > 0 ? fromCfg : [...def];
+    setReativarDiasSel(new Set(initialDias));
+
+    const prof = profissionalDocPorSpecKey(profissionaisMap, sk);
+    const norm = normalizeAtendimentoDiasTurnosParaSpec(sk, prof?.atendimentoDiasTurnos);
+    const turnos = {};
+    for (const dia of initialDias) {
+      const t = norm?.[dia] || turnosDefaultParaSpecNoDia(sk, dia);
+      const hasT = t.length > 0;
+      turnos[dia] = {
+        manha: hasT ? t.includes("manha") : true,
+        tarde: hasT ? t.includes("tarde") : true,
+      };
+    }
+    setReativarTurnosPorDia(turnos);
+  }, [modalReativarSpecKey, atendimentoDiasAtivosPorSpec, profissionaisMap]);
+
+  useEffect(() => {
+    if (!modalReativarSpecKey) return;
+    setReativarTurnosPorDia((prev) => {
+      const next = { ...prev };
+      for (const d of reativarDiasSel) {
+        if (next[d] == null) next[d] = { manha: true, tarde: true };
+      }
+      for (const k of Object.keys(next)) {
+        if (!reativarDiasSel.has(k)) delete next[k];
+      }
+      return next;
+    });
+  }, [reativarDiasSel, modalReativarSpecKey]);
+
   const dentroExpedienteUbs = estaDentroExpedienteUbs(agoraRecepcao);
 
   const specsLista = useMemo(() => {
@@ -328,17 +495,98 @@ export default function TabVagas({
   const prevPorDia = agruparPrevPorDia(prev);
   const prevSecoes = secoesPrevOrdenadasPorData(prevPorDia);
   const semVagasLivres = specsLista.length > 0 && !hasAnyVacancy(specsLista);
+  const primeiroCartaoSuspender = useMemo(
+    () => primeiroCartaoPorSpecEmOrdem(same, prevSecoes),
+    [same, prevSecoes]
+  );
 
-  if (specs.length === 0) {
+  const listaSuspensaoRecepcao = useMemo(() => {
+    if (!isRecepcao) return [];
+    const m = atendimentoSuspensoPorSpec || {};
+    const hoje = dataHojeIso();
+    return Object.entries(m).filter(
+      ([, v]) =>
+        v &&
+        typeof v.desde === "string" &&
+        /^\d{4}-\d{2}-\d{2}$/.test(v.desde.trim()) &&
+        suspensaoRegistroNaoExpirado(v, hoje)
+    );
+  }, [isRecepcao, atendimentoSuspensoPorSpec]);
+
+  const avisosSuspensaoAgenteKeys = useMemo(() => {
+    if (isRecepcao) return [];
+    const m = atendimentoSuspensoPorSpec || {};
+    const hoje = dataHojeIso();
+    return Object.keys(m).filter((k) =>
+      specSuspensaoAfetaAgenda(k, m, hoje, atendimentoDiasAtivosPorSpec || {})
+    );
+  }, [isRecepcao, atendimentoSuspensoPorSpec, atendimentoDiasAtivosPorSpec]);
+
+  const avisosSuspensaoPontualAgente = useMemo(() => {
+    if (isRecepcao) return [];
+    const slots = atendimentoSuspensoSlots || {};
+    const hoje = dataHojeIso();
+    const diasCfg = atendimentoDiasAtivosPorSpec || {};
+    const out = [];
+    for (const key of Object.keys(slots)) {
+      const p = parseAtendimentoSuspensoSlotKey(key);
+      if (!p) continue;
+      if (!suspensaoPontualSlotVisivelParaAgente(p.specKey, p.data, hoje, diasCfg)) continue;
+      const motivo = typeof slots[key]?.motivo === "string" ? slots[key].motivo.trim() : "";
+      out.push({ key, ...p, motivo });
+    }
+    out.sort((a, b) => (a.data !== b.data ? a.data.localeCompare(b.data) : a.specKey.localeCompare(b.specKey)));
+    return out;
+  }, [isRecepcao, atendimentoSuspensoSlots, atendimentoDiasAtivosPorSpec]);
+
+  const listaSuspensaoPontualRecepcao = useMemo(() => {
+    if (!isRecepcao) return [];
+    const slots = atendimentoSuspensoSlots || {};
+    const out = [];
+    for (const key of Object.keys(slots)) {
+      const p = parseAtendimentoSuspensoSlotKey(key);
+      if (!p) continue;
+      const motivo = typeof slots[key]?.motivo === "string" ? slots[key].motivo.trim() : "";
+      out.push({ key, ...p, motivo });
+    }
+    out.sort((a, b) => (a.data !== b.data ? b.data.localeCompare(a.data) : a.specKey.localeCompare(b.specKey)));
+    return out;
+  }, [isRecepcao, atendimentoSuspensoSlots]);
+
+  if (specs.length === 0 && !isRecepcao) {
     return (
-      <div style={styles.empty}>
-        <p style={{ fontSize: 15, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>
-          Nenhum agendamento disponível hoje
-        </p>
-        <p style={{ fontSize: 13, color: "#64748B" }}>
-          Em geral, o agendamento abre no último dia útil anterior ao atendimento (feriados e pontos
-          facultativos são considerados). Nutrição, fisioterapia e psicologia permitem agendar em qualquer dia útil (conforme o card).
-        </p>
+      <div style={styles.wrap}>
+        {(avisosSuspensaoAgenteKeys.length > 0 || avisosSuspensaoPontualAgente.length > 0) && (
+          <div style={styles.avisoSuspensaoAgenteWrap}>
+            {avisosSuspensaoAgenteKeys.map((specKey) => (
+              <AvisoSuspensaoAgente
+                key={specKey}
+                specKey={specKey}
+                entry={atendimentoSuspensoPorSpec[specKey]}
+                profissionaisMap={profissionaisMap}
+              />
+            ))}
+            {avisosSuspensaoPontualAgente.map((row) => (
+              <AvisoSuspensaoPontualAgente
+                key={row.key}
+                specKey={row.specKey}
+                data={row.data}
+                escopo={row.escopo}
+                motivo={row.motivo}
+                profissionaisMap={profissionaisMap}
+              />
+            ))}
+          </div>
+        )}
+        <div style={styles.empty}>
+          <p style={{ fontSize: 15, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>
+            Nenhum agendamento disponível hoje
+          </p>
+          <p style={{ fontSize: 13, color: "#64748B" }}>
+            Em geral, o agendamento abre no último dia útil anterior ao atendimento (feriados e pontos
+            facultativos são considerados). Nutrição e fisioterapia permitem agendar em qualquer dia útil (conforme o card).
+          </p>
+        </div>
       </div>
     );
   }
@@ -360,6 +608,29 @@ export default function TabVagas({
 
   return (
     <div style={styles.wrap}>
+      {!isRecepcao && (avisosSuspensaoAgenteKeys.length > 0 || avisosSuspensaoPontualAgente.length > 0) && (
+        <div style={styles.avisoSuspensaoAgenteWrap}>
+          {avisosSuspensaoAgenteKeys.map((specKey) => (
+            <AvisoSuspensaoAgente
+              key={specKey}
+              specKey={specKey}
+              entry={atendimentoSuspensoPorSpec[specKey]}
+              profissionaisMap={profissionaisMap}
+            />
+          ))}
+          {avisosSuspensaoPontualAgente.map((row) => (
+            <AvisoSuspensaoPontualAgente
+              key={row.key}
+              specKey={row.specKey}
+              data={row.data}
+              escopo={row.escopo}
+              motivo={row.motivo}
+              profissionaisMap={profissionaisMap}
+            />
+          ))}
+        </div>
+      )}
+
       {!isRecepcao && !dentroExpedienteUbs && (
         <div style={styles.alertExpedienteUbs} role="status">
           <p style={styles.alertExpedienteUbsTitle}>Fora do horário de expediente</p>
@@ -396,7 +667,7 @@ export default function TabVagas({
           <LegendItem
             color="#ECFDF5"
             border="#6EE7B7"
-            label="Nutrição, fisioterapia e psicologia: agendamento em qualquer dia útil (dia de atendimento no card)"
+            label="Nutrição e fisioterapia: agendamento em qualquer dia útil (dia de atendimento no card)"
           />
           <LegendItem color="#DCFCE7" border="#86EFAC" label="Atendimento hoje — vagas sobrando" />
           <LegendItem
@@ -404,6 +675,109 @@ export default function TabVagas({
             border="#FCD34D"
             label="Cada turno: +2 vagas de encaixe além da agenda (exceto fisioterapia)"
           />
+        </div>
+      )}
+
+      {isRecepcao && listaSuspensaoRecepcao.length > 0 && (
+        <div style={styles.painelSuspRecepcao}>
+          <p style={styles.painelSuspRecepcaoTitle}>Atendimentos suspensos (sem agendamento na agenda)</p>
+          <div style={styles.painelSuspRecepcaoGrid}>
+            {listaSuspensaoRecepcao.map(([specKey, entry]) => (
+              <div key={specKey} style={styles.painelSuspCard}>
+                <p style={styles.painelSuspCardNome}>
+                  {nomeProfissionalFirestore(specKey, profissionaisMap)}
+                  <span style={styles.painelSuspCardMeta}>
+                    {SPEC_META[specKey]?.role ? ` · ${SPEC_META[specKey].role}` : ""}
+                  </span>
+                </p>
+                <p style={styles.painelSuspCardDetalhe}>
+                  Sem vagas a partir de{" "}
+                  <strong>
+                    {new Date(`${entry.desde}T12:00:00`).toLocaleDateString("pt-BR", {
+                      day: "numeric",
+                      month: "long",
+                      year: "numeric",
+                    })}
+                  </strong>
+                  {entry.indefinido
+                    ? " — prazo indeterminado."
+                    : entry.ate
+                      ? ` — até ${new Date(`${entry.ate}T12:00:00`).toLocaleDateString("pt-BR", {
+                          day: "numeric",
+                          month: "long",
+                          year: "numeric",
+                        })}.`
+                      : " — sem data fim cadastrada."}
+                </p>
+                {typeof onReativarAtendimentoSpec === "function" && (
+                  <button
+                    type="button"
+                    style={styles.btnReativarSusp}
+                    onClick={() => setModalReativarSpecKey(specKey)}
+                  >
+                    Reativar atendimento…
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {isRecepcao && listaSuspensaoPontualRecepcao.length > 0 && (
+        <div style={styles.painelSuspPontualRecepcao}>
+          <p style={styles.painelSuspRecepcaoTitle}>Suspensões em datas específicas</p>
+          <div style={styles.painelSuspRecepcaoGrid}>
+            {listaSuspensaoPontualRecepcao.map((row) => (
+              <div key={row.key} style={styles.painelSuspCardPontual}>
+                <p style={styles.painelSuspCardNome}>
+                  {nomeProfissionalFirestore(row.specKey, profissionaisMap)}
+                  <span style={styles.painelSuspCardMeta}>
+                    {SPEC_META[row.specKey]?.role ? ` · ${SPEC_META[row.specKey].role}` : ""}
+                  </span>
+                </p>
+                <p style={styles.painelSuspCardDetalhe}>
+                  <strong>
+                    {new Date(`${row.data}T12:00:00`).toLocaleDateString("pt-BR", {
+                      weekday: "long",
+                      day: "numeric",
+                      month: "long",
+                      year: "numeric",
+                    })}
+                  </strong>
+                  {" — "}
+                  <strong>{labelEscopoSuspensaoPontual(row.escopo)}</strong>
+                  {row.motivo ? (
+                    <>
+                      <br />
+                      <span style={{ fontWeight: 500, color: "#57534E" }}>Motivo: {row.motivo}</span>
+                    </>
+                  ) : null}
+                </p>
+                {typeof onRemoverSuspensaoPontual === "function" && (
+                  <button
+                    type="button"
+                    style={styles.btnRemoverSuspPontual}
+                    onClick={() => onRemoverSuspensaoPontual(row.key)}
+                  >
+                    Remover suspensão
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {isRecepcao && specs.length === 0 && (
+        <div style={styles.empty}>
+          <p style={{ fontSize: 15, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>
+            Nenhum cartão de agenda neste período
+          </p>
+          <p style={{ fontSize: 13, color: "#64748B", lineHeight: 1.5 }}>
+            Se todos os profissionais estiverem com atendimento suspenso, use o painel acima para reativar quando
+            houver profissional na unidade.
+          </p>
         </div>
       )}
 
@@ -429,6 +803,16 @@ export default function TabVagas({
                 agoraRecepcao,
                 onToggleAtendimentoEncerrado
               )}
+              mostrarBotaoSuspenderAtendimento={
+                isRecepcao &&
+                typeof onSuspenderAtendimentoSpec === "function" &&
+                !suspensaoRegistroNaoExpirado(
+                  atendimentoSuspensoPorSpec[spec.key],
+                  dataHojeIso()
+                ) &&
+                primeiroCartaoSuspender(spec)
+              }
+              onAbrirModalSuspender={isRecepcao ? setModalSuspenderSpecKey : undefined}
               agoraRecepcao={agoraRecepcao}
               dentQuartaVisitaDomiciliarDesde={dentQuartaVisitaDomiciliarDesde}
               usuarioUid={usuarioUid}
@@ -460,6 +844,16 @@ export default function TabVagas({
                 agoraRecepcao,
                 onToggleAtendimentoEncerrado
               )}
+              mostrarBotaoSuspenderAtendimento={
+                isRecepcao &&
+                typeof onSuspenderAtendimentoSpec === "function" &&
+                !suspensaoRegistroNaoExpirado(
+                  atendimentoSuspensoPorSpec[spec.key],
+                  dataHojeIso()
+                ) &&
+                primeiroCartaoSuspender(spec)
+              }
+              onAbrirModalSuspender={isRecepcao ? setModalSuspenderSpecKey : undefined}
               agoraRecepcao={agoraRecepcao}
               dentQuartaVisitaDomiciliarDesde={dentQuartaVisitaDomiciliarDesde}
               usuarioUid={usuarioUid}
@@ -467,6 +861,292 @@ export default function TabVagas({
           ))}
         </Section>
       ))}
+
+      {modalSuspenderSpecKey && typeof onSuspenderAtendimentoSpec === "function" && (
+        <div
+          style={styles.modalBackdrop}
+          role="presentation"
+          onClick={() => setModalSuspenderSpecKey(null)}
+        >
+          <div
+            style={{ ...styles.modalBox, ...styles.modalBoxSuspender }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="titulo-suspender"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="titulo-suspender" style={styles.modalTitle}>
+              Suspender atendimento
+            </h2>
+            <p style={styles.modalLead}>
+              {nomeProfissionalFirestore(modalSuspenderSpecKey, profissionaisMap)}
+              {SPEC_META[modalSuspenderSpecKey]?.role
+                ? ` (${SPEC_META[modalSuspenderSpecKey].role})`
+                : ""}
+            </p>
+            <div style={styles.modalTipoSuspRow} role="radiogroup" aria-label="Tipo de suspensão">
+              <label style={styles.modalTipoSuspOpt}>
+                <input
+                  type="radio"
+                  name="suspendModo"
+                  checked={suspendModo === "pontual"}
+                  onChange={() => setSuspendModo("pontual")}
+                />
+                <span>Data e turno específicos</span>
+              </label>
+              <label style={styles.modalTipoSuspOpt}>
+                <input
+                  type="radio"
+                  name="suspendModo"
+                  checked={suspendModo === "periodo"}
+                  onChange={() => setSuspendModo("periodo")}
+                />
+                <span>A partir de uma data (vários dias)</span>
+              </label>
+            </div>
+
+            {suspendModo === "pontual" && (
+              <>
+                <label style={styles.modalField}>
+                  <span>Data do atendimento afetado</span>
+                  <input
+                    type="date"
+                    value={suspendPontualData}
+                    onChange={(e) => setSuspendPontualData(e.target.value)}
+                    style={styles.modalInput}
+                  />
+                </label>
+                <span style={styles.modalSubLabel}>Turno sem atendimento na UBS</span>
+                <div style={styles.modalTipoSuspRow}>
+                  {[
+                    { v: "dia", l: "Dia inteiro" },
+                    { v: "manha", l: "Manhã" },
+                    { v: "tarde", l: "Tarde" },
+                  ].map(({ v, l }) => (
+                    <label key={v} style={styles.modalTipoSuspOpt}>
+                      <input
+                        type="radio"
+                        name="suspendPontualEscopo"
+                        checked={suspendPontualEscopo === v}
+                        onChange={() => setSuspendPontualEscopo(v)}
+                      />
+                      <span>{l}</span>
+                    </label>
+                  ))}
+                </div>
+                <label style={styles.modalField}>
+                  <span>Motivo (opcional) — visível para agentes e direção</span>
+                  <textarea
+                    value={suspendPontualMotivo}
+                    onChange={(e) => setSuspendPontualMotivo(e.target.value)}
+                    style={styles.modalTextarea}
+                    rows={3}
+                    maxLength={500}
+                    placeholder="Ex.: Treinamento da equipe pela manhã"
+                  />
+                </label>
+              </>
+            )}
+
+            {suspendModo === "periodo" && (
+              <>
+                <label style={styles.modalField}>
+                  <span>Sem agendamento a partir de</span>
+                  <input
+                    type="date"
+                    value={suspendFormDesde}
+                    onChange={(e) => setSuspendFormDesde(e.target.value)}
+                    style={styles.modalInput}
+                  />
+                </label>
+                <label style={styles.modalCheck}>
+                  <input
+                    type="checkbox"
+                    checked={suspendFormIndef}
+                    onChange={(e) => setSuspendFormIndef(e.target.checked)}
+                  />
+                  <span>Prazo indeterminado (não sabemos quando o atendimento volta)</span>
+                </label>
+                {!suspendFormIndef && (
+                  <label style={styles.modalField}>
+                    <span>Último dia sem atendimento na UBS (opcional)</span>
+                    <input
+                      type="date"
+                      value={suspendFormAte}
+                      onChange={(e) => setSuspendFormAte(e.target.value)}
+                      style={styles.modalInput}
+                    />
+                  </label>
+                )}
+              </>
+            )}
+
+            <div style={styles.modalFooter}>
+              <button type="button" style={styles.modalBtnGhost} onClick={() => setModalSuspenderSpecKey(null)}>
+                Cancelar
+              </button>
+              <button
+                type="button"
+                style={styles.modalBtnPrimary}
+                onClick={() => {
+                  if (suspendModo === "pontual") {
+                    if (!suspendPontualData || !/^\d{4}-\d{2}-\d{2}$/.test(suspendPontualData)) {
+                      window.alert("Selecione uma data válida.");
+                      return;
+                    }
+                    if (!["dia", "manha", "tarde"].includes(suspendPontualEscopo)) return;
+                    void Promise.resolve(
+                      onSuspenderAtendimentoSpec(modalSuspenderSpecKey, {
+                        modo: "pontual",
+                        data: suspendPontualData,
+                        escopo: suspendPontualEscopo,
+                        motivo: suspendPontualMotivo.trim(),
+                      })
+                    ).then(() => setModalSuspenderSpecKey(null));
+                    return;
+                  }
+                  if (!suspendFormDesde || !/^\d{4}-\d{2}-\d{2}$/.test(suspendFormDesde)) return;
+                  if (!suspendFormIndef && suspendFormAte && suspendFormAte < suspendFormDesde) {
+                    window.alert("A data fim não pode ser anterior à data de início da suspensão.");
+                    return;
+                  }
+                  void Promise.resolve(
+                    onSuspenderAtendimentoSpec(modalSuspenderSpecKey, {
+                      modo: "periodo",
+                      desde: suspendFormDesde,
+                      indefinido: suspendFormIndef,
+                      ate: suspendFormIndef ? undefined : suspendFormAte || undefined,
+                    })
+                  ).then(() => setModalSuspenderSpecKey(null));
+                }}
+              >
+                Confirmar suspensão
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {modalReativarSpecKey && typeof onReativarAtendimentoSpec === "function" && (
+        <div
+          style={styles.modalBackdrop}
+          role="presentation"
+          onClick={() => setModalReativarSpecKey(null)}
+        >
+          <div
+            style={styles.modalBox}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="titulo-reativar"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="titulo-reativar" style={styles.modalTitle}>
+              Reativar atendimento
+            </h2>
+            <p style={styles.modalLead}>
+              {nomeProfissionalFirestore(modalReativarSpecKey, profissionaisMap)}
+              {SPEC_META[modalReativarSpecKey]?.role
+                ? ` (${SPEC_META[modalReativarSpecKey].role})`
+                : ""}
+            </p>
+            <p style={styles.modalHint}>
+              Marque livremente os dias de <strong>segunda a sexta-feira</strong> e, em cada dia, os <strong>turnos</strong>{" "}
+              (manhã e/ou tarde) com atendimento. Pode incluir dias que ainda não estão na grade em código ou desmarcar
+              dias/turnos atuais se a agenda do profissional mudar na unidade.
+            </p>
+            <div style={styles.modalChecksCol}>
+              {ORDEM_DIA_SEMANA_GRADE.map((dia) => {
+                const marcado = reativarDiasSel.has(dia);
+                const t = reativarTurnosPorDia[dia] || { manha: true, tarde: true };
+                return (
+                  <div key={dia} style={styles.modalDiaTurnoBlock}>
+                    <label style={styles.modalCheck}>
+                      <input
+                        type="checkbox"
+                        checked={marcado}
+                        onChange={() => {
+                          setReativarDiasSel((prev) => {
+                            const n = new Set(prev);
+                            if (n.has(dia)) n.delete(dia);
+                            else n.add(dia);
+                            return n;
+                          });
+                        }}
+                      />
+                      <span style={{ fontWeight: 700 }}>{DAY_LABEL[dia] || dia}</span>
+                    </label>
+                    {marcado && (
+                      <div style={styles.modalTurnosInline}>
+                        <label style={styles.modalCheckTurno}>
+                          <input
+                            type="checkbox"
+                            checked={!!t.manha}
+                            onChange={() =>
+                              setReativarTurnosPorDia((prev) => {
+                                const cur = prev[dia] || { manha: true, tarde: true };
+                                return { ...prev, [dia]: { ...cur, manha: !cur.manha } };
+                              })
+                            }
+                          />
+                          <span>Manhã</span>
+                        </label>
+                        <label style={styles.modalCheckTurno}>
+                          <input
+                            type="checkbox"
+                            checked={!!t.tarde}
+                            onChange={() =>
+                              setReativarTurnosPorDia((prev) => {
+                                const cur = prev[dia] || { manha: true, tarde: true };
+                                return { ...prev, [dia]: { ...cur, tarde: !cur.tarde } };
+                              })
+                            }
+                          />
+                          <span>Tarde</span>
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div style={styles.modalFooter}>
+              <button type="button" style={styles.modalBtnGhost} onClick={() => setModalReativarSpecKey(null)}>
+                Cancelar
+              </button>
+              <button
+                type="button"
+                style={styles.modalBtnPrimary}
+                onClick={() => {
+                  const dias = [...reativarDiasSel].filter((d) => ORDEM_DIA_SEMANA_GRADE.includes(d)).sort();
+                  if (dias.length === 0) {
+                    window.alert("Selecione pelo menos um dia da semana (segunda a sexta-feira).");
+                    return;
+                  }
+                  const turnosFirestore = {};
+                  for (const d of dias) {
+                    const tu = reativarTurnosPorDia[d] || { manha: true, tarde: true };
+                    const arr = [];
+                    if (tu.manha) arr.push("manha");
+                    if (tu.tarde) arr.push("tarde");
+                    if (arr.length === 0) {
+                      window.alert(
+                        `Para ${DAY_LABEL[d] || d}, marque pelo menos um turno (manhã ou tarde).`
+                      );
+                      return;
+                    }
+                    turnosFirestore[d] = arr.sort();
+                  }
+                  void Promise.resolve(
+                    onReativarAtendimentoSpec(modalReativarSpecKey, dias, turnosFirestore)
+                  ).then(() => setModalReativarSpecKey(null));
+                }}
+              >
+                Reativar e salvar dias
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -522,6 +1202,25 @@ function AgenteTurnoRow({
   ocultarResumoVagas = false,
   usuarioUid = "",
 }) {
+  if (sess.visitaDomiciliarSemUnidade) {
+    const rowStyle = {
+      ...styles.agenteTurnoRow,
+      ...(isLast ? { borderBottom: "none", paddingBottom: 0 } : {}),
+    };
+    return (
+      <div style={rowStyle}>
+        <p style={styles.sessLabel}>{sess.label}</p>
+        <div style={styles.agenteVisitaDomicLinha} role="status">
+          <p style={styles.agenteVisitaDomicLinhaTitle}>Visitas domiciliares</p>
+          <p style={styles.agenteVisitaDomicLinhaText}>
+            Sem consultas odontológicas na UBS neste turno — o profissional está em{" "}
+            <strong>visita domiciliar</strong> (todas as sextas-feiras à tarde).
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   const used = sess.used ?? 0;
   const reserved = sess.reserved ?? 0;
   const total = sess.total ?? 0;
@@ -639,6 +1338,7 @@ function AgenteTurnoRow({
               atendimentoDate,
               solicitacaoEncaminhamentoObrigatorio,
               somenteEncaixe,
+              coletaExamesRotina: !!sess.coletaExamesRotina,
             })
           }
         >
@@ -646,9 +1346,7 @@ function AgenteTurnoRow({
         </button>
       )}
       {!dentroExpedienteUbs && (isFisio || wl || livres > 0) && (
-        <p style={styles.agenteTurnoHint}>
-          Solicitações apenas entre 7h30 e 12h e das 14h às 17h (horário de expediente da UBS).
-        </p>
+        <p style={styles.agenteTurnoHint}>{MSG_FORA_EXPEDIENTE_UBS}</p>
       )}
     </div>
   );
@@ -779,6 +1477,8 @@ function SpecCard({
   atendimentoEncerradoMap = {},
   onToggleAtendimentoEncerrado,
   mostrarBotaoEncerradoRecepcao = false,
+  mostrarBotaoSuspenderAtendimento = false,
+  onAbrirModalSuspender,
   agoraRecepcao = new Date(),
   dentQuartaVisitaDomiciliarDesde = "",
   usuarioUid = "",
@@ -792,6 +1492,7 @@ function SpecCard({
   }, [spec, agoraRecepcao]);
   const hasSome = useMemo(() => {
     const sessions = indicesSessoesUi.map((i) => spec.sessions[i]);
+    if (sessions.some((s) => s.visitaDomiciliarSemUnidade)) return true;
     return sessions.some((s) => {
       if (s.waitlistEnabled) return true;
       const tot = s.total ?? 0;
@@ -894,19 +1595,37 @@ function SpecCard({
         )}
 
         {isRecepcao &&
-          indicesSessoesUi.map((sessIdx) => (
-            <SessionRow
-              key={sessIdx}
-              sess={spec.sessions[sessIdx]}
-              sessIdx={sessIdx}
-              specKey={spec.key}
-              dayKey={spec.atendimentoDia}
-              atendimentoDate={spec.atendimentoDate}
-              isRecepcao
-              onSlotAction={onSlotAction}
-              somenteRotuloTurno={!!visitaVariant}
-            />
-          ))}
+          indicesSessoesUi.map((sessIdx) => {
+            const sess = spec.sessions[sessIdx];
+            return (
+              <SessionRow
+                key={sess.vagaId ?? `${spec.key}_${spec.atendimentoDate}_${sessIdx}`}
+                sess={sess}
+                sessIdx={sessIdx}
+                specKey={spec.key}
+                dayKey={spec.atendimentoDia}
+                atendimentoDate={spec.atendimentoDate}
+                isRecepcao
+                onSlotAction={onSlotAction}
+                somenteRotuloTurno={!!visitaVariant}
+              />
+            );
+          })}
+
+        {isRecepcao &&
+          !visitaVariant &&
+          mostrarBotaoSuspenderAtendimento &&
+          typeof onAbrirModalSuspender === "function" && (
+            <div style={styles.cardFooterRecepcao}>
+              <button
+                type="button"
+                style={styles.btnSuspenderAtendimento}
+                onClick={() => onAbrirModalSuspender(spec.key)}
+              >
+                Suspender atendimento…
+              </button>
+            </div>
+          )}
 
         {isRecepcao &&
           !visitaVariant &&
@@ -926,7 +1645,39 @@ function SpecCard({
   );
 }
 
-function SessionRow({
+function reservaSolicitacaoPropsIguais(a, b) {
+  if (a == null && b == null) return true;
+  if (a == null || b == null) return false;
+  const ma = typeof a.criadoEm?.toMillis === "function" ? a.criadoEm.toMillis() : 0;
+  const mb = typeof b.criadoEm?.toMillis === "function" ? b.criadoEm.toMillis() : 0;
+  return a.uid === b.uid && a.nome === b.nome && ma === mb;
+}
+
+function sessionRowPropsIguais(prev, next) {
+  if (prev.sessIdx !== next.sessIdx) return false;
+  if (prev.specKey !== next.specKey) return false;
+  if (prev.dayKey !== next.dayKey) return false;
+  if (prev.atendimentoDate !== next.atendimentoDate) return false;
+  if (prev.isRecepcao !== next.isRecepcao) return false;
+  if (prev.somenteRotuloTurno !== next.somenteRotuloTurno) return false;
+  if (prev.onSlotAction !== next.onSlotAction) return false;
+
+  const ps = prev.sess;
+  const ns = next.sess;
+  if ((ps?.vagaId ?? "") !== (ns?.vagaId ?? "")) return false;
+  if ((Number(ps?.used) || 0) !== (Number(ns?.used) || 0)) return false;
+  if ((Number(ps?.reserved) || 0) !== (Number(ns?.reserved) || 0)) return false;
+  if ((ps?.total ?? 0) !== (ns?.total ?? 0)) return false;
+  if ((ps?.encaixeExtra ?? 0) !== (ns?.encaixeExtra ?? 0)) return false;
+  if ((ps?.label ?? "") !== (ns?.label ?? "")) return false;
+  if (!!ps?.waitlistEnabled !== !!ns?.waitlistEnabled) return false;
+  if ((ps?.medicoTipo ?? "") !== (ns?.medicoTipo ?? "")) return false;
+  if (!!ps?.pccuOnly !== !!ns?.pccuOnly) return false;
+  if (!!ps?.visitaDomiciliarSemUnidade !== !!ns?.visitaDomiciliarSemUnidade) return false;
+  return reservaSolicitacaoPropsIguais(ps?.reservaSolicitacao, ns?.reservaSolicitacao);
+}
+
+const SessionRow = memo(function SessionRow({
   sess,
   sessIdx,
   specKey,
@@ -936,6 +1687,22 @@ function SessionRow({
   onSlotAction,
   somenteRotuloTurno = false,
 }) {
+  if (sess.visitaDomiciliarSemUnidade) {
+    return (
+      <div style={styles.sessRow}>
+        <div style={{ width: "100%", minWidth: 0 }}>
+          <p style={styles.sessLabel}>{sess.label}</p>
+          <div style={styles.agenteVisitaDomicLinha} role="status">
+            <p style={styles.agenteVisitaDomicLinhaTitle}>Visitas domiciliares</p>
+            <p style={styles.agenteVisitaDomicLinhaText}>
+              Sem vagas na UBS neste turno — profissional em visita domiciliar (sexta à tarde).
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (somenteRotuloTurno) {
     return (
       <div style={styles.sessRowSomenteTurno}>
@@ -948,11 +1715,11 @@ function SessionRow({
     );
   }
 
-  const used = sess.used ?? 0;
-  const reserved = sess.reserved ?? 0;
-  const total = sess.total ?? 0;
+  const used = Number(sess.used) || 0;
+  const reserved = Number(sess.reserved) || 0;
+  const total = Number(sess.total) || 0;
   const livreBruto = Math.max(0, total - used - reserved);
-  const bloqSolic = reservaSolicitacaoAtiva(sess) ? 1 : 0;
+  const bloqSolic = !isRecepcao && reservaSolicitacaoAtiva(sess) ? 1 : 0;
   const livres = Math.max(0, livreBruto - bloqSolic);
   const filled = used + reserved;
   const encaixeExtra = sess.encaixeExtra ?? 0;
@@ -1128,6 +1895,7 @@ function SessionRow({
             }
             onClick={() =>
               liberarVaga({
+                vagaId: sess.vagaId,
                 specKey,
                 dayKey,
                 sessIdx,
@@ -1155,6 +1923,7 @@ function SessionRow({
             }
             onClick={() =>
               preencherVaga({
+                vagaId: sess.vagaId,
                 specKey,
                 dayKey,
                 sessIdx,
@@ -1173,7 +1942,7 @@ function SessionRow({
       </div>
     </div>
   );
-}
+}, sessionRowPropsIguais);
 
 function LegendItem({ color, border, label }) {
   return (
@@ -1195,6 +1964,226 @@ function LegendItem({ color, border, label }) {
 
 const styles = {
   wrap: { maxWidth: 1200, margin: "0 auto" },
+  modalBackdrop: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 1000,
+    background: "rgba(15, 23, 42, 0.45)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+  },
+  modalBoxSuspender: { maxWidth: 480 },
+  modalBox: {
+    width: "100%",
+    maxWidth: 420,
+    background: "#fff",
+    borderRadius: 14,
+    padding: "20px 22px",
+    boxShadow: "0 20px 50px rgba(15, 23, 42, 0.2)",
+    border: "1px solid #E2E8F0",
+  },
+  modalTitle: { margin: "0 0 8px", fontSize: 18, fontWeight: 700, color: "#0F172A" },
+  modalLead: { margin: "0 0 16px", fontSize: 14, color: "#475569", lineHeight: 1.45 },
+  modalHint: { margin: "0 0 10px", fontSize: 13, color: "#64748B", lineHeight: 1.4 },
+  modalSubLabel: {
+    display: "block",
+    margin: "0 0 8px",
+    fontSize: 13,
+    fontWeight: 600,
+    color: "#334155",
+  },
+  modalTipoSuspRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "12px 18px",
+    marginBottom: 14,
+  },
+  modalTipoSuspOpt: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    fontSize: 14,
+    color: "#334155",
+    cursor: "pointer",
+  },
+  modalTextarea: {
+    width: "100%",
+    minHeight: 72,
+    padding: "10px 12px",
+    fontSize: 14,
+    borderRadius: 8,
+    border: "1px solid #CBD5E1",
+    fontFamily: "inherit",
+    resize: "vertical",
+    boxSizing: "border-box",
+  },
+  modalField: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+    marginBottom: 14,
+    fontSize: 13,
+    fontWeight: 600,
+    color: "#334155",
+  },
+  modalInput: {
+    padding: "10px 12px",
+    fontSize: 15,
+    borderRadius: 8,
+    border: "1px solid #CBD5E1",
+    fontFamily: "inherit",
+  },
+  modalCheck: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 10,
+    marginBottom: 12,
+    fontSize: 14,
+    color: "#334155",
+    lineHeight: 1.4,
+    cursor: "pointer",
+  },
+  modalChecksCol: { marginBottom: 8 },
+  modalDiaTurnoBlock: {
+    marginBottom: 14,
+    paddingBottom: 12,
+    borderBottom: "1px solid #F1F5F9",
+  },
+  modalTurnosInline: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "12px 20px",
+    marginLeft: 28,
+    marginTop: 8,
+  },
+  modalCheckTurno: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    fontSize: 13,
+    fontWeight: 600,
+    color: "#475569",
+    cursor: "pointer",
+  },
+  modalFooter: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 10,
+    justifyContent: "flex-end",
+    marginTop: 18,
+    paddingTop: 14,
+    borderTop: "1px solid #F1F5F9",
+  },
+  modalBtnGhost: {
+    padding: "10px 16px",
+    fontSize: 14,
+    fontWeight: 600,
+    borderRadius: 8,
+    border: "1px solid #CBD5E1",
+    background: "#fff",
+    color: "#475569",
+    cursor: "pointer",
+  },
+  modalBtnPrimary: {
+    padding: "10px 16px",
+    fontSize: 14,
+    fontWeight: 700,
+    borderRadius: 8,
+    border: "none",
+    background: "#0C447C",
+    color: "#fff",
+    cursor: "pointer",
+    boxShadow: "0 2px 6px rgba(12, 68, 124, 0.25)",
+  },
+  avisoSuspensaoAgenteWrap: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    marginBottom: 16,
+  },
+  avisoSuspensaoAgente: {
+    padding: "10px 14px",
+    borderRadius: 10,
+    border: "1px solid #FECACA",
+    background: "linear-gradient(180deg, #FEF2F2 0%, #FFF1F2 100%)",
+  },
+  avisoSuspensaoAgenteLinha: {
+    margin: 0,
+    fontSize: 13,
+    fontWeight: 600,
+    color: "#991B1B",
+    lineHeight: 1.45,
+  },
+  painelSuspRecepcao: {
+    marginBottom: 22,
+    padding: "16px 18px",
+    borderRadius: 12,
+    border: "1px solid #FECACA",
+    background: "linear-gradient(180deg, #FFF7ED 0%, #FFEDD5 100%)",
+  },
+  painelSuspRecepcaoTitle: {
+    margin: "0 0 12px",
+    fontSize: 14,
+    fontWeight: 700,
+    color: "#9A3412",
+  },
+  painelSuspRecepcaoGrid: { display: "flex", flexDirection: "column", gap: 12 },
+  painelSuspPontualRecepcao: {
+    marginBottom: 22,
+    padding: "16px 18px",
+    borderRadius: 12,
+    border: "1px solid #CBD5E1",
+    background: "#F8FAFC",
+  },
+  painelSuspCardPontual: {
+    padding: "12px 14px",
+    borderRadius: 10,
+    background: "#fff",
+    border: "1px solid #E2E8F0",
+  },
+  btnRemoverSuspPontual: {
+    marginTop: 8,
+    padding: "6px 12px",
+    fontSize: 12,
+    fontWeight: 600,
+    borderRadius: 6,
+    border: "1px solid #94A3B8",
+    background: "#fff",
+    color: "#475569",
+    cursor: "pointer",
+  },
+  painelSuspCard: {
+    padding: "12px 14px",
+    borderRadius: 10,
+    background: "#fff",
+    border: "1px solid #FDBA74",
+  },
+  painelSuspCardNome: { margin: "0 0 6px", fontSize: 15, fontWeight: 700, color: "#0F172A" },
+  painelSuspCardMeta: { fontWeight: 500, color: "#64748B", fontSize: 13 },
+  painelSuspCardDetalhe: { margin: "0 0 10px", fontSize: 13, color: "#57534E", lineHeight: 1.45 },
+  btnReativarSusp: {
+    padding: "8px 14px",
+    fontSize: 13,
+    fontWeight: 700,
+    borderRadius: 8,
+    border: "none",
+    background: "#C2410C",
+    color: "#fff",
+    cursor: "pointer",
+  },
+  btnSuspenderAtendimento: {
+    width: "100%",
+    padding: "10px 12px",
+    fontSize: 13,
+    fontWeight: 700,
+    borderRadius: 8,
+    border: "1px solid #F97316",
+    background: "linear-gradient(180deg, #FFF7ED 0%, #FFEDD5 100%)",
+    color: "#9A3412",
+    cursor: "pointer",
+  },
   empty: { textAlign: "center", padding: "48px 20px" },
   alertSemVagas: {
     marginBottom: 20,
@@ -1399,6 +2388,27 @@ const styles = {
     lineHeight: 1.5,
     color: "#134E4A",
   },
+  /** Aviso compacto no resumo agente/direção (ex.: sexta tarde Dr. Patrick — visitas). */
+  agenteVisitaDomicLinha: {
+    marginTop: 6,
+    padding: "8px 10px",
+    borderRadius: 8,
+    background: "linear-gradient(135deg, #F0FDFA 0%, #ECFEFF 100%)",
+    border: "1px solid #99F6E4",
+  },
+  agenteVisitaDomicLinhaTitle: {
+    margin: "0 0 4px",
+    fontSize: 12,
+    fontWeight: 700,
+    color: "#0F766E",
+    lineHeight: 1.3,
+  },
+  agenteVisitaDomicLinhaText: {
+    margin: 0,
+    fontSize: 12,
+    lineHeight: 1.45,
+    color: "#134E4A",
+  },
   sessRow: {
     display: "flex",
     flexDirection: "column",
@@ -1488,7 +2498,7 @@ const styles = {
     background: "#DCFCE7",
     boxShadow: "inset 0 0 0 1px #86EFAC",
   },
-  barFill: { height: "100%", borderRadius: 999, transition: "width 0.2s ease" },
+  barFill: { height: "100%", borderRadius: 999 },
   livresResumo: {
     margin: 0,
     fontSize: 14,

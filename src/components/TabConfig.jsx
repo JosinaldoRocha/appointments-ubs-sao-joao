@@ -18,12 +18,17 @@ import {
   deleteUser as deleteAuthUser,
 } from "firebase/auth";
 import { secondaryAuth } from "../services/firebase";
+import { deleteField } from "firebase/firestore";
 import {
   DEFAULT_PROF_NAMES,
   SPEC_META,
   DEFAULT_PCCU_TOTAL,
   parseDateStr,
   normalizeFeriadosList,
+  ORDEM_DIA_SEMANA_GRADE,
+  DAY_LABEL,
+  defaultAtendimentoDiasTurnosParaSpec,
+  normalizeAtendimentoDiasTurnosParaSpec,
 } from "../services/scheduleConfig";
 import PasswordInput from "./PasswordInput";
 
@@ -104,23 +109,47 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
     return un;
   }, []);
 
-  async function salvarNomeProfissional(specKey, nome) {
+  async function salvarNomeProfissional(specKey, nome, gradeMapTurnos) {
     const n = nome.trim();
     if (!n) {
       showToast("Informe o nome do profissional.", "danger");
       return;
     }
+    const raw = {};
+    if (gradeMapTurnos && typeof gradeMapTurnos === "object") {
+      for (const [dia, arr] of Object.entries(gradeMapTurnos)) {
+        if (Array.isArray(arr) && arr.length) raw[dia] = [...arr];
+      }
+    }
+    const normalized = normalizeAtendimentoDiasTurnosParaSpec(specKey, raw);
+    if (!normalized) {
+      showToast(
+        "Marque pelo menos um dia da semana (segunda a sexta) e um turno (manhã ou tarde) em que o profissional atende na UBS.",
+        "danger"
+      );
+      return;
+    }
+    const defGrade = defaultAtendimentoDiasTurnosParaSpec(specKey);
+    const igualAoPadraoDoCodigo = JSON.stringify(normalized) === JSON.stringify(defGrade);
+
     const role = SPEC_META[specKey]?.role;
     const existente = resolverDocumentoProfissional(specKey, profissionaisMap);
     try {
       if (existente?.id) {
-        await updateProfissional(existente.id, { nome: n, specKey });
+        await updateProfissional(existente.id, {
+          nome: n,
+          specKey,
+          ...(igualAoPadraoDoCodigo
+            ? { atendimentoDiasTurnos: deleteField() }
+            : { atendimentoDiasTurnos: normalized }),
+        });
         showToast(`Profissional atualizado: ${n}`, "success");
       } else {
         await createProfissional({
           nome: n,
           specKey,
           ...(role ? { role } : {}),
+          ...(igualAoPadraoDoCodigo ? {} : { atendimentoDiasTurnos: normalized }),
         });
         showToast(`Profissional cadastrado: ${n}`, "success");
       }
@@ -344,10 +373,12 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
         <div>
           <p style={S.hint}>
             <strong>Profissionais nas vagas da agenda</strong> — cada linha corresponde a uma{" "}
-            <em>chave de agenda</em> do sistema (médico, odontologia, etc.). Use{" "}
-            <strong>Salvar</strong> para cadastrar ou atualizar o nome; <strong>Excluir</strong> remove o
-            cadastro no Firestore e o nome volta ao padrão. A grade de horários (dias e quantidade de vagas)
-            continua definida no código (<code style={S.code}>scheduleConfig</code>).
+            <em>chave de agenda</em> do sistema (médico, odontologia, etc.). Informe o nome, marque os{" "}
+            <strong>dias da semana</strong> (segunda a sexta) e os <strong>turnos</strong> (manhã e/ou tarde)
+            em que o profissional atende na UBS (inclusive dias ainda fora da grade no sistema, para quando a agenda
+            mudar); <strong>Salvar</strong> grava nome e disponibilidade.{" "}
+            <strong>Excluir</strong> remove o cadastro no Firestore e o nome volta ao padrão. A quantidade de
+            vagas por sessão continua definida no código (<code style={S.code}>scheduleConfig</code>).
           </p>
           <p style={S.hintMuted}>
             Para <strong>contas de login</strong> (agente, recepção, direção), use a aba{" "}
@@ -373,7 +404,7 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
                   specKey={key}
                   nome={profNames[key] || DEFAULT_PROF_NAMES[key]}
                   doc={resolverDocumentoProfissional(key, profissionaisMap)}
-                  onSave={salvarNomeProfissional}
+                  onSave={(sk, nomeVal, grade) => salvarNomeProfissional(sk, nomeVal, grade)}
                   onDelete={excluirProfissional}
                 />
               </div>
@@ -690,11 +721,46 @@ function RecepcionistaWhatsappRow({ usuario, showToast, onSaved }) {
   );
 }
 
+function gradeMapInicialProf(specKey, doc) {
+  const def = defaultAtendimentoDiasTurnosParaSpec(specKey);
+  const norm = normalizeAtendimentoDiasTurnosParaSpec(specKey, doc?.atendimentoDiasTurnos);
+  const out = {};
+  for (const dia of ORDEM_DIA_SEMANA_GRADE) {
+    if (norm && Array.isArray(norm[dia]) && norm[dia].length) {
+      out[dia] = [...norm[dia]];
+    } else if (norm) {
+      out[dia] = [];
+    } else {
+      out[dia] = def[dia] ? [...def[dia]] : [];
+    }
+  }
+  return out;
+}
+
 function ProfRow({ specKey, nome, doc, onSave, onDelete }) {
   const [val, setVal] = useState(nome);
+  const [gradeMap, setGradeMap] = useState(() => gradeMapInicialProf(specKey, doc));
   const meta = SPEC_META[specKey] || {};
+  const snapDocGrade = doc?.id
+    ? JSON.stringify(doc?.atendimentoDiasTurnos || {})
+    : `new-${specKey}`;
+
   useEffect(() => setVal(nome), [nome]);
+  useEffect(() => {
+    setGradeMap(gradeMapInicialProf(specKey, doc));
+  }, [specKey, doc?.id, snapDocGrade]);
+
   const temCadastro = Boolean(doc?.id);
+
+  function toggleTurno(dia, turno) {
+    setGradeMap((prev) => {
+      const cur = new Set(prev[dia] || []);
+      if (cur.has(turno)) cur.delete(turno);
+      else cur.add(turno);
+      return { ...prev, [dia]: [...cur].sort() };
+    });
+  }
+
   return (
     <div style={S.profRow}>
       <div style={{ ...S.avSmall, background: meta.bg || "#F1F5F9", color: meta.tc || "#475569" }}>
@@ -703,12 +769,51 @@ function ProfRow({ specKey, nome, doc, onSave, onDelete }) {
       <div style={{ flex: 1, minWidth: 0 }}>
         <p style={S.profRole}>{meta.role || specKey}</p>
         <input style={S.input} value={val} onChange={(e) => setVal(e.target.value)} />
+        <p style={S.gradeTitle}>Dias e turnos na UBS (segunda a sexta)</p>
+        <p style={S.gradeHint}>
+          Todos os dias e os dois turnos podem ser marcados, mesmo que ainda não apareçam na grade do app — assim a
+          recepção antecipa mudanças na agenda.
+        </p>
+        {specKey === "dentPatrick" && (
+          <p style={{ ...S.profHintMuted, marginTop: 4 }}>
+            Às <strong>sexta-feiras à tarde</strong> o Dr. Patrick não atende na unidade (turno reservado para{" "}
+            <strong>visitas domiciliares</strong>).
+          </p>
+        )}
+        <div style={S.gradeList}>
+          {ORDEM_DIA_SEMANA_GRADE.map((dia) => {
+            const ativos = gradeMap[dia] || [];
+            return (
+              <div key={dia} style={S.gradeRow}>
+                <span style={S.gradeDia}>{DAY_LABEL[dia] || dia}</span>
+                <div style={S.gradeTurnos}>
+                  <label style={S.gradeChk}>
+                    <input
+                      type="checkbox"
+                      checked={ativos.includes("manha")}
+                      onChange={() => toggleTurno(dia, "manha")}
+                    />
+                    Manhã
+                  </label>
+                  <label style={S.gradeChk}>
+                    <input
+                      type="checkbox"
+                      checked={ativos.includes("tarde")}
+                      onChange={() => toggleTurno(dia, "tarde")}
+                    />
+                    Tarde
+                  </label>
+                </div>
+              </div>
+            );
+          })}
+        </div>
         {!temCadastro && (
-          <p style={S.profHintMuted}>Sem cadastro no Firestore — Salvar cria o registro.</p>
+          <p style={S.profHintMuted}>Sem cadastro no Firestore — Cadastrar cria o registro.</p>
         )}
       </div>
       <div style={S.profActions}>
-        <button type="button" style={S.btnSave} onClick={() => onSave(specKey, val)}>
+        <button type="button" style={S.btnSave} onClick={() => onSave(specKey, val, gradeMap)}>
           {temCadastro ? "Salvar" : "Cadastrar"}
         </button>
         <button
@@ -772,6 +877,22 @@ const S = {
   profRow: { display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 0 },
   profActions: { display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 },
   profHintMuted: { fontSize: 11, color: "#94A3B8", margin: "6px 0 0" },
+  gradeTitle: { fontSize: 11, fontWeight: 600, color: "#64748B", margin: "10px 0 4px" },
+  gradeHint: { fontSize: 11, color: "#94A3B8", margin: "0 0 8px", lineHeight: 1.4 },
+  gradeList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+    marginBottom: 4,
+    padding: "8px 10px",
+    background: "#F8FAFC",
+    borderRadius: 8,
+    border: "0.5px solid #E2E8F0",
+  },
+  gradeRow: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12, color: "#334155" },
+  gradeDia: { minWidth: 118, fontWeight: 500 },
+  gradeTurnos: { display: "flex", gap: 12, flexWrap: "wrap" },
+  gradeChk: { display: "inline-flex", alignItems: "center", gap: 5, cursor: "pointer", userSelect: "none" },
   avSmall: { width: 32, height: 32, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 600, flexShrink: 0 },
   profRole: { fontSize: 11, color: "#64748B", margin: "0 0 4px" },
   formGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 10, marginBottom: 12 },

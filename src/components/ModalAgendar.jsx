@@ -1,5 +1,5 @@
 // src/components/ModalAgendar.jsx
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   SPEC_META,
   toDateStr,
@@ -26,9 +26,11 @@ export default function ModalAgendar({
   onClose,
   recepcaoWhatsappOk,
 }) {
+  const nascimentoPickerRef = useRef(null);
   const [paciente, setPaciente] = useState("");
   const [telefone, setTelefone] = useState("");
   const [dataNascimento, setDataNascimento] = useState("");
+  const [dataNascimentoInput, setDataNascimentoInput] = useState("");
   const [documentoPaciente, setDocumentoPaciente] = useState("");
   const [docFile, setDocFile] = useState(null);
   const [docPreview, setDocPreview] = useState(null);
@@ -50,6 +52,9 @@ export default function ModalAgendar({
   const maxDataNascimento = toDateStr(new Date());
 
   const isFisioSolicitacao = ctx.specKey === "fisio" || ctx.key === "fisio";
+  const isColetaExamesRotina =
+    ctx.coletaExamesRotina === true ||
+    (ctx.specKey === "tecnicoEnfermagem" && /\bcoleta de exames\b/i.test(String(ctx.sessLabel || "")));
   const isEncaminhamentoObrigatorio =
     ctx.solicitacaoEncaminhamentoObrigatorio === true || isFisioSolicitacao;
   const isSomenteEncaixe = ctx.somenteEncaixe === true;
@@ -74,6 +79,7 @@ export default function ModalAgendar({
     setPaciente("");
     setTelefone("");
     setDataNascimento("");
+    setDataNascimentoInput("");
     setDocumentoPaciente("");
     setDocFile(null);
     setDocPreview(null);
@@ -94,6 +100,12 @@ export default function ModalAgendar({
     ctx.livresEncaixe,
     ctx.sessLabel,
   ]);
+
+  useEffect(() => {
+    if (dataNascimento && dataNascimentoInput !== formatarDataIsoParaBr(dataNascimento)) {
+      setDataNascimentoInput(formatarDataIsoParaBr(dataNascimento));
+    }
+  }, [dataNascimento, dataNascimentoInput]);
 
   useEffect(() => {
     if (!docFile) {
@@ -127,6 +139,57 @@ export default function ModalAgendar({
         ? d.replace(/(\d{2})(\d{4})(\d{0,4})/, "($1) $2-$3")
         : d.replace(/(\d{2})(\d{5})(\d{0,4})/, "($1) $2-$3");
     setTelefone(f);
+  }
+
+  function formatarDataIsoParaBr(iso) {
+    if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "";
+    const [ano, mes, dia] = iso.split("-");
+    return `${dia}/${mes}/${ano}`;
+  }
+
+  function dataBrParaIsoValorFinal(valorBr) {
+    if (!/^\d{2}\/\d{2}\/\d{4}$/.test(valorBr)) return "";
+    const [diaStr, mesStr, anoStr] = valorBr.split("/");
+    const dia = Number(diaStr);
+    const mes = Number(mesStr);
+    const ano = Number(anoStr);
+    if (!dia || !mes || !ano || mes < 1 || mes > 12 || dia < 1 || dia > 31) return "";
+    const iso = `${anoStr}-${mesStr}-${diaStr}`;
+    const dt = new Date(`${iso}T00:00:00`);
+    if (Number.isNaN(dt.getTime())) return "";
+    if (dt.getFullYear() !== ano || dt.getMonth() + 1 !== mes || dt.getDate() !== dia) return "";
+    return iso;
+  }
+
+  function handleDataNascimentoDigitada(v) {
+    const digitos = v.replace(/\D/g, "").slice(0, 8);
+    let formatado = digitos;
+    if (digitos.length > 4) {
+      formatado = `${digitos.slice(0, 2)}/${digitos.slice(2, 4)}/${digitos.slice(4)}`;
+    } else if (digitos.length > 2) {
+      formatado = `${digitos.slice(0, 2)}/${digitos.slice(2)}`;
+    }
+
+    setDataNascimentoInput(formatado);
+
+    if (digitos.length === 8) {
+      const iso = dataBrParaIsoValorFinal(formatado);
+      if (iso) {
+        setDataNascimento(iso > maxDataNascimento ? maxDataNascimento : iso);
+        return;
+      }
+    }
+    setDataNascimento("");
+  }
+
+  function abrirSeletorNascimento() {
+    const el = nascimentoPickerRef.current;
+    if (!el) return;
+    if (typeof el.showPicker === "function") {
+      el.showPicker();
+      return;
+    }
+    el.click();
   }
 
   function onPickDoc(e) {
@@ -233,6 +296,58 @@ export default function ModalAgendar({
       return;
     }
 
+    if (isColetaExamesRotina) {
+      if (!paciente.trim()) {
+        setErro("Informe o nome do paciente.");
+        return;
+      }
+      if (!dataNascimento) {
+        setErro("Informe a data de nascimento.");
+        return;
+      }
+      if (dataNascimento > maxDataNascimento) {
+        setErro("A data de nascimento não pode ser posterior à data de hoje.");
+        return;
+      }
+      if (!isCpfOuCartaoSusCompleto(documentoPaciente)) {
+        setErro(ERRO_CPF_SUS_INCOMPLETO);
+        return;
+      }
+      if (!docFile) {
+        setErro("Anexe a foto do pedido de exame.");
+        return;
+      }
+      const waTabColeta = window.open("about:blank", "_blank");
+      if (!waTabColeta) {
+        setErro(
+          "Permita pop-ups para este site para abrir o WhatsApp após enviar a imagem (o navegador bloqueia após o upload)."
+        );
+        return;
+      }
+      setEnviando(true);
+      try {
+        await onSubmit({
+          ...ctx,
+          paciente: paciente.trim(),
+          dataNascimentoPaciente: dataNascimento,
+          documentoPaciente: formatarCpfOuSusDigitos(digitosCpfOuSus(documentoPaciente)),
+          observacaoExtra: observacao.trim(),
+          docFile,
+          whatsappBlankWindow: waTabColeta,
+        });
+      } catch (err) {
+        try {
+          if (waTabColeta && !waTabColeta.closed) waTabColeta.close();
+        } catch {
+          /* ignore */
+        }
+        setErro(err?.message || "Não foi possível enviar. Tente de novo.");
+      } finally {
+        setEnviando(false);
+      }
+      return;
+    }
+
     if (docFile) {
       if (dataNascimento && dataNascimento > maxDataNascimento) {
         setErro("A data de nascimento não pode ser posterior à data de hoje.");
@@ -322,6 +437,8 @@ export default function ModalAgendar({
             <p style={S.title}>
               {isEncaminhamentoObrigatorio
                 ? "Solicitar agendamento — fisioterapia"
+                : isColetaExamesRotina
+                  ? "Solicitar agendamento — coleta de exames"
                 : isSomenteEncaixe && rotuloModalEncaixe
                   ? `Solicitar encaixe — ${rotuloModalEncaixe}`
                   : isSomenteEncaixe
@@ -353,6 +470,8 @@ export default function ModalAgendar({
           <p style={S.resumoHint}>
             {isEncaminhamentoObrigatorio
               ? "Preencha os dados do paciente e anexe a foto do encaminhamento. O nome do agente de saúde (seu cadastro) entra na mensagem do WhatsApp. Ao enviar, abre o WhatsApp da recepção com o texto pronto."
+              : isColetaExamesRotina
+                ? "Preencha todos os campos obrigatórios e anexe a foto do pedido de exame. Ao enviar, abre o WhatsApp da recepção com a mensagem pronta."
               : isSomenteEncaixe
                 ? `${fraseVagasEsgotadasEncaixe({
                     livres: ctx.livresEncaixe ?? 0,
@@ -424,6 +543,82 @@ export default function ModalAgendar({
                 )}
               </div>
             </>
+          ) : isColetaExamesRotina ? (
+            <>
+              <p style={S.fisioTituloCampos}>Preencha todos os campos (obrigatórios)</p>
+              <Field label="1. Nome do paciente">
+                <input
+                  style={S.input}
+                  value={paciente}
+                  onChange={(e) => setPaciente(e.target.value)}
+                  placeholder="Nome completo do paciente"
+                  autoFocus
+                />
+              </Field>
+              <Field label="2. Data de nascimento">
+                <div style={S.dataNascimentoWrap}>
+                  <input
+                    style={S.input}
+                    type="text"
+                    value={dataNascimentoInput}
+                    onChange={(e) => handleDataNascimentoDigitada(e.target.value)}
+                    placeholder="DD/MM/AAAA"
+                    inputMode="numeric"
+                    autoComplete="bday"
+                  />
+                  <button type="button" style={S.btnPicker} onClick={abrirSeletorNascimento}>
+                    Selecionar
+                  </button>
+                  <input
+                    ref={nascimentoPickerRef}
+                    style={S.hiddenDateInput}
+                    type="date"
+                    value={dataNascimento}
+                    max={maxDataNascimento}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      const ajustada = v && v > maxDataNascimento ? maxDataNascimento : v;
+                      setDataNascimento(ajustada);
+                      setDataNascimentoInput(formatarDataIsoParaBr(ajustada));
+                    }}
+                    tabIndex={-1}
+                    aria-hidden="true"
+                  />
+                </div>
+              </Field>
+              <Field label={`3. ${LABEL_CPF_SUS}`}>
+                <input
+                  style={S.input}
+                  value={documentoPaciente}
+                  onChange={(e) => handleDocumentoCpfSus(e.target.value)}
+                  placeholder={PLACEHOLDER_CPF_SUS}
+                  inputMode="numeric"
+                  autoComplete="off"
+                />
+              </Field>
+              <div style={{ marginBottom: 12 }}>
+                <Field label="4. Foto do pedido de exame (obrigatória)">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    id="doc-paciente-input"
+                    style={{ display: "none" }}
+                    onChange={onPickDoc}
+                  />
+                  <label htmlFor="doc-paciente-input" style={S.btnFile}>
+                    Tirar ou escolher foto do pedido
+                  </label>
+                  {docFile && (
+                    <button type="button" style={S.btnClearPhoto} onClick={limparFoto}>
+                      Remover foto
+                    </button>
+                  )}
+                </Field>
+                {docPreview && (
+                  <img src={docPreview} alt="Pré-visualização do pedido de exame" style={S.preview} />
+                )}
+              </div>
+            </>
           ) : (
             <>
               <Field label={docFile ? "Nome do paciente (opcional)" : "Nome completo do paciente"}>
@@ -436,17 +631,42 @@ export default function ModalAgendar({
                 />
               </Field>
               <Field label="Data de nascimento">
-                <input
-                  style={S.input}
-                  type="date"
-                  value={dataNascimento}
-                  max={maxDataNascimento}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setDataNascimento(v && v > maxDataNascimento ? maxDataNascimento : v);
-                  }}
-                  disabled={Boolean(docFile)}
-                />
+                <div style={S.dataNascimentoWrap}>
+                  <input
+                    style={S.input}
+                    type="text"
+                    value={dataNascimentoInput}
+                    onChange={(e) => handleDataNascimentoDigitada(e.target.value)}
+                    placeholder="DD/MM/AAAA"
+                    inputMode="numeric"
+                    autoComplete="bday"
+                    disabled={Boolean(docFile)}
+                  />
+                  <button
+                    type="button"
+                    style={S.btnPicker}
+                    onClick={abrirSeletorNascimento}
+                    disabled={Boolean(docFile)}
+                  >
+                    Selecionar
+                  </button>
+                  <input
+                    ref={nascimentoPickerRef}
+                    style={S.hiddenDateInput}
+                    type="date"
+                    value={dataNascimento}
+                    max={maxDataNascimento}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      const ajustada = v && v > maxDataNascimento ? maxDataNascimento : v;
+                      setDataNascimento(ajustada);
+                      setDataNascimentoInput(formatarDataIsoParaBr(ajustada));
+                    }}
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    disabled={Boolean(docFile)}
+                  />
+                </div>
               </Field>
               <Field label={LABEL_CPF_SUS}>
                 <input
@@ -609,6 +829,29 @@ const S = {
     color: "#0F172A",
     outline: "none",
     width: "100%",
+  },
+  dataNascimentoWrap: {
+    display: "flex",
+    gap: 8,
+    alignItems: "center",
+  },
+  btnPicker: {
+    padding: "9px 11px",
+    fontSize: 12,
+    fontWeight: 600,
+    border: "1px solid #C7D2FE",
+    borderRadius: 8,
+    background: "#EEF2FF",
+    color: "#3730A3",
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  },
+  hiddenDateInput: {
+    position: "absolute",
+    opacity: 0,
+    pointerEvents: "none",
+    width: 1,
+    height: 1,
   },
   textarea: {
     padding: "9px 11px",

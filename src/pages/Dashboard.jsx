@@ -1,26 +1,25 @@
 // src/pages/Dashboard.jsx
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { deleteField } from "firebase/firestore";
 import { useAuth } from "../hooks/useAuth";
 import AppLogo from "../components/AppLogo";
 import { logout } from "../services/auth";
 import {
   listenVagasByAtendimentoDates,
-  listenVagasChangesByAtendimentoDatesSince,
   setVaga,
   listenProfissionais,
   registrarNotificacaoVagasEsgotadas,
   listenSettings,
-  getVagasByAtendimentoDates,
-  getProfissionaisSnapshot,
-  getSettingsSnapshot,
-  listenProfissionaisChangesSince,
-  listenSettingsChangesSince,
   updateSettings,
   setAtendimentoEncerradoFlag,
+  setSpecAtendimentoSuspenso,
+  addAtendimentoSuspensoSlot,
+  removeAtendimentoSuspensoSlot,
+  clearSpecAtendimentoSuspenso,
+  updateProfissional,
   digitosWhatsappRecepcaoParaSolicitacao,
   tryReservaSolicitacaoAgente,
   liberarReservaSolicitacaoAgente,
-  confirmarSolicitacaoOcupaVaga,
 } from "../services/db";
 import {
   buildVisibleSegments,
@@ -36,6 +35,7 @@ import {
   addDaysLocal,
   shouldShowAvisoVisitaDomiciliarAmanha,
   avisoSemAtendimentoUbAmanha,
+  normalizeAtendimentoDiasTurnosParaSpec,
 } from "../services/scheduleConfig";
 import { uploadDocumentoPacienteSolicitacao } from "../services/storageUpload";
 import {
@@ -48,7 +48,171 @@ import TabConfig from "../components/TabConfig";
 import ModalAgendar from "../components/ModalAgendar";
 import Toast from "../components/Toast";
 import { isRecepcaoPerfil, isAgenteOuDiretorPerfil } from "../utils/perfilRole";
-import { loadDashboardDailySnapshot, saveDashboardDailySnapshot } from "../services/dailySyncCache";
+
+function vagasNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Compara só o que afeta a UI de vagas (ignora `atualizadoEm`, etc.). */
+function reservaSolicVagaIgual(p, q) {
+  if (p == null && q == null) return true;
+  if (p == null || q == null) return false;
+  const mp = typeof p.criadoEm?.toMillis === "function" ? p.criadoEm.toMillis() : 0;
+  const mq = typeof q.criadoEm?.toMillis === "function" ? q.criadoEm.toMillis() : 0;
+  return (p.uid ?? "") === (q.uid ?? "") && (p.nome ?? "") === (q.nome ?? "") && mp === mq;
+}
+
+/**
+ * Evita `setVagasMap` com objeto novo quando o snapshot do Firestore não mudou a ocupação.
+ * O SDK pode emitir mais de uma vez (ex.: cache local e confirmação do servidor) com os mesmos números.
+ */
+function vagasOcupacaoIguaisParaUI(prev, next) {
+  if (prev === next) return true;
+  const a = prev || {};
+  const b = next || {};
+  const ids = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const id of ids) {
+    const p = a[id];
+    const q = b[id];
+    if (!!p !== !!q) return false;
+    if (!p) continue;
+    if (vagasNum(p.used) !== vagasNum(q.used)) return false;
+    if (vagasNum(p.reserved) !== vagasNum(q.reserved)) return false;
+    if (vagasNum(p.total) !== vagasNum(q.total)) return false;
+    if ((p.atendimentoDate ?? "") !== (q.atendimentoDate ?? "")) return false;
+    if ((p.specKey ?? "") !== (q.specKey ?? "")) return false;
+    if (String(p.sessIdx ?? "") !== String(q.sessIdx ?? "")) return false;
+    if ((p.dayKey ?? "") !== (q.dayKey ?? "")) return false;
+    if (!reservaSolicVagaIgual(p.reservaSolicitacao, q.reservaSolicitacao)) return false;
+  }
+  return true;
+}
+
+function listaIsoIgual(a, b) {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b)) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function mapEncerradoIgual(prev, next) {
+  const p = prev?.atendimentoEncerradoPorSpecData || {};
+  const q = next?.atendimentoEncerradoPorSpecData || {};
+  const keys = new Set([...Object.keys(p), ...Object.keys(q)]);
+  for (const k of keys) {
+    if (!!p[k] !== !!q[k]) return false;
+  }
+  return true;
+}
+
+function mapaSuspensaoIgual(pa, pb) {
+  const a = pa || {};
+  const b = pb || {};
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) {
+    const x = a[k];
+    const y = b[k];
+    if (!x && !y) continue;
+    if (!x || !y) return false;
+    if (String(x.desde || "") !== String(y.desde || "")) return false;
+    if (!!x.indefinido !== !!y.indefinido) return false;
+    if (String(x.ate || "") !== String(y.ate || "")) return false;
+  }
+  return true;
+}
+
+function mapaDiasAtivosPorSpecIgual(pa, pb) {
+  const a = pa || {};
+  const b = pb || {};
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) {
+    const sa = [...(a[k] || [])].slice().sort().join(",");
+    const sb = [...(b[k] || [])].slice().sort().join(",");
+    if (sa !== sb) return false;
+  }
+  return true;
+}
+
+/** Evita re-render quando o Firestore reemite `settings` com os mesmos valores (novo objeto). */
+function settingsIguaisParaDashboard(prev, next) {
+  if (prev === next) return true;
+  if (!prev || !next) return false;
+  if (!listaIsoIgual(prev.feriados, next.feriados)) return false;
+  if (!listaIsoIgual(prev.pontosFacultativos, next.pontosFacultativos)) return false;
+  if (prev.pccuTotal !== next.pccuTotal) return false;
+  if ((prev.dentQuartaVisitaDomiciliarDesde || "") !== (next.dentQuartaVisitaDomiciliarDesde || "")) {
+    return false;
+  }
+  if ((prev.recepcionistaAtivoWhatsapp || "") !== (next.recepcionistaAtivoWhatsapp || "")) return false;
+  if ((prev.recepcionistaAtivoNome || "") !== (next.recepcionistaAtivoNome || "")) return false;
+  if ((prev.ultimoRecepcionistaWhatsapp || "") !== (next.ultimoRecepcionistaWhatsapp || "")) return false;
+  if ((prev.ultimoRecepcionistaNome || "") !== (next.ultimoRecepcionistaNome || "")) return false;
+  if (!mapEncerradoIgual(prev, next)) return false;
+  if (!mapaSuspensaoIgual(prev.atendimentoSuspensoPorSpec, next.atendimentoSuspensoPorSpec)) return false;
+  if (!mapaDiasAtivosPorSpecIgual(prev.atendimentoDiasAtivosPorSpec, next.atendimentoDiasAtivosPorSpec)) {
+    return false;
+  }
+  const keysTurnos = new Set([
+    ...Object.keys(prev.atendimentoDiasTurnosPorSpec || {}),
+    ...Object.keys(next.atendimentoDiasTurnosPorSpec || {}),
+  ]);
+  for (const k of keysTurnos) {
+    if (
+      profissionaisDiasTurnosSnapshot({ atendimentoDiasTurnos: prev.atendimentoDiasTurnosPorSpec?.[k] }) !==
+      profissionaisDiasTurnosSnapshot({ atendimentoDiasTurnos: next.atendimentoDiasTurnosPorSpec?.[k] })
+    ) {
+      return false;
+    }
+  }
+  if (!mapaSuspensoSlotsIgual(prev.atendimentoSuspensoSlots, next.atendimentoSuspensoSlots)) return false;
+  return true;
+}
+
+function slotSuspensaoSnapshot(val) {
+  const m = val?.motivo;
+  return typeof m === "string" ? m.trim() : "";
+}
+
+function mapaSuspensoSlotsIgual(pa, pb) {
+  const a = pa || {};
+  const b = pb || {};
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) {
+    if (slotSuspensaoSnapshot(a[k]) !== slotSuspensaoSnapshot(b[k])) return false;
+  }
+  return true;
+}
+
+function profissionaisDiasTurnosSnapshot(p) {
+  const raw = p?.atendimentoDiasTurnos;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return "";
+  const keys = Object.keys(raw).sort();
+  return keys.map((k) => `${k}:${[...(raw[k] || [])].sort().join(",")}`).join("|");
+}
+
+function profissionaisMapIgual(prev, next) {
+  if (prev === next) return true;
+  const a = prev || {};
+  const b = next || {};
+  const ids = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const id of ids) {
+    const p = a[id];
+    const q = b[id];
+    if (!!p !== !!q) return false;
+    if (!p) continue;
+    const kP = p.specKey ?? p.id ?? "";
+    const kQ = q.specKey ?? q.id ?? "";
+    if (kP !== kQ) return false;
+    if (String(p.nome ?? "").trim() !== String(q.nome ?? "").trim()) return false;
+    if (String(p.role ?? "") !== String(q.role ?? "")) return false;
+    if (profissionaisDiasTurnosSnapshot(p) !== profissionaisDiasTurnosSnapshot(q)) return false;
+  }
+  return true;
+}
 
 const TABS = [{ key: "vagas", label: "Vagas" }];
 
@@ -68,6 +232,7 @@ export default function Dashboard() {
     });
     return names;
   }, [profissionaisMap]);
+
   const [settings, setSettings] = useState({
     feriados: [],
     pontosFacultativos: [],
@@ -78,11 +243,48 @@ export default function Dashboard() {
     ultimoRecepcionistaWhatsapp: "",
     ultimoRecepcionistaNome: "",
     atendimentoEncerradoPorSpecData: {},
+    atendimentoSuspensoPorSpec: {},
+    atendimentoSuspensoSlots: {},
+    atendimentoDiasAtivosPorSpec: {},
+    atendimentoDiasTurnosPorSpec: {},
   });
+
+  const atendimentoDiasTurnosPorSpec = useMemo(() => {
+    const fromSettings = settings.atendimentoDiasTurnosPorSpec || {};
+    const out = { ...fromSettings };
+    for (const p of Object.values(profissionaisMap)) {
+      const sk = p.specKey;
+      if (!sk || typeof sk !== "string") continue;
+      const raw = p.atendimentoDiasTurnos;
+      if (raw && typeof raw === "object" && !Array.isArray(raw) && Object.keys(raw).length > 0) {
+        out[sk] = raw;
+      }
+    }
+    return out;
+  }, [profissionaisMap, settings.atendimentoDiasTurnosPorSpec]);
+
   const [modal, setModal] = useState(null);
   const [toast, setToast] = useState(null);
-  const [lastSyncAt, setLastSyncAt] = useState(0);
-  const [syncMode, setSyncMode] = useState("syncing");
+  /** Agente/direção: pausa listener de vagas com aba em segundo plano para reduzir leituras; recepção segue sempre em tempo real. */
+  const [paginaVisivel, setPaginaVisivel] = useState(
+    () => typeof document !== "undefined" && document.visibilityState === "visible"
+  );
+
+  const vagasMapRef = useRef({});
+  vagasMapRef.current = vagasMap;
+
+  const profNamesRef = useRef(profNames);
+  profNamesRef.current = profNames;
+
+  const settingsSlotRef = useRef({
+    pccuTotal: settings.pccuTotal,
+    dentQuartaVisitaDomiciliarDesde: settings.dentQuartaVisitaDomiciliarDesde,
+  });
+  const manterReservaAoFecharModalRef = useRef(false);
+  settingsSlotRef.current = {
+    pccuTotal: settings.pccuTotal,
+    dentQuartaVisitaDomiciliarDesde: settings.dentQuartaVisitaDomiciliarDesde,
+  };
 
   const todayStr = toDateStr(new Date());
   const listenDates = useMemo(
@@ -95,114 +297,35 @@ export default function Dashboard() {
     [todayStr, settings.feriados, settings.pontosFacultativos]
   );
 
-  const syncScopeKey = useMemo(() => {
-    const uid = user?.uid || "anon";
-    const role = isRecepcao ? "recepcao" : "agente-direcao";
-    return `${uid}:${role}`;
-  }, [user?.uid, isRecepcao]);
+  const escutaVagasFirestore =
+    isRecepcaoPerfil(perfil) || !isAgenteOuDiretorPerfil(perfil) || paginaVisivel;
 
   useEffect(() => {
-    let ativo = true;
+    const onVis = () => setPaginaVisivel(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
+  useEffect(() => {
     let unVagas = () => {};
-    let unProf = () => {};
-    let unSet = () => {};
-    let fallbackAtivo = false;
-
-    function ativarFallbackTempoReal() {
-      if (fallbackAtivo) return;
-      fallbackAtivo = true;
-      setSyncMode("full");
-      unVagas();
-      unProf();
-      unSet();
-      unVagas = listenVagasByAtendimentoDates(listenDates, setVagasMap);
-      unProf = listenProfissionais(setProfissionaisMap);
-      unSet = listenSettings(setSettings);
-      console.warn("Sincronização incremental indisponível. Usando listeners completos.");
+    if (escutaVagasFirestore) {
+      unVagas = listenVagasByAtendimentoDates(listenDates, (next) => {
+        setVagasMap((prev) => (vagasOcupacaoIguaisParaUI(prev, next) ? prev : next));
+      });
     }
-
-    async function initSync() {
-      const cached = loadDashboardDailySnapshot(syncScopeKey, todayStr);
-      let baseVagas = {};
-      let baseProfissionais = {};
-      let baseSettings = null;
-      let syncFrom = 0;
-
-      if (cached) {
-        baseVagas = cached.vagasMap || {};
-        baseProfissionais = cached.profissionaisMap || {};
-        baseSettings = cached.settings || null;
-        syncFrom = Number(cached.lastSyncAt) || 0;
-      } else {
-        const [vagasSnap, profSnap, settingsSnap] = await Promise.all([
-          getVagasByAtendimentoDates(listenDates),
-          getProfissionaisSnapshot(),
-          getSettingsSnapshot(),
-        ]);
-        if (!ativo) return;
-        baseVagas = vagasSnap.data || {};
-        baseProfissionais = profSnap.data || {};
-        baseSettings = settingsSnap;
-        syncFrom = Math.max(vagasSnap.maxUpdatedAt || 0, profSnap.maxUpdatedAt || 0, settingsSnap._syncUpdatedAt || 0);
-      }
-
-      if (!ativo) return;
-      setVagasMap(baseVagas);
-      setProfissionaisMap(baseProfissionais);
-      if (baseSettings) setSettings((prev) => ({ ...prev, ...baseSettings }));
-      setLastSyncAt(syncFrom);
-      setSyncMode("incremental");
-
-      unVagas = listenVagasChangesByAtendimentoDatesSince(
-        listenDates,
-        syncFrom,
-        ({ data, maxUpdatedAt }) => {
-          setVagasMap((prev) => ({ ...prev, ...data }));
-          setLastSyncAt((prev) => Math.max(prev, maxUpdatedAt || 0));
-        },
-        ativarFallbackTempoReal
-      );
-      unProf = listenProfissionaisChangesSince(
-        syncFrom,
-        ({ data, maxUpdatedAt }) => {
-          setProfissionaisMap((prev) => ({ ...prev, ...data }));
-          setLastSyncAt((prev) => Math.max(prev, maxUpdatedAt || 0));
-        },
-        ativarFallbackTempoReal
-      );
-      unSet = listenSettingsChangesSince(
-        syncFrom,
-        ({ data, maxUpdatedAt }) => {
-          setSettings((prev) => ({ ...prev, ...data }));
-          setLastSyncAt((prev) => Math.max(prev, maxUpdatedAt || 0));
-        },
-        ativarFallbackTempoReal
-      );
-    }
-
-    initSync().catch((e) => console.error("Falha ao inicializar sincronização diária:", e));
+    const unProf = listenProfissionais((next) => {
+      setProfissionaisMap((prev) => (profissionaisMapIgual(prev, next) ? prev : next));
+    });
+    const unSet = listenSettings((next) => {
+      setSettings((prev) => (settingsIguaisParaDashboard(prev, next) ? prev : next));
+    });
 
     return () => {
-      ativo = false;
       unVagas();
       unProf();
       unSet();
     };
-  }, [listenDates, syncScopeKey, todayStr]);
-
-  useEffect(() => {
-    if (!syncScopeKey || !todayStr) return;
-    const t = setTimeout(() => {
-      saveDashboardDailySnapshot(syncScopeKey, {
-        dayKey: todayStr,
-        lastSyncAt,
-        vagasMap,
-        profissionaisMap,
-        settings,
-      });
-    }, 150);
-    return () => clearTimeout(t);
-  }, [syncScopeKey, todayStr, lastSyncAt, vagasMap, profissionaisMap, settings]);
+  }, [listenDates, escutaVagasFirestore]);
 
   useEffect(() => {
     if (!isRecepcao || !perfil?.telefoneWhatsapp) return;
@@ -222,6 +345,10 @@ export default function Dashboard() {
     const id = modal.reservaFirestoreVagaId;
     const uid = user.uid;
     return () => {
+      if (manterReservaAoFecharModalRef.current) {
+        manterReservaAoFecharModalRef.current = false;
+        return;
+      }
       liberarReservaSolicitacaoAgente(id, uid).catch(() => {});
     };
   }, [modal?.reservaFirestoreVagaId, user?.uid]);
@@ -301,19 +428,93 @@ export default function Dashboard() {
     [isRecepcao]
   );
 
-  const handleSlotAction = useCallback(
-    async ({ specKey, dayKey, sessIdx, atendimentoDate, action, silent }) => {
+  const handleSuspenderAtendimentoSpec = useCallback(
+    async (specKey, payload) => {
       if (!isRecepcao) return;
-      const total = sessionTotalEffective(dayKey, specKey, sessIdx, settings.pccuTotal, {
+      try {
+        if (payload?.modo === "pontual") {
+          await addAtendimentoSuspensoSlot(specKey, payload.data, payload.escopo, payload.motivo || "");
+          showToast("Suspensão nesta data registrada.", "success");
+        } else {
+          await setSpecAtendimentoSuspenso(specKey, {
+            desde: payload.desde,
+            indefinido: payload.indefinido,
+            ate: payload.ate,
+          });
+          showToast("Suspensão de agendamento registrada.", "success");
+        }
+      } catch (e) {
+        console.error(e);
+        showToast(e?.message || "Não foi possível suspender. Tente de novo.", "danger");
+      }
+    },
+    [isRecepcao]
+  );
+
+  const handleRemoverSuspensaoPontual = useCallback(
+    async (slotKey) => {
+      if (!isRecepcao) return;
+      try {
+        await removeAtendimentoSuspensoSlot(slotKey);
+        showToast("Suspensão pontual removida.", "success");
+      } catch (e) {
+        console.error(e);
+        showToast("Não foi possível remover. Tente de novo.", "danger");
+      }
+    },
+    [isRecepcao]
+  );
+
+  const handleReativarAtendimentoSpec = useCallback(
+    async (specKey, diasSemana, atendimentoDiasTurnos) => {
+      if (!isRecepcao) return;
+      try {
+        await clearSpecAtendimentoSuspenso(specKey, diasSemana);
+        const prof = Object.values(profissionaisMap).find((p) => p.specKey === specKey || p.id === specKey);
+        const norm = normalizeAtendimentoDiasTurnosParaSpec(specKey, atendimentoDiasTurnos || {});
+
+        if (prof?.id) {
+          if (norm && Object.keys(norm).length > 0) {
+            await updateProfissional(prof.id, { atendimentoDiasTurnos: norm });
+          } else {
+            await updateProfissional(prof.id, { atendimentoDiasTurnos: deleteField() });
+          }
+          await updateSettings({
+            atendimentoDiasTurnosPorSpec: { [specKey]: deleteField() },
+          });
+        } else if (norm && Object.keys(norm).length > 0) {
+          await updateSettings({
+            atendimentoDiasTurnosPorSpec: { [specKey]: norm },
+          });
+        } else {
+          await updateSettings({
+            atendimentoDiasTurnosPorSpec: { [specKey]: deleteField() },
+          });
+        }
+        showToast("Atendimento reativado na agenda.", "success");
+      } catch (e) {
+        console.error(e);
+        showToast("Não foi possível reativar. Tente de novo.", "danger");
+      }
+    },
+    [isRecepcao, profissionaisMap]
+  );
+
+  const handleSlotAction = useCallback(
+    async ({ vagaId, specKey, dayKey, sessIdx, atendimentoDate, action, silent }) => {
+      if (!isRecepcao) return;
+      const { pccuTotal, dentQuartaVisitaDomiciliarDesde } = settingsSlotRef.current;
+      const total = sessionTotalEffective(dayKey, specKey, sessIdx, pccuTotal, {
         atendimentoDateStr: atendimentoDate,
-        dentQuartaVisitaDomiciliarDesde: settings.dentQuartaVisitaDomiciliarDesde,
+        dentQuartaVisitaDomiciliarDesde,
       });
       if (!total) return;
 
-      const id = vagaDocId(atendimentoDate, specKey, sessIdx);
-      const vdb = vagasMap[id] || {};
+      const id = vagaId || vagaDocId(atendimentoDate, specKey, sessIdx);
+      const vdb = vagasMapRef.current[id] || {};
       let used = Number(vdb.used) || 0;
       let reserved = Number(vdb.reserved) || 0;
+      const limparReservaSolicitacao = !!vdb.reservaSolicitacao;
 
       const livre = () => total - used - reserved;
 
@@ -354,9 +555,10 @@ export default function Dashboard() {
         used,
         reserved,
         total,
+        ...(limparReservaSolicitacao ? { reservaSolicitacao: deleteField() } : {}),
       });
 
-      const nomeProf = profNames[specKey] || specKey;
+      const nomeProf = profNamesRef.current[specKey] || specKey;
 
       if (used + reserved >= total) {
         await registrarNotificacaoVagasEsgotadas(specKey, nomeProf);
@@ -373,13 +575,7 @@ export default function Dashboard() {
         }
       }
     },
-    [
-      isRecepcao,
-      vagasMap,
-      profNames,
-      settings.pccuTotal,
-      settings.dentQuartaVisitaDomiciliarDesde,
-    ]
+    [isRecepcao]
   );
 
   const handleEnviarSolicit = useCallback(
@@ -400,6 +596,7 @@ export default function Dashboard() {
       nomeAgenteSaude,
       observacaoExtra,
       medicoTipo,
+      coletaExamesRotina,
       docFile,
       whatsappBlankWindow,
     }) => {
@@ -432,41 +629,14 @@ export default function Dashboard() {
         return;
       }
 
-      const idVaga = vagaDocId(atendimentoDate, specKey, sessIdx);
-      const totalSlots = sessionTotalEffective(dayKey, specKey, sessIdx, settings.pccuTotal, {
-        atendimentoDateStr: atendimentoDate,
-        dentQuartaVisitaDomiciliarDesde: settings.dentQuartaVisitaDomiciliarDesde,
-      });
-      const metaVaga = {
-        atendimentoDate,
-        specKey,
-        sessIdx,
-        dayKey,
-        total: totalSlots,
-      };
-      const deveConfirmarVagaNoFirestore =
-        !isRecepcao &&
-        typeof livresEncaixe === "number" &&
-        livresEncaixe > 0 &&
-        totalSlots > 0;
-
       const meta = SPEC_META[specKey] || {};
       const nomeProf = profNames[specKey] || specKey;
       const funcao = meta.role || "";
       const profissionalLinha =
         funcao && nomeProf !== funcao ? `${nomeProf} (${funcao})` : nomeProf;
-
-      const runConfirm = async () => {
-        if (!deveConfirmarVagaNoFirestore || !user?.uid) return;
-        const r = await confirmarSolicitacaoOcupaVaga(idVaga, metaVaga, user.uid);
-        if (r.esgotou) {
-          try {
-            await registrarNotificacaoVagasEsgotadas(specKey, nomeProf);
-          } catch (e) {
-            console.error(e);
-          }
-        }
-      };
+      const solicitacaoColetaExames =
+        coletaExamesRotina === true ||
+        (specKey === "tecnicoEnfermagem" && /\bcoleta de exames\b/i.test(String(sessLabel || "")));
 
       const encaminhamentoFisio = solicitacaoEncaminhamentoObrigatorio === true || specKey === "fisio";
       if (encaminhamentoFisio) {
@@ -480,29 +650,16 @@ export default function Dashboard() {
           fotoDocumentoUrl = await uploadDocumentoPacienteSolicitacao(docFile);
         } catch (e) {
           console.error(e);
-          throw new Error(
-            e?.message ||
-              "Não foi possível enviar a imagem. Verifique o Supabase Storage, as políticas e a conexão."
-          );
-        }
-        try {
-          await runConfirm();
-        } catch (e) {
-          fecharPreAbaWa();
-          if (e?.code === "RESERVADA_OUTRO") {
-            showToast(
-              `Não foi possível confirmar — vaga em uso por ${e.outroNome || "outro profissional"}. Atualize a tela.`,
-              "danger"
+          const msgErro = String(e?.message || "");
+          if (/failed to fetch/i.test(msgErro)) {
+            throw new Error(
+              "Não foi possível enviar a imagem (falha de conexão com o Firebase Storage). Verifique internet, configuração do Firebase e regras do bucket."
             );
-            return;
           }
-          if (e?.code === "VAGA_INDISPONIVEL") {
-            showToast("Esta vaga não está mais disponível. Atualize a tela.", "danger");
-            return;
-          }
-          console.error(e);
-          showToast(e?.message || "Não foi possível confirmar a vaga.", "danger");
-          return;
+          throw new Error(
+            msgErro ||
+              "Não foi possível enviar a imagem. Verifique o Firebase Storage, as regras e a conexão."
+          );
         }
         const msg = montarMensagemSolicitacaoWhatsApp({
           solicitacaoFisioEncaminhamento: true,
@@ -523,6 +680,7 @@ export default function Dashboard() {
           abrirWhatsAppComTexto(waDigits, msg);
         }
         showToast("WhatsApp aberto — envie a mensagem para a recepção.", "success");
+        manterReservaAoFecharModalRef.current = true;
         setModal(null);
         return;
       }
@@ -533,31 +691,17 @@ export default function Dashboard() {
           fotoDocumentoUrl = await uploadDocumentoPacienteSolicitacao(docFile);
         } catch (e) {
           console.error(e);
+          const msgErro = String(e?.message || "");
+          if (/failed to fetch/i.test(msgErro)) {
+            throw new Error(
+              "Não foi possível enviar a imagem (falha de conexão com o Firebase Storage). Verifique internet, configuração do Firebase e regras do bucket."
+            );
+          }
           throw new Error(
-            e?.message ||
-              "Não foi possível enviar a imagem. Verifique o Supabase Storage, as políticas e a conexão."
+            msgErro ||
+              "Não foi possível enviar a imagem. Verifique o Firebase Storage, as regras e a conexão."
           );
         }
-      }
-
-      try {
-        await runConfirm();
-      } catch (e) {
-        fecharPreAbaWa();
-        if (e?.code === "RESERVADA_OUTRO") {
-          showToast(
-            `Não foi possível confirmar — vaga em uso por ${e.outroNome || "outro profissional"}. Atualize a tela.`,
-            "danger"
-          );
-          return;
-        }
-        if (e?.code === "VAGA_INDISPONIVEL") {
-          showToast("Esta vaga não está mais disponível. Atualize a tela.", "danger");
-          return;
-        }
-        console.error(e);
-        showToast(e?.message || "Não foi possível confirmar a vaga.", "danger");
-        return;
       }
 
       const nomePac =
@@ -576,6 +720,7 @@ export default function Dashboard() {
         documentoPaciente: documentoPaciente || "",
         observacaoExtra: observacaoExtra?.trim() || "",
         fotoDocumentoUrl: fotoDocumentoUrl || "",
+        coletaExamesRotina: solicitacaoColetaExames,
         somenteEncaixe: somenteEncaixe === true,
       });
 
@@ -585,6 +730,7 @@ export default function Dashboard() {
         abrirWhatsAppComTexto(waDigits, msg);
       }
       showToast("WhatsApp aberto — envie a mensagem para a recepção.", "success");
+      manterReservaAoFecharModalRef.current = true;
       setModal(null);
     },
     [isRecepcao, profNames, settings, user]
@@ -594,15 +740,35 @@ export default function Dashboard() {
     ? [...TABS, { key: "config", label: "Config." }]
     : TABS;
 
-  const specsVisiveis = buildVisibleSegments({
-    today: new Date(),
-    feriados: settings.feriados,
-    pontosFacultativos: settings.pontosFacultativos,
-    vagasMap,
-    pccuTotal: settings.pccuTotal,
-    recepcao: isRecepcao,
-    dentQuartaVisitaDomiciliarDesde: settings.dentQuartaVisitaDomiciliarDesde,
-  });
+  const specsVisiveis = useMemo(
+    () =>
+      buildVisibleSegments({
+        today: new Date(),
+        feriados: settings.feriados,
+        pontosFacultativos: settings.pontosFacultativos,
+        vagasMap,
+        pccuTotal: settings.pccuTotal,
+        recepcao: isRecepcao,
+        dentQuartaVisitaDomiciliarDesde: settings.dentQuartaVisitaDomiciliarDesde,
+        atendimentoSuspensoPorSpec: settings.atendimentoSuspensoPorSpec || {},
+        atendimentoSuspensoSlots: settings.atendimentoSuspensoSlots || {},
+        atendimentoDiasAtivosPorSpec: settings.atendimentoDiasAtivosPorSpec || {},
+        atendimentoDiasTurnosPorSpec,
+      }),
+    [
+      todayStr,
+      settings.feriados,
+      settings.pontosFacultativos,
+      vagasMap,
+      settings.pccuTotal,
+      isRecepcao,
+      settings.dentQuartaVisitaDomiciliarDesde,
+      settings.atendimentoSuspensoPorSpec,
+      settings.atendimentoSuspensoSlots,
+      settings.atendimentoDiasAtivosPorSpec,
+      atendimentoDiasTurnosPorSpec,
+    ]
+  );
 
   const avisoVisitaDomiciliarAmanha = useMemo(() => {
     if (!isAgenteOuDiretorPerfil(perfil)) return null;
@@ -634,38 +800,6 @@ export default function Dashboard() {
     return { ...r, dataFmt };
   }, [perfil, todayStr, settings.feriados, settings.pontosFacultativos]);
 
-  const syncLabel = useMemo(() => {
-    if (syncMode === "full") return "Modo completo (fallback)";
-    if (syncMode === "incremental" && !lastSyncAt) return "Sincronizado";
-    if (!lastSyncAt) return "Sincronizando...";
-    const dt = new Date(lastSyncAt);
-    if (Number.isNaN(dt.getTime())) return "Sincronizando...";
-    return `Sincronizado às ${dt.toLocaleTimeString("pt-BR", {
-      hour: "2-digit",
-      minute: "2-digit",
-    })}`;
-  }, [lastSyncAt, syncMode]);
-
-  const syncBadgeStyle = useMemo(() => {
-    if (syncMode === "full") {
-      return {
-        ...styles.syncBadge,
-        color: "#92400E",
-        background: "#FFFBEB",
-        border: "1px solid #FCD34D",
-      };
-    }
-    if (syncMode === "incremental") {
-      return {
-        ...styles.syncBadge,
-        color: "#166534",
-        background: "#ECFDF5",
-        border: "1px solid #86EFAC",
-      };
-    }
-    return styles.syncBadge;
-  }, [syncMode]);
-
   return (
     <div style={styles.app}>
       <header style={styles.hdr}>
@@ -683,7 +817,6 @@ export default function Dashboard() {
           </div>
         </div>
         <div style={styles.hdrRight}>
-          <span style={syncBadgeStyle}>{syncLabel}</span>
           <span style={styles.perfilBadge}>{perfil?.nome?.split(" ")[0]}</span>
           <button style={styles.logoutBtn} onClick={logout}>
             Sair
@@ -744,6 +877,12 @@ export default function Dashboard() {
             onToggleAtendimentoEncerrado={
               isRecepcao ? handleToggleAtendimentoEncerrado : undefined
             }
+            atendimentoSuspensoPorSpec={settings.atendimentoSuspensoPorSpec || {}}
+            atendimentoSuspensoSlots={settings.atendimentoSuspensoSlots || {}}
+            atendimentoDiasAtivosPorSpec={settings.atendimentoDiasAtivosPorSpec || {}}
+            onSuspenderAtendimentoSpec={isRecepcao ? handleSuspenderAtendimentoSpec : undefined}
+            onRemoverSuspensaoPontual={isRecepcao ? handleRemoverSuspensaoPontual : undefined}
+            onReativarAtendimentoSpec={isRecepcao ? handleReativarAtendimentoSpec : undefined}
             onSolicitar={isRecepcao ? undefined : abrirModalSolicitacao}
             dentQuartaVisitaDomiciliarDesde={settings.dentQuartaVisitaDomiciliarDesde}
             usuarioUid={user?.uid ?? ""}
@@ -788,15 +927,6 @@ const styles = {
   },
   hdrLeft: { display: "flex", alignItems: "center", gap: 10 },
   hdrRight: { display: "flex", alignItems: "center", gap: 8 },
-  syncBadge: {
-    fontSize: 11,
-    color: "#1D4ED8",
-    background: "#EFF6FF",
-    border: "1px solid #BFDBFE",
-    padding: "4px 8px",
-    borderRadius: 999,
-    whiteSpace: "nowrap",
-  },
   hdrTitle: { fontSize: 14, fontWeight: 600, color: "#0F172A", margin: 0 },
   hdrSub: { fontSize: 11, color: "#64748B", margin: 0, textTransform: "capitalize" },
   perfilBadge: {
