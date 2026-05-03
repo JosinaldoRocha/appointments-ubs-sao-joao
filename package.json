@@ -15,7 +15,9 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "deploy": "npm run build && firebase deploy",
-    "cleanup:firestore": "node scripts/cleanup-firestore.js"
+    "cleanup:firestore": "node scripts/cleanup-firestore.js",
+    "recover:firestore": "node scripts/recover-firestore.js",
+    "recover:usuarios": "node scripts/recover-usuarios-from-auth.js"
   },
   "browserslist": {
     "production": [
