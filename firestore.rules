@@ -13,11 +13,28 @@ service cloud.firestore {
     }
     function isRecepcao() {
       let r = getRole();
-      return isLoggedIn() && (r == "recepcao" || r == "Recepcao" || r == "RECEPCAO");
+      return isLoggedIn() && (
+        r == "recepcao" ||
+        r == "Recepcao" ||
+        r == "RECEPCAO" ||
+        r == "recepcionista" ||
+        r == "Recepcionista" ||
+        r == "RECEPCIONISTA" ||
+        r == "recepção" ||
+        r == "Recepção" ||
+        r == "RECEPÇÃO"
+      );
     }
     function isDiretor() {
       let r = getRole();
-      return isLoggedIn() && (r == "diretor" || r == "Diretor" || r == "DIRETOR");
+      return isLoggedIn() && (
+        r == "diretor" ||
+        r == "Diretor" ||
+        r == "DIRETOR" ||
+        r == "direção" ||
+        r == "Direção" ||
+        r == "DIREÇÃO"
+      );
     }
     function isAgente() {
       let r = getRole();
@@ -60,6 +77,21 @@ service cloud.firestore {
         && r.reservaSolicitacao.uid == request.auth.uid
         && n.used + n.reserved <= n.total;
     }
+    function agentVagaConfirmarSemReserva() {
+      let r = resource.data;
+      let n = request.resource.data;
+      return n.used == r.used + 1
+        && n.reserved == r.reserved
+        && n.total == r.total
+        && n.atendimentoDate == r.atendimentoDate
+        && n.specKey == r.specKey
+        && n.sessIdx == r.sessIdx
+        && n.dayKey == r.dayKey
+        && !("reservaSolicitacao" in n)
+        && r.get("reservaSolicitacao", null) == null
+        && r.used + r.reserved < r.total
+        && n.used + n.reserved <= n.total;
+    }
     function agentVagaCreateInicialReserva() {
       let n = request.resource.data;
       return n.used == 0
@@ -97,6 +129,7 @@ service cloud.firestore {
           agentVagaSoReservaSolicitacao()
           || agentVagaLiberarReservaSolicitacao()
           || agentVagaConfirmarSolicitacao()
+          || agentVagaConfirmarSemReserva()
         ));
     }
 
