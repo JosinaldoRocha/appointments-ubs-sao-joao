@@ -10,6 +10,7 @@ export const SPEC_META = {
   psicologa:      { role: "Psicologia",     av: "DK", bg: "#FBEAF0", tc: "#72243E" },
   fisio:          { role: "Fisioterapia",   av: "DA", bg: "#FAEEDA", tc: "#633806" },
   enfermeira:     { role: "Enfermagem",     av: "EN", bg: "#EAF3DE", tc: "#27500A" },
+  tecnicoEnfermagem: { role: "Téc. Enfermagem", av: "TE", bg: "#E0F2FE", tc: "#075985" },
   nutricionista:  { role: "Nutrição",       av: "NT", bg: "#ECFDF5", tc: "#065F46" },
 };
 
@@ -20,6 +21,7 @@ export const DEFAULT_PROF_NAMES = {
   psicologa:      "Dra. Kauane",
   fisio:          "Dra. Aracele",
   enfermeira:     "Enfermeira",
+  tecnicoEnfermagem: "Téc. Enfermagem",
   nutricionista:  "Nutricionista",
 };
 
@@ -51,6 +53,9 @@ export const DAY_LABEL = {
   sexta:   "Sexta-feira",
 };
 
+/** Ordem segunda → sexta (grade da UBS). */
+export const ORDEM_DIA_SEMANA_GRADE = ["segunda", "terca", "quarta", "quinta", "sexta"];
+
 // Configuração base de cada dia de atendimento
 export const BASE_SCHEDULE = {
   segunda: {
@@ -68,13 +73,6 @@ export const BASE_SCHEDULE = {
           { label: "Manhã", total: 8 },
           { label: "Tarde", total: 8 },
         ],
-      },
-      {
-        key: "psicologa",
-        /** Atendimento às segundas; agendamento liberado em qualquer dia útil (como fisioterapia/nutri). */
-        agendaQualquerDiaUtil: true,
-        /** Lista de espera quando a agenda enche — modal padrão (sem encaminhamento obrigatório). */
-        sessions: [{ label: "Manhã", total: 5, waitlistEnabled: true }],
       },
     ],
   },
@@ -124,6 +122,19 @@ export const BASE_SCHEDULE = {
           { label: "Tarde – Enfermagem geral", total: 10 },
         ],
       },
+      {
+        key: "psicologa",
+        /** Atendimento às quartas; agendamento só no dia útil anterior (terça-feira, salvo feriados). */
+        sessions: [
+          { label: "Manhã", total: 5, waitlistEnabled: true },
+          { label: "Tarde", total: 3, waitlistEnabled: true },
+        ],
+      },
+      {
+        key: "tecnicoEnfermagem",
+        /** Coleta de exames de rotina: toda quarta às 7h; agendamento em janela especial (sexta/segunda/terça). */
+        sessions: [{ label: "Manhã – Coleta de exames", total: 15, coletaExamesRotina: true }],
+      },
     ],
   },
   quinta: {
@@ -167,7 +178,12 @@ export const BASE_SCHEDULE = {
         key: "dentPatrick",
         sessions: [
           { label: "Manhã", total: 8 },
-          { label: "Tarde", total: 8 },
+          /** Tarde fixa: sem consultas na UBS — visitas domiciliares (aviso no card; 0 vagas). */
+          {
+            label: "Tarde",
+            total: 0,
+            visitaDomiciliarSemUnidade: true,
+          },
         ],
       },
       {
@@ -189,6 +205,209 @@ export const BASE_SCHEDULE = {
 
 export const DEFAULT_PCCU_TOTAL = 15;
 
+/** Dias da semana (chave da grade) em que `specKey` aparece em `BASE_SCHEDULE`. */
+export function diasAtendimentoDefaultParaSpec(specKey) {
+  const out = [];
+  for (const [dia, dayData] of Object.entries(BASE_SCHEDULE)) {
+    if (dayData.specs?.some((s) => s.key === specKey)) out.push(dia);
+  }
+  return out;
+}
+
+/** Turnos (`manha` / `tarde`) que existem na grade base para `specKey` naquele dia. */
+export function turnosDefaultParaSpecNoDia(specKey, dia) {
+  const spec = BASE_SCHEDULE[dia]?.specs?.find((s) => s.key === specKey);
+  if (!spec?.sessions?.length) return [];
+  const t = new Set();
+  for (const sess of spec.sessions) {
+    const x = sessaoLabelParaTurno(sess.label);
+    if (x) t.add(x);
+  }
+  return [...t];
+}
+
+/**
+ * Mapa padrão dia → turnos conforme `BASE_SCHEDULE` (cadastro inicial / restaurar grade).
+ * @returns {Record<string, ("manha"|"tarde")[]>}
+ */
+export function defaultAtendimentoDiasTurnosParaSpec(specKey) {
+  const out = {};
+  for (const dia of diasAtendimentoDefaultParaSpec(specKey)) {
+    const turnos = turnosDefaultParaSpecNoDia(specKey, dia);
+    if (turnos.length) out[dia] = [...turnos].sort();
+  }
+  return out;
+}
+
+/**
+ * Sanitiza `atendimentoDiasTurnos` do Firestore: segunda a sexta e turnos `manha` / `tarde`.
+ * Não restringe à grade atual em código — a recepção pode cadastrar dias/turnos futuros para quando a agenda mudar.
+ * @returns {Record<string, ("manha"|"tarde")[]> | null} `null` se não houver nada válido
+ */
+export function normalizeAtendimentoDiasTurnosParaSpec(_specKey, raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const out = {};
+  for (const dia of ORDEM_DIA_SEMANA_GRADE) {
+    const arr = raw[dia];
+    if (!Array.isArray(arr) || !arr.length) continue;
+    const turnos = [...new Set(arr.filter((t) => t === "manha" || t === "tarde"))];
+    if (turnos.length) out[dia] = turnos.sort();
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function cloneSpecConfigFromGrade(spec) {
+  return {
+    ...spec,
+    sessions: (spec.sessions || []).map((s) => ({ ...s })),
+  };
+}
+
+/** Primeira definição do `specKey` na grade em código (dias extras configurados na recepção). */
+export function findSpecTemplateInBaseSchedule(specKey) {
+  for (const dk of Object.keys(BASE_SCHEDULE)) {
+    const s = BASE_SCHEDULE[dk]?.specs?.find((x) => x.key === specKey);
+    if (s) return cloneSpecConfigFromGrade(s);
+  }
+  return null;
+}
+
+/** Dias em que o profissional entra na agenda (`settings` ou grade em código). */
+export function diasAtendimentoEfetivosParaSpec(specKey, atendimentoDiasAtivosPorSpec = {}) {
+  const raw = atendimentoDiasAtivosPorSpec?.[specKey];
+  if (Array.isArray(raw) && raw.length > 0) {
+    return [...new Set(raw.filter((d) => ORDEM_DIA_SEMANA_GRADE.includes(d)))];
+  }
+  return diasAtendimentoDefaultParaSpec(specKey);
+}
+
+/** Grade do dia + profissionais com dia extra em `atendimentoDiasAtivosPorSpec`. */
+export function listaSpecConfigsParaDiaAtendimento(atendimentoDia, atendimentoDiasAtivosPorSpec = {}) {
+  const seen = new Set();
+  const out = [];
+  for (const spec of BASE_SCHEDULE[atendimentoDia]?.specs || []) {
+    seen.add(spec.key);
+    out.push(spec);
+  }
+  for (const specKey of Object.keys(atendimentoDiasAtivosPorSpec || {})) {
+    const dias = atendimentoDiasAtivosPorSpec[specKey];
+    if (!Array.isArray(dias) || !dias.includes(atendimentoDia)) continue;
+    if (seen.has(specKey)) continue;
+    const tmpl = findSpecTemplateInBaseSchedule(specKey);
+    if (tmpl) {
+      seen.add(specKey);
+      out.push(tmpl);
+    }
+  }
+  return out;
+}
+
+/**
+ * `atendimentoDateStr` está sem agendamento por suspensão cadastrada na recepção.
+ * `map[specKey]`: `{ desde, indefinido?, ate? }` — `desde` inclusivo; com `ate` (não indefinido), último dia suspenso = `ate` inclusivo.
+ */
+export function atendimentoSuspensoNaData(specKey, atendimentoDateStr, map) {
+  const e = map?.[specKey];
+  if (!e || typeof e.desde !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(e.desde.trim())) return false;
+  const desde = e.desde.trim();
+  if (atendimentoDateStr < desde) return false;
+  if (e.indefinido === true) return true;
+  const ateRaw = typeof e.ate === "string" ? e.ate.trim() : "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ateRaw)) return true;
+  return atendimentoDateStr <= ateRaw;
+}
+
+/** Chave em `atendimentoSuspensoSlots`: `specKey_YYYY-MM-DD_dia|manha|tarde`. */
+const RE_SLOT_SUSPENSAO = /^(.+)_(\d{4}-\d{2}-\d{2})_(dia|manha|tarde)$/;
+
+export function parseAtendimentoSuspensoSlotKey(key) {
+  if (typeof key !== "string") return null;
+  const m = key.trim().match(RE_SLOT_SUSPENSAO);
+  if (!m) return null;
+  return { specKey: m[1], data: m[2], escopo: m[3] };
+}
+
+/**
+ * Sessão (rótulo manhã/tarde) fica fora da agenda por suspensão pontual naquela data.
+ * `slotsMap`: valores `{ motivo?: string }`.
+ */
+export function sessaoOcultaPorSuspensaoPontual(specKey, atendimentoDateStr, sessLabel, slotsMap) {
+  if (!slotsMap || typeof slotsMap !== "object") return false;
+  const kDia = `${specKey}_${atendimentoDateStr}_dia`;
+  if (slotsMap[kDia]) return true;
+  const t = sessaoLabelParaTurno(sessLabel);
+  if (t === "manha" && slotsMap[`${specKey}_${atendimentoDateStr}_manha`]) return true;
+  if (t === "tarde" && slotsMap[`${specKey}_${atendimentoDateStr}_tarde`]) return true;
+  if (t == null) {
+    const m = slotsMap[`${specKey}_${atendimentoDateStr}_manha`];
+    const tr = slotsMap[`${specKey}_${atendimentoDateStr}_tarde`];
+    if (m && tr) return true;
+  }
+  return false;
+}
+
+/** Há suspensão pontual para o `specKey` na data (dia inteiro ou turno que afete listagem). */
+export function suspensaoPontualAfetaData(specKey, atendimentoDateStr, slotsMap) {
+  if (!slotsMap || typeof slotsMap !== "object") return false;
+  if (slotsMap[`${specKey}_${atendimentoDateStr}_dia`]) return true;
+  if (slotsMap[`${specKey}_${atendimentoDateStr}_manha`] || slotsMap[`${specKey}_${atendimentoDateStr}_tarde`]) {
+    return true;
+  }
+  return false;
+}
+
+/** Slot pontual ainda relevante para aviso a agentes (próximos 14 dias, dia da semana na agenda efetiva). */
+export function suspensaoPontualSlotVisivelParaAgente(
+  specKey,
+  dataIso,
+  todayStr,
+  atendimentoDiasAtivosPorSpec = {}
+) {
+  if (!dataIso || !/^\d{4}-\d{2}-\d{2}$/.test(dataIso) || !todayStr) return false;
+  if (dataIso < todayStr) return false;
+  if (dataIso > addDaysLocal(todayStr, 14)) return false;
+  const d = parseDateStr(dataIso);
+  const dk = JS_DAY_TO_KEY[d.getDay()];
+  const diasEf = diasAtendimentoEfetivosParaSpec(specKey, atendimentoDiasAtivosPorSpec);
+  return diasEf.includes(dk);
+}
+
+/** Há suspensão cadastrada (válida) para o profissional, independentemente da data. */
+export function specTemRegistroSuspensao(specKey, map) {
+  const e = map?.[specKey];
+  return !!(e && typeof e.desde === "string" && /^\d{4}-\d{2}-\d{2}$/.test(e.desde.trim()));
+}
+
+/** Cadastro ainda “vigente” na operação (não passou de `ate` quando há prazo fim). */
+export function suspensaoRegistroNaoExpirado(entry, todayStr) {
+  if (!entry || typeof entry.desde !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(entry.desde.trim())) {
+    return false;
+  }
+  if (entry.indefinido === true) return true;
+  const ate = typeof entry.ate === "string" ? entry.ate.trim() : "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ate)) return true;
+  return todayStr <= ate;
+}
+
+/**
+ * Nos próximos 14 dias (calendário), existe data em que o `specKey` fica suspenso
+ * (considera dias efetivos em `atendimentoDiasAtivosPorSpec`, se houver).
+ */
+export function specSuspensaoAfetaAgenda(specKey, map, todayStr, atendimentoDiasAtivosPorSpec = {}) {
+  if (!specTemRegistroSuspensao(specKey, map)) return false;
+  const diasEf = diasAtendimentoEfetivosParaSpec(specKey, atendimentoDiasAtivosPorSpec);
+  const d0 = parseDateStr(todayStr);
+  for (let add = 0; add < 14; add++) {
+    const cand = new Date(d0);
+    cand.setDate(cand.getDate() + add);
+    const dk = JS_DAY_TO_KEY[cand.getDay()];
+    if (!diasEf.includes(dk)) continue;
+    const attStr = toDateStr(cand);
+    if (atendimentoSuspensoNaData(specKey, attStr, map)) return true;
+  }
+  return false;
+}
+
 /** Vagas extras por turno (manhã/tarde), além da agenda — urgência ou zona rural. Fisioterapia não recebe. */
 export const ENCAXE_POR_TURNO = 2;
 
@@ -204,8 +423,10 @@ export function encaixeExtraForSpec(specKey) {
  */
 export function sessionTotalEffective(dayKey, specKey, sessIdx, pccuTotal, opts = {}) {
   const spec = BASE_SCHEDULE[dayKey]?.specs.find((s) => s.key === specKey);
-  const sess = spec?.sessions?.[sessIdx];
+  const tmpl = !spec ? findSpecTemplateInBaseSchedule(specKey) : null;
+  const sess = spec?.sessions?.[sessIdx] ?? tmpl?.sessions?.[sessIdx];
   if (!sess) return 0;
+  if (sess.visitaDomiciliarSemUnidade) return 0;
   if (
     dayKey === "quarta" &&
     specKey === "dentFernando" &&
@@ -540,6 +761,9 @@ export function collectAtendimentoDatesForListener(
 function cloneSessionsWithTotals(spec, pccuTotal) {
   const extra = encaixeExtraForSpec(spec.key);
   return spec.sessions.map((sess) => {
+    if (sess.visitaDomiciliarSemUnidade) {
+      return { ...sess, total: 0, encaixeExtra: 0 };
+    }
     const base = sess.pccuOnly ? (pccuTotal ?? sess.total ?? DEFAULT_PCCU_TOTAL) : sess.total;
     const total = base + extra;
     return { ...sess, total, encaixeExtra: extra };
@@ -564,11 +788,43 @@ function mergeSessionCounts(sessions, specKey, atendimentoDateStr, vagasMap) {
   return sessions.map((sess, idx) => {
     const id = vagaDocId(atendimentoDateStr, specKey, idx);
     const vdb = vagasMap[id];
-    const used = vdb?.used ?? 0;
-    const reserved = vdb?.reserved ?? 0;
+    const used = Number(vdb?.used) || 0;
+    const reserved = Number(vdb?.reserved) || 0;
     const reservaSolicitacao = vdb?.reservaSolicitacao ?? null;
-    return { ...sess, used, reserved, sessIdx: idx, reservaSolicitacao };
+    return { ...sess, used, reserved, sessIdx: idx, vagaId: id, reservaSolicitacao };
   });
+}
+
+/** Exames/coleta (PCCU da enfermeira): janela especial de agendamento. */
+function isSessaoExameColeta(specKey, sess) {
+  if (specKey !== "tecnicoEnfermagem") return false;
+  if (sess?.coletaExamesRotina === true) return true;
+  return /\bcoleta de exames\b/i.test(String(sess?.label || ""));
+}
+
+function podeAgendarExameColetaNaData(todayStr, atendimentoDateStr) {
+  const today = parseDateStr(todayStr);
+  const atendimento = parseDateStr(atendimentoDateStr);
+  if (JS_DAY_TO_KEY[atendimento.getDay()] !== "quarta") return false;
+  const diffMs = atendimento.getTime() - today.getTime();
+  const diffDays = Math.round(diffMs / (24 * 60 * 60 * 1000));
+  if (diffDays <= 0) return false;
+  const todayKey = JS_DAY_TO_KEY[today.getDay()];
+  if (todayKey === "sexta" && diffDays === 5) return true;
+  if (todayKey === "segunda" && diffDays === 2) return true;
+  if (todayKey === "terca" && diffDays === 1) return true;
+  return false;
+}
+
+function filtrarSessoesPrevPorJanela({ sessions, specKey, todayStr, atendimentoDateStr, podeAgendarPrevPadrao }) {
+  return sessions.filter((sess) => {
+    if (!isSessaoExameColeta(specKey, sess)) return podeAgendarPrevPadrao;
+    return podeAgendarExameColetaNaData(todayStr, atendimentoDateStr);
+  });
+}
+
+function filtrarSessoesMesmoDiaPorJanela({ sessions, specKey }) {
+  return sessions.filter((sess) => !isSessaoExameColeta(specKey, sess));
 }
 
 /** Agrupa por profissional + dia da semana de atendimento (ex.: fisioterapia quinta vs sexta). */
@@ -628,14 +884,34 @@ export function buildVisibleSegments({
   pccuTotal,
   recepcao = false,
   dentQuartaVisitaDomiciliarDesde = "",
+  atendimentoSuspensoPorSpec = {},
+  /** Chave `specKey_YYYY-MM-DD_dia|manha|tarde` → `{ motivo? }` — suspensão em data/turno específicos. */
+  atendimentoSuspensoSlots = {},
+  atendimentoDiasAtivosPorSpec = {},
+  /** `specKey` → mapa dia → turnos; quando definido no cadastro do profissional, restringe sessões (manhã/tarde). */
+  atendimentoDiasTurnosPorSpec = {},
 }) {
   const holidaySet = nonWorkingDaySet(feriados, pontosFacultativos);
   const todayStr = toDateStr(today);
   const dedupe = new Set();
   const result = [];
 
-  for (const [atendimentoDia, dayData] of Object.entries(BASE_SCHEDULE)) {
-    for (const spec of dayData.specs) {
+  for (const atendimentoDia of Object.keys(BASE_SCHEDULE)) {
+    const specsDia = listaSpecConfigsParaDiaAtendimento(atendimentoDia, atendimentoDiasAtivosPorSpec);
+    for (const spec of specsDia) {
+      const diasDefault = diasAtendimentoDefaultParaSpec(spec.key);
+      const diasCfgRaw = atendimentoDiasAtivosPorSpec?.[spec.key];
+      const diasPerm =
+        Array.isArray(diasCfgRaw) && diasCfgRaw.length > 0
+          ? [...new Set(diasCfgRaw.filter((d) => ORDEM_DIA_SEMANA_GRADE.includes(d)))]
+          : diasDefault;
+      if (!diasPerm.includes(atendimentoDia)) continue;
+
+      const mapaTurnosProf = normalizeAtendimentoDiasTurnosParaSpec(
+        spec.key,
+        atendimentoDiasTurnosPorSpec?.[spec.key]
+      );
+
       for (let add = 0; add < 14; add++) {
         const cand = new Date(today);
         cand.setHours(12, 0, 0, 0);
@@ -644,6 +920,8 @@ export function buildVisibleSegments({
 
         const attStr = toDateStr(cand);
         if (holidaySet.has(attStr)) continue;
+
+        if (atendimentoSuspensoNaData(spec.key, attStr, atendimentoSuspensoPorSpec)) continue;
 
         let baseSessions = cloneSessionsWithTotals(spec, pccuTotal);
         if (
@@ -658,11 +936,23 @@ export function buildVisibleSegments({
             return { ...sess, total: 0, encaixeExtra: 0 };
           });
         }
-        const sessions = mergeSessionCounts(baseSessions, spec.key, attStr, vagasMap);
 
-        const temVaga = sessions.some(
-          (s) => !s.waitlistEnabled && s.used + s.reserved < s.total
+        if (mapaTurnosProf) {
+          const permitidosNoDia = mapaTurnosProf[atendimentoDia];
+          if (!Array.isArray(permitidosNoDia) || permitidosNoDia.length === 0) continue;
+          baseSessions = baseSessions.filter((sess) => {
+            if (sess.visitaDomiciliarSemUnidade) return true;
+            const t = sessaoLabelParaTurno(sess.label);
+            if (t == null) return true;
+            return permitidosNoDia.includes(t);
+          });
+        }
+        baseSessions = baseSessions.filter(
+          (sess) => !sessaoOcultaPorSuspensaoPontual(spec.key, attStr, sess.label, atendimentoSuspensoSlots)
         );
+        if (baseSessions.length === 0) continue;
+
+        const sessions = mergeSessionCounts(baseSessions, spec.key, attStr, vagasMap);
 
         const prevBus = previousBusinessDay(cand, holidaySet);
         const prevStr = toDateStr(prevBus);
@@ -672,13 +962,21 @@ export function buildVisibleSegments({
             ? isBusinessDay(today, holidaySet) && todayStr < attStr
             : prevStr === todayStr;
 
-        if (podeAgendarPrev) {
+        const sessionsPrev = filtrarSessoesPrevPorJanela({
+          sessions,
+          specKey: spec.key,
+          todayStr,
+          atendimentoDateStr: attStr,
+          podeAgendarPrevPadrao: podeAgendarPrev,
+        });
+
+        if (sessionsPrev.length > 0) {
           const k = `prev-${spec.key}-${atendimentoDia}-${attStr}`;
           if (!dedupe.has(k)) {
             dedupe.add(k);
             result.push({
               ...spec,
-              sessions,
+              sessions: sessionsPrev,
               atendimentoDia,
               windowType: "prev",
               atendimentoDate: attStr,
@@ -692,13 +990,34 @@ export function buildVisibleSegments({
           dentQuartaVisitaDomiciliarDesde &&
           isDentQuartaVisitaDomiciliar(attStr, dentQuartaVisitaDomiciliarDesde);
 
-        if (attStr === todayStr && (temVaga || recepcao || visitaDomicHojeSemVaga)) {
+        const patrickSextaVisitaTardeInformativoHoje =
+          spec.key === "dentPatrick" &&
+          atendimentoDia === "sexta" &&
+          attStr === todayStr &&
+          baseSessions.some((s) => s.visitaDomiciliarSemUnidade);
+
+        const sessionsSame = filtrarSessoesMesmoDiaPorJanela({
+          sessions,
+          specKey: spec.key,
+        });
+        const temVagaMesmoDia = sessionsSame.some((s) => s.used + s.reserved < s.total);
+
+        const podeMostrarMesmoDia =
+          sessionsSame.length > 0 ||
+          visitaDomicHojeSemVaga ||
+          patrickSextaVisitaTardeInformativoHoje;
+
+        if (
+          attStr === todayStr &&
+          podeMostrarMesmoDia &&
+          (temVagaMesmoDia || recepcao || visitaDomicHojeSemVaga || patrickSextaVisitaTardeInformativoHoje)
+        ) {
           const k = `same-${spec.key}-${atendimentoDia}-${attStr}`;
           if (!dedupe.has(k)) {
             dedupe.add(k);
             result.push({
               ...spec,
-              sessions,
+              sessions: sessionsSame,
               atendimentoDia,
               windowType: "same",
               atendimentoDate: attStr,
@@ -723,6 +1042,10 @@ export function getSpecsVisiveis(vagasMap, profNames, options = {}) {
     pccuTotal: options.pccuTotal ?? DEFAULT_PCCU_TOTAL,
     recepcao: options.recepcao ?? false,
     dentQuartaVisitaDomiciliarDesde: options.dentQuartaVisitaDomiciliarDesde ?? "",
+    atendimentoSuspensoPorSpec: options.atendimentoSuspensoPorSpec ?? {},
+    atendimentoSuspensoSlots: options.atendimentoSuspensoSlots ?? {},
+    atendimentoDiasAtivosPorSpec: options.atendimentoDiasAtivosPorSpec ?? {},
+    atendimentoDiasTurnosPorSpec: options.atendimentoDiasTurnosPorSpec ?? {},
   });
 }
 
@@ -747,4 +1070,4 @@ export function estaDentroExpedienteUbs(data = new Date()) {
 }
 
 export const MSG_FORA_EXPEDIENTE_UBS =
-  "Solicitações de agendamento só são permitidas no horário de expediente da UBS: 7h30 às 12h e das 14h às 17h.";
+  "Solicitações de agendamento só são permitidas das 7h30 às 12h e das 14h às 17h.";

@@ -157,6 +157,7 @@ function blocoRodapeAgenda(profLinha, atendimentoDate, sessLabel, observacaoExtr
  * @param {string} [p.documentoPaciente]
  * @param {string} [p.fotoDocumentoUrl]
  * @param {boolean} [p.solicitacaoFisioEncaminhamento] — fisioterapia com lista de espera + encaminhamento obrigatório
+ * @param {boolean} [p.solicitacaoColetaExames] — coleta de exames com pedido (foto) + dados do paciente
  * @param {string} [p.telefonePaciente]
  * @param {string} [p.nomeAgenteSaude]
  * @param {string} [p.observacaoExtra] — texto livre do solicitante (modal)
@@ -164,6 +165,7 @@ function blocoRodapeAgenda(profLinha, atendimentoDate, sessLabel, observacaoExtr
  * @param {boolean} [p.somenteEncaixe] — só restam vagas de encaixe (zona rural / agudos)
  * @param {number} [p.livresEncaixe] — quantidade de encaixes ainda livres (para texto do encaixe)
  * @param {boolean} [p.pccuOnly] — sessão PCCU
+ * @param {boolean} [p.coletaExamesRotina] — solicitação de coleta de exames com pedido anexado
  */
 export function montarMensagemSolicitacaoWhatsApp(p) {
   const saud = saudacaoBomDiaOuTarde();
@@ -201,12 +203,34 @@ export function montarMensagemSolicitacaoWhatsApp(p) {
     return corpo;
   }
 
+  if (p.solicitacaoColetaExames) {
+    const nome = (p.paciente || "").trim() || "—";
+    const docLinha = linhaCpfOuCartaoSus(p.documentoPaciente);
+    const dn = p.dataNascimentoIso ? formatDataNascimentoBR(p.dataNascimentoIso) : "—";
+    const url = (p.fotoDocumentoUrl || "").trim() || "—";
+    let corpo =
+      `${saud}!\n\n` +
+      `Agenda um atendimento para:\n` +
+      `Paciente: ${nome}\n`;
+    if (docLinha) {
+      corpo += `${docLinha}\n`;
+    }
+    corpo +=
+      `Data de nascimento: ${dn}\n\n` +
+      `Pedido de exame (foto) — abra o link para ver a imagem:\n${url}\n\n` +
+      rodape;
+    return corpo;
+  }
+
   if (p.fotoDocumentoUrl) {
     const url = (p.fotoDocumentoUrl || "").trim();
+    const linhaAnexo = p.coletaExamesRotina
+      ? "Pedido de exame anexado (foto):\n"
+      : "";
     return (
       `${saud}!\n\n` +
       linhaPedido +
-      `${url}\n\n` +
+      `${linhaAnexo}${url}\n\n` +
       rodape
     );
   }
@@ -247,10 +271,29 @@ export function buildWhatsAppUrl(telefoneDigitos, texto) {
   return `https://wa.me/${phone}?text=${encodeURIComponent(texto)}`;
 }
 
+/** Deep link para abrir o app do WhatsApp diretamente quando disponível. */
+function buildWhatsAppDeepLink(telefoneDigitos, texto) {
+  const phone = normalizarTelefoneParaWaMe(telefoneDigitos);
+  if (!phone) return null;
+  return `whatsapp://send?phone=${phone}&text=${encodeURIComponent(texto)}`;
+}
+
 export function abrirWhatsAppComTexto(telefoneDigitos, texto) {
-  const url = buildWhatsAppUrl(telefoneDigitos, texto);
-  if (!url) return false;
-  window.open(url, "_blank", "noopener,noreferrer");
+  const fallbackUrl = buildWhatsAppUrl(telefoneDigitos, texto);
+  if (!fallbackUrl) return false;
+  const deepLink = buildWhatsAppDeepLink(telefoneDigitos, texto);
+  const win = window.open(deepLink || fallbackUrl, "_blank");
+  if (!win) return false;
+  if (deepLink) {
+    // Se o protocolo não estiver disponível no navegador/dispositivo, mantém fallback web.
+    setTimeout(() => {
+      try {
+        if (!win.closed) win.location.replace(fallbackUrl);
+      } catch {
+        /* noop */
+      }
+    }, 1200);
+  }
   return true;
 }
 
@@ -259,16 +302,38 @@ export function abrirWhatsAppComTexto(telefoneDigitos, texto) {
  * Abra `about:blank` no clique e passe a janela aqui para navegar ao wa.me depois.
  */
 export function abrirWhatsAppNavegandoJanela(janela, telefoneDigitos, texto) {
-  const url = buildWhatsAppUrl(telefoneDigitos, texto);
-  if (!url) return false;
+  const fallbackUrl = buildWhatsAppUrl(telefoneDigitos, texto);
+  if (!fallbackUrl) return false;
+  const deepLink = buildWhatsAppDeepLink(telefoneDigitos, texto);
+  const targetUrl = deepLink || fallbackUrl;
   if (janela && !janela.closed) {
     try {
-      janela.location.href = url;
+      janela.location.href = targetUrl;
+      if (deepLink) {
+        // Em navegadores sem handler do protocolo, evita aba em branco e vai para o fluxo web.
+        setTimeout(() => {
+          try {
+            if (!janela.closed) janela.location.replace(fallbackUrl);
+          } catch {
+            /* noop */
+          }
+        }, 1200);
+      }
       return true;
     } catch {
       /* noop — fallback abaixo */
     }
   }
-  window.open(url, "_blank", "noopener,noreferrer");
+  const win = window.open(targetUrl, "_blank");
+  if (!win) return false;
+  if (deepLink) {
+    setTimeout(() => {
+      try {
+        if (!win.closed) win.location.replace(fallbackUrl);
+      } catch {
+        /* noop */
+      }
+    }, 1200);
+  }
   return true;
 }

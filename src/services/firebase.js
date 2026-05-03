@@ -4,12 +4,17 @@
 //  Console: https://console.firebase.google.com → Configurações do projeto
 // ─────────────────────────────────────────────────────────────────
 import { initializeApp, getApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import {
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+} from "firebase/firestore";
 import {
   getAuth,
   setPersistence,
   browserLocalPersistence,
 } from "firebase/auth";
+import { getStorage } from "firebase/storage";
 import { getMessaging, getToken, onMessage } from "firebase/messaging";
 
 const firebaseConfig = {
@@ -35,8 +40,14 @@ const secondaryApp = (() => {
 })();
 
 export { app };
-export const db = getFirestore(app);
+/** Cache persistente (IndexedDB): menos leituras ao reabrir o app e entre abas. */
+export const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({
+    tabManager: persistentMultipleTabManager(),
+  }),
+});
 export const auth = getAuth(app);
+export const storage = getStorage(app);
 /** Auth isolada: use apenas para criar contas na Config.; depois `signOut(secondaryAuth)`. */
 export const secondaryAuth = getAuth(secondaryApp);
 

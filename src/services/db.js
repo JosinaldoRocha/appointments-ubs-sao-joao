@@ -17,11 +17,17 @@ import {
   arrayUnion,
   arrayRemove,
   deleteField,
-  Timestamp,
   runTransaction,
 } from "firebase/firestore";
 import { db } from "./firebase";
-import { normalizeFeriadosList, reservaSolicitacaoAtiva } from "./scheduleConfig";
+import {
+  normalizeFeriadosList,
+  reservaSolicitacaoAtiva,
+  diasAtendimentoDefaultParaSpec,
+  ORDEM_DIA_SEMANA_GRADE,
+  normalizeAtendimentoDiasTurnosParaSpec,
+  parseAtendimentoSuspensoSlotKey,
+} from "./scheduleConfig";
 
 const SETTINGS_ID = "ubs";
 /** Sessão única de recepcionista: `settings/sessaoRecepcao` — só um `uid` ativo por vez. */
@@ -36,14 +42,69 @@ const EMPTY_SETTINGS = {
   ultimoRecepcionistaWhatsapp: "",
   ultimoRecepcionistaNome: "",
   atendimentoEncerradoPorSpecData: {},
+  atendimentoSuspensoPorSpec: {},
+  atendimentoSuspensoSlots: {},
+  atendimentoDiasAtivosPorSpec: {},
+  atendimentoDiasTurnosPorSpec: {},
 };
 
-function toMillisSafe(value) {
-  if (!value) return 0;
-  if (typeof value?.toMillis === "function") return value.toMillis();
-  if (value instanceof Date) return value.getTime();
-  const asNum = Number(value);
-  return Number.isFinite(asNum) ? asNum : 0;
+const DIAS_SEMANA_SPEC = new Set(["segunda", "terca", "quarta", "quinta", "sexta"]);
+
+function normalizeAtendimentoSuspensoPorSpec(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof k !== "string" || !k.trim()) continue;
+    if (!v || typeof v !== "object" || Array.isArray(v)) continue;
+    const desde = typeof v.desde === "string" ? v.desde.trim() : "";
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(desde)) continue;
+    const indefinido = v.indefinido === true;
+    const ateRaw = typeof v.ate === "string" ? v.ate.trim() : "";
+    const ateOk = /^\d{4}-\d{2}-\d{2}$/.test(ateRaw) ? ateRaw : null;
+    if (indefinido) {
+      out[k] = { desde, indefinido: true };
+    } else if (ateOk) {
+      out[k] = { desde, indefinido: false, ate: ateOk };
+    } else {
+      out[k] = { desde, indefinido: false };
+    }
+  }
+  return out;
+}
+
+function normalizeAtendimentoDiasAtivosPorSpec(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof k !== "string" || !k.trim()) continue;
+    if (!Array.isArray(v)) continue;
+    const dias = [...new Set(v.filter((d) => typeof d === "string" && DIAS_SEMANA_SPEC.has(d)))];
+    if (dias.length) out[k] = dias;
+  }
+  return out;
+}
+
+function normalizeAtendimentoSuspensoSlots(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    const p = parseAtendimentoSuspensoSlotKey(k);
+    if (!p) continue;
+    const motivo = typeof v?.motivo === "string" ? v.motivo.trim().slice(0, 500) : "";
+    out[k] = motivo ? { motivo } : {};
+  }
+  return out;
+}
+
+function normalizeAtendimentoDiasTurnosPorSpecGlobal(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [sk, v] of Object.entries(raw)) {
+    if (typeof sk !== "string" || !sk.trim()) continue;
+    const n = normalizeAtendimentoDiasTurnosParaSpec(sk, v);
+    if (n && Object.keys(n).length) out[sk] = n;
+  }
+  return out;
 }
 
 function normalizeSettingsData(raw = {}) {
@@ -67,6 +128,10 @@ function normalizeSettingsData(raw = {}) {
       typeof d.ultimoRecepcionistaNome === "string" ? d.ultimoRecepcionistaNome : "",
     atendimentoEncerradoPorSpecData:
       encMap && typeof encMap === "object" && !Array.isArray(encMap) ? { ...encMap } : {},
+    atendimentoSuspensoPorSpec: normalizeAtendimentoSuspensoPorSpec(d.atendimentoSuspensoPorSpec),
+    atendimentoSuspensoSlots: normalizeAtendimentoSuspensoSlots(d.atendimentoSuspensoSlots),
+    atendimentoDiasAtivosPorSpec: normalizeAtendimentoDiasAtivosPorSpec(d.atendimentoDiasAtivosPorSpec),
+    atendimentoDiasTurnosPorSpec: normalizeAtendimentoDiasTurnosPorSpecGlobal(d.atendimentoDiasTurnosPorSpec),
   };
 }
 
@@ -146,16 +211,6 @@ export function listenSettings(callback) {
     }
     callback(normalizeSettingsData(snap.data()));
   });
-}
-
-export async function getSettingsSnapshot() {
-  const snap = await getDoc(doc(db, "settings", SETTINGS_ID));
-  if (!snap.exists()) return { ...EMPTY_SETTINGS, _syncUpdatedAt: 0 };
-  const data = snap.data();
-  return {
-    ...normalizeSettingsData(data),
-    _syncUpdatedAt: toMillisSafe(data.atualizadoEm),
-  };
 }
 
 /**
@@ -242,6 +297,94 @@ export async function setAtendimentoEncerradoFlag(specKey, atendimentoDate, ence
   );
 }
 
+/**
+ * Suspensão de agendamento por profissional (`specKey`): a partir de `desde` (AAAA-MM-DD).
+ * `indefinido`: sem data fim; senão pode informar `ate` (último dia sem atendimento, inclusivo).
+ */
+/**
+ * Suspensão em uma data (e turno) específicos. `escopo`: `dia` | `manha` | `tarde`.
+ * Remove chaves conflitantes no mesmo dia (ex.: `dia` remove manhã/tarde pontuais).
+ */
+export async function addAtendimentoSuspensoSlot(specKey, dataIso, escopo, motivo) {
+  const e = escopo === "dia" || escopo === "manha" || escopo === "tarde" ? escopo : null;
+  if (!e) throw new Error("Escopo inválido");
+  const d = typeof dataIso === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dataIso.trim()) ? dataIso.trim() : "";
+  if (!d) throw new Error("Data inválida");
+  const key = `${specKey}_${d}_${e}`;
+  const slots = {
+    [key]: motivo ? { motivo: String(motivo).trim().slice(0, 500) } : {},
+  };
+  if (e === "dia") {
+    slots[`${specKey}_${d}_manha`] = deleteField();
+    slots[`${specKey}_${d}_tarde`] = deleteField();
+  } else {
+    slots[`${specKey}_${d}_dia`] = deleteField();
+  }
+  await setDoc(
+    doc(db, "settings", SETTINGS_ID),
+    {
+      atualizadoEm: serverTimestamp(),
+      atendimentoSuspensoSlots: slots,
+    },
+    { merge: true }
+  );
+}
+
+export async function removeAtendimentoSuspensoSlot(slotKey) {
+  if (typeof slotKey !== "string" || !slotKey.trim()) return;
+  await setDoc(
+    doc(db, "settings", SETTINGS_ID),
+    {
+      atualizadoEm: serverTimestamp(),
+      atendimentoSuspensoSlots: { [slotKey.trim()]: deleteField() },
+    },
+    { merge: true }
+  );
+}
+
+export async function setSpecAtendimentoSuspenso(specKey, { desde, indefinido, ate }) {
+  const desdeOk = typeof desde === "string" && /^\d{4}-\d{2}-\d{2}$/.test(desde.trim()) ? desde.trim() : "";
+  if (!desdeOk) throw new Error("Data inválida");
+  const sub = { desde: desdeOk, indefinido: !!indefinido };
+  if (!sub.indefinido) {
+    const ateRaw = typeof ate === "string" ? ate.trim() : "";
+    if (/^\d{4}-\d{2}-\d{2}$/.test(ateRaw)) sub.ate = ateRaw;
+  }
+  await setDoc(
+    doc(db, "settings", SETTINGS_ID),
+    {
+      atualizadoEm: serverTimestamp(),
+      atendimentoSuspensoPorSpec: { [specKey]: sub },
+    },
+    { merge: true }
+  );
+}
+
+/** Remove suspensão e grava dias da semana com atendimento (vazios ou iguais ao padrão da grade → remove override). */
+export async function clearSpecAtendimentoSuspenso(specKey, diasSemanaAtivos) {
+  const def = diasAtendimentoDefaultParaSpec(specKey);
+  const sortedDef = [...def].sort();
+  const diasValidos = new Set(ORDEM_DIA_SEMANA_GRADE);
+  const filtrados = Array.isArray(diasSemanaAtivos)
+    ? [...new Set(diasSemanaAtivos.filter((d) => diasValidos.has(d)))].sort()
+    : [];
+  const sortedIn = filtrados.length > 0 ? filtrados : sortedDef;
+  const diasPatch =
+    JSON.stringify(sortedIn) !== JSON.stringify(sortedDef)
+      ? { [specKey]: sortedIn }
+      : { [specKey]: deleteField() };
+
+  await setDoc(
+    doc(db, "settings", SETTINGS_ID),
+    {
+      atualizadoEm: serverTimestamp(),
+      atendimentoSuspensoPorSpec: { [specKey]: deleteField() },
+      atendimentoDiasAtivosPorSpec: diasPatch,
+    },
+    { merge: true }
+  );
+}
+
 // ── VAGAS ────────────────────────────────────────────────────────
 // ID do documento: "YYYY-MM-DD_specKey_sessIdx" (campo atendimentoDate).
 // Retenção no Firestore: documentos são removidos 24h após o fim do dia local da data de atendimento
@@ -280,54 +423,6 @@ export function listenVagasByAtendimentoDates(datesArray, callback) {
       partials[idx] = next;
       mergeAndEmit();
     });
-  });
-  return () => unsubs.forEach((u) => u());
-}
-
-export async function getVagasByAtendimentoDates(datesArray) {
-  const unique = [...new Set(datesArray)].filter(Boolean);
-  if (unique.length === 0) return { data: {}, maxUpdatedAt: 0 };
-  const chunks = chunkArray(unique, 10);
-  const allData = {};
-  let maxUpdatedAt = 0;
-  for (const chunkDates of chunks) {
-    const q = query(collection(db, "vagas"), where("atendimentoDate", "in", chunkDates));
-    const snap = await getDocs(q);
-    snap.docs.forEach((d) => {
-      const data = d.data();
-      allData[d.id] = { id: d.id, ...data };
-      maxUpdatedAt = Math.max(maxUpdatedAt, toMillisSafe(data.atualizadoEm));
-    });
-  }
-  return { data: allData, maxUpdatedAt };
-}
-
-export function listenVagasChangesByAtendimentoDatesSince(datesArray, sinceMs, callback, onError) {
-  const unique = [...new Set(datesArray)].filter(Boolean);
-  if (unique.length === 0) return () => {};
-  const sinceTs = Timestamp.fromMillis(Math.max(0, Number(sinceMs) || 0));
-  const chunks = chunkArray(unique, 10);
-  const unsubs = chunks.map((chunkDates) => {
-    const q = query(
-      collection(db, "vagas"),
-      where("atendimentoDate", "in", chunkDates),
-      where("atualizadoEm", ">", sinceTs)
-    );
-    return onSnapshot(
-      q,
-      (snap) => {
-        if (snap.empty) return;
-        const data = {};
-        let maxUpdatedAt = Math.max(0, Number(sinceMs) || 0);
-        snap.docs.forEach((d) => {
-          const payload = d.data();
-          data[d.id] = { id: d.id, ...payload };
-          maxUpdatedAt = Math.max(maxUpdatedAt, toMillisSafe(payload.atualizadoEm));
-        });
-        callback({ data, maxUpdatedAt });
-      },
-      (err) => onError?.(err)
-    );
   });
   return () => unsubs.forEach((u) => u());
 }
@@ -473,56 +568,6 @@ export async function confirmarSolicitacaoOcupaVaga(id, meta, uid) {
     const esgotou = used + reserved >= total;
     return { used, reserved, total, esgotou };
   });
-}
-
-export async function getProfissionaisSnapshot() {
-  const snap = await getDocs(collection(db, "profissionais"));
-  const data = {};
-  let maxUpdatedAt = 0;
-  snap.docs.forEach((d) => {
-    const payload = d.data();
-    data[d.id] = { id: d.id, ...payload };
-    maxUpdatedAt = Math.max(maxUpdatedAt, toMillisSafe(payload.atualizadoEm));
-  });
-  return { data, maxUpdatedAt };
-}
-
-export function listenProfissionaisChangesSince(sinceMs, callback, onError) {
-  const sinceTs = Timestamp.fromMillis(Math.max(0, Number(sinceMs) || 0));
-  const q = query(collection(db, "profissionais"), where("atualizadoEm", ">", sinceTs));
-  return onSnapshot(
-    q,
-    (snap) => {
-      if (snap.empty) return;
-      const data = {};
-      let maxUpdatedAt = Math.max(0, Number(sinceMs) || 0);
-      snap.docs.forEach((d) => {
-        const payload = d.data();
-        data[d.id] = { id: d.id, ...payload };
-        maxUpdatedAt = Math.max(maxUpdatedAt, toMillisSafe(payload.atualizadoEm));
-      });
-      callback({ data, maxUpdatedAt });
-    },
-    (err) => onError?.(err)
-  );
-}
-
-export function listenSettingsChangesSince(sinceMs, callback, onError) {
-  const since = Math.max(0, Number(sinceMs) || 0);
-  return onSnapshot(
-    doc(db, "settings", SETTINGS_ID),
-    (snap) => {
-      if (!snap.exists()) return;
-      const d = snap.data();
-      const updatedAt = toMillisSafe(d.atualizadoEm);
-      if (updatedAt <= since) return;
-      callback({
-        data: normalizeSettingsData(d),
-        maxUpdatedAt: updatedAt,
-      });
-    },
-    (err) => onError?.(err)
-  );
 }
 
 export async function getVaga(id) {

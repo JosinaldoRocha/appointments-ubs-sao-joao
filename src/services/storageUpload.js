@@ -1,40 +1,45 @@
-// Upload de imagens da solicitação — Supabase Storage (substitui Firebase Storage).
-import { getSupabaseBrowser } from "./supabaseClient";
-
-/** Nome do bucket no painel do Supabase (Storage → criar bucket com este id). */
-export const SUPABASE_STORAGE_BUCKET = "whatsapp-agenda-docs";
+// Upload de imagens da solicitação — Firebase Storage.
+import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
+import { storage } from "./firebase";
 
 const UPLOAD_TIMEOUT_MS = 120000;
 
 export async function uploadDocumentoPacienteSolicitacao(file) {
   const safe = (file.name || "doc").replace(/[^a-zA-Z0-9.-]/g, "_").slice(0, 80);
   const id = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-  const path = `${id}_${safe}`;
-
-  const supabase = getSupabaseBrowser();
+  const path = `solicitacoes-whatsapp/${id}_${safe}`;
 
   const tarefa = (async () => {
-    const { error: upErr } = await supabase.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .upload(path, file, {
+    const objectRef = ref(storage, path);
+    try {
+      await uploadBytes(objectRef, file, {
         contentType: file.type || "image/jpeg",
-        upsert: false,
       });
-    if (upErr) {
-      const msg = upErr.message || "";
-      if (/row-level security|RLS|violates/i.test(msg)) {
+    } catch (err) {
+      const msg = String(err?.message || "");
+      if (/storage\/unauthorized|permission/i.test(msg)) {
         throw new Error(
-          "O Supabase Storage bloqueou o upload (políticas RLS). No painel: SQL Editor → rode o arquivo supabase/storage-policies.sql. Confira se o bucket se chama exatamente whatsapp-agenda-docs."
+          "O Firebase Storage bloqueou o upload (sem permissão). Verifique as regras de Storage para permitir o envio de imagens de solicitação."
         );
       }
-      throw new Error(msg || "Falha ao enviar a imagem para o Supabase Storage.");
+      if (/storage\/bucket-not-found/i.test(msg)) {
+        throw new Error(
+          "Bucket do Firebase Storage não encontrado. Confira o campo storageBucket na configuração do Firebase."
+        );
+      }
+      if (/failed to fetch|network/i.test(msg)) {
+        throw new Error(
+          "Falha de conexão ao enviar para o Firebase Storage. Verifique sua internet e tente novamente."
+        );
+      }
+      throw new Error(msg || "Falha ao enviar a imagem para o Firebase Storage.");
     }
 
-    const { data } = supabase.storage.from(SUPABASE_STORAGE_BUCKET).getPublicUrl(path);
-    if (!data?.publicUrl) {
+    const publicUrl = await getDownloadURL(objectRef);
+    if (!publicUrl) {
       throw new Error("Não foi possível obter o link público da imagem.");
     }
-    return data.publicUrl;
+    return publicUrl;
   })();
 
   return Promise.race([
@@ -44,7 +49,7 @@ export async function uploadDocumentoPacienteSolicitacao(file) {
         () =>
           reject(
             new Error(
-              "Tempo esgotado ao enviar a imagem. Verifique a internet e o Supabase Storage."
+              "Tempo esgotado ao enviar a imagem. Verifique a internet e o Firebase Storage."
             )
           ),
         UPLOAD_TIMEOUT_MS
