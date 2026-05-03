@@ -1,0 +1,34 @@
+---
+description: Papel da Direção — mesmos privilégios do agente de saúde (ACS)
+globs: src/**/*.{jsx,js}
+alwaysApply: false
+---
+
+# Direção (`diretor`)
+
+No código, a direção é `rulePerfil(perfil) === "diretor"` (Firestore: **`rule`**; rótulo em `TabConfig`: “Direção”).
+
+## Privilégios (iguais ao ACS)
+
+A direção deve ter **os mesmos privilégios do agente de saúde**:
+
+1. **Login** — autenticação com papel vindo do perfil.
+2. **Ver recepcionista ativo/disponível** — `settings.recepcionistaAtivoNome` e `settings.recepcionistaAtivoWhatsapp` (mesma lógica do ACS).
+3. **Visualizar vagas/agendamentos disponíveis** — aba **Vagas**, slots visíveis como para o agente.
+4. **Solicitar agendamento** — mesmo fluxo de solicitação (modal, WhatsApp, etc.).
+
+## O que a direção não tem (como o ACS)
+
+- Aba **Config.** — apenas `recepcao` (e hoje só recepcionista vê Config. no `Dashboard`).
+- Permissões exclusivas de recepção (operar vagas e lista de espera na UI da recepção), salvo requisito novo.
+
+## Ao implementar checagens de papel
+
+- Tratar **agente e diretor no mesmo grupo** quando o fluxo for “usuário da unidade que solicita”, por exemplo:
+  - `rulePerfil(perfil) === "agente" || rulePerfil(perfil) === "diretor"`, ou
+  - uma flag derivada tipo `isAgenteOuDiretor` / incluir `diretor` na semântica de `isAgente` para UI e ações permitidas ao ACS.
+- Evitar `!isDiretor` em condições que neguem ao diretor o que o ACS pode fazer — isso contradiz este produto.
+
+## Relação com a regra do ACS
+
+- Ver também `.cursor/rules/agente-saude-acs.mdc`: onde lá couber “ACS”, a direção segue o **mesmo comportamento**, salvo texto que cite explicitamente só `rule === "agente"`.

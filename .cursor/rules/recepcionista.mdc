@@ -1,0 +1,27 @@
+---
+description: Papel do recepcionista — gestão da unidade e vagas
+globs: src/**/*.{jsx,js}
+alwaysApply: false
+---
+
+# Recepcionista (`recepcao`)
+
+No código: `rulePerfil(perfil) === "recepcao"` (Firestore: campo **`rule`** em `usuarios/{uid}`). Só recepcionista vê a aba **Config.** no `Dashboard` e recebe `isRecepcao={true}` nas abas.
+
+## O que o recepcionista pode fazer
+
+1. **Login** — mesmo fluxo de autenticação; papel no perfil Firestore.
+2. **Usuários (incl. agentes de saúde)** — em **Config. → Usuários**: criar e excluir usuários; editar **WhatsApp** de recepcionistas (`updateUser`). Papel no Firestore: campo **`rule`** com valores `agente`, `recepcao`, `diretor`. Se no futuro houver edição de nome/senha de agente na UI, manter alinhado a este papel.
+3. **Profissionais** — em **Config. → Profissionais**: alterar **nome exibido** por chave de agenda (`updateProfissional`); substituição de profissional na unidade.
+4. **Calendário / regras da agenda** — em **Config. → Calendário & regras**: feriados, opções que alteram janelas (ex.: `fernandoForaUnidade`), total PCCU (`pccuTotal`), etc. A **grade base** (dias, sessões, totais por sessão) está em `services/scheduleConfig` — mudanças estruturais são código, não só UI.
+5. **Vagas** — na aba **Vagas**: ajustar ocupação e reservas por sessão (`handleSlotAction` / `setVaga`: +/− ocupada, +/− reserva, confirmar reserva). Não usa o fluxo “solicitar como agente” (`canBook` é falso para recepção em `TabVagas`). Agentes/direção enviam pedidos só via **WhatsApp** (sem fila de solicitações no app).
+6. **Lista de espera** — gerir espera onde a UI permitir.
+7. **Recepcionista “ativo”** — com WhatsApp cadastrado no perfil, o app atualiza `settings.recepcionistaAtivoNome` / `recepcionistaAtivoWhatsapp` para agentes/direção saberem quem está na linha.
+
+## O que não é papel do recepcionista (por padrão)
+
+- Agir como **ACS/direção** no fluxo de solicitar vaga pelo mesmo botão do agente (recepção opera vagas manualmente).
+
+## Ao implementar permissões
+
+- Restringir **Config.** e ações de recepção a `isRecepcao` / `rule === "recepcao"` no documento do usuário; não duplicar essas telas para `agente` ou `diretor` salvo requisito explícito.

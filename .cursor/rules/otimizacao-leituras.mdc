@@ -1,0 +1,33 @@
+---
+description: Reduz leituras de banco com carga inicial diaria e atualizacoes incrementais por perfil
+globs: src/**/*.{js,jsx,ts,tsx}
+alwaysApply: false
+---
+
+# Otimizacao de Leituras
+
+## Objetivo
+- Minimizar leituras no banco e evitar recarregar dados ja carregados no mesmo dia.
+
+## Regras
+- Fazer **carga completa** apenas na primeira abertura do dia por usuario/perfil.
+- Em aberturas seguintes no mesmo dia, ler somente dados **novos ou alterados** desde `lastSyncAt`.
+- Limitar consultas ao intervalo do **dia atual** (inicio e fim do dia local).
+- Restringir leitura ao **escopo do perfil** (ex.: ACS ve seu territorio; direcao ve dados gerenciais).
+- Reutilizar cache local em memoria/storage para exibir dados ja carregados sem nova leitura completa.
+
+## Padrao de Implementacao
+1. Persistir `lastSyncAt`, `lastFullLoadDate` e chave de escopo do usuario.
+2. Se `lastFullLoadDate` for hoje: executar somente consulta incremental (`updated_at > lastSyncAt`).
+3. Mesclar resultado incremental no estado local sem descartar dados anteriores do dia.
+4. Executar carga completa apenas quando mudar o dia, mudar o perfil/escopo ou cache estiver invalido.
+
+## Exemplo
+```ts
+// ❌ Evitar: sempre buscar tudo ao abrir o app
+await fetchAllAppointments();
+
+// ✅ Preferir: carga completa 1x/dia + incrementais
+if (isFirstOpenToday(userScope)) await fetchDayData(userScope);
+else await fetchDayChanges(userScope, lastSyncAt);
+```

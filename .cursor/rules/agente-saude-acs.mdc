@@ -1,0 +1,26 @@
+---
+description: Papel e fluxos do Agente Comunitário de Saúde (ACS) no app
+globs: src/**/*.{jsx,js}
+alwaysApply: false
+---
+
+# Agente de saúde (ACS)
+
+No código, o ACS é o usuário com `rulePerfil(perfil) === "agente"` (Firestore: **`rule`**). Em props como `TabEspera`, `isAgente` significa “usuário da unidade que solicita” (`!isRecepcao` no `Dashboard`) — **agente e direção** compartilham esse fluxo; ver `direcao.mdc`.
+
+## O que o ACS pode fazer
+
+1. **Login** — Autenticação como qualquer usuário; o papel vem do perfil em Firestore.
+2. **Ver vagas disponíveis** — Aba **Vagas**: visualizar horários/slots liberados para agendamento.
+3. **Solicitar agendamento** — Abrir o fluxo de solicitação (ex.: modal de agendar), enviar pedido para a recepção (incl. WhatsApp quando configurado).
+4. **Ver recepcionista ativo** — O app expõe quem está “na linha” via `settings.recepcionistaAtivoNome` e `recepcionistaAtivoWhatsapp` (atualizados quando um recepcionista com WhatsApp cadastrado usa o app). A UI deve deixar claro **nome** e se há **canal** disponível para solicitação.
+
+## O que o ACS não deve ter
+
+- Aba **Config** (gestão de usuários, feriados, etc.), salvo se o produto mudar explicitamente.
+- Ações exclusivas de recepção (ajustar vagas na recepção, gerir lista de espera como na UI, etc.), salvo requisito novo documentado.
+
+## Ao implementar ou alterar fluxos
+
+- Preservar checagens de `isAgente` / `rule === "agente"` e não misturar permissões com `recepcao`. O papel `diretor` segue os mesmos fluxos do ACS — ver `.cursor/rules/direcao.mdc`.
+- Mensagens de erro para ACS: quando não houver recepcionista disponível, orientar cadastro do WhatsApp em **Config → Usuários** e uso do app pelo recepcionista (padrão já usado em `ModalAgendar` / `Dashboard`).
