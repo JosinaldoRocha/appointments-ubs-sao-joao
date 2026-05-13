@@ -1,6 +1,9 @@
 // src/services/scheduleConfig.js
 // ─────────────────────────────────────────────────────────────────
 //  Toda a lógica de horários da UBS fica centralizada aqui.
+//
+//  Reforma: atendimento na unidade somente à tarde (13h–18h). Rótulos de sessão usam "Tarde – …"
+//  (ou "Tarde" genérico). Exceção: coleta de exames de rotina permanece às quartas-feiras, 7h.
 // ─────────────────────────────────────────────────────────────────
 
 export const SPEC_META = {
@@ -56,23 +59,27 @@ export const DAY_LABEL = {
 /** Ordem segunda → sexta (grade da UBS). */
 export const ORDEM_DIA_SEMANA_GRADE = ["segunda", "terca", "quarta", "quinta", "sexta"];
 
-// Configuração base de cada dia de atendimento
+// Configuração base de cada dia de atendimento (reforma: expediente na unidade 13h–18h = sessões "Tarde";
+// exceção: coleta de exames às quartas, 7h — rótulo "Manhã – Coleta de exames".)
 export const BASE_SCHEDULE = {
   segunda: {
     specs: [
       {
         key: "medico",
         sessions: [
-          { label: "Manhã – Troca de receitas", total: 10, medicoTipo: "receitas" },
-          { label: "Tarde – Clínico geral",     total: 15, medicoTipo: "clinico" },
+          { label: "Tarde – Troca de receitas", total: 10, medicoTipo: "receitas" },
+          { label: "Tarde – Clínico geral", total: 5, medicoTipo: "clinico" },
         ],
       },
       {
         key: "dentFernando",
-        sessions: [
-          { label: "Manhã", total: 8 },
-          { label: "Tarde", total: 8 },
-        ],
+        sessions: [{ label: "Tarde – Odontologia", total: 10 }],
+      },
+      {
+        key: "nutricionista",
+        /** Atendimento às segundas; agendamento liberado em qualquer dia útil (ver buildVisibleSegments). */
+        agendaQualquerDiaUtil: true,
+        sessions: [{ label: "Tarde – Nutrição", total: 8 }],
       },
     ],
   },
@@ -81,54 +88,39 @@ export const BASE_SCHEDULE = {
       {
         key: "medico",
         sessions: [
-          { label: "Manhã – Clínico geral", total: 15, medicoTipo: "clinico" },
-          { label: "Tarde – Gestantes",     total: 6,  medicoTipo: "gestantes" },
+          { label: "Tarde – Clínico geral", total: 9, medicoTipo: "clinico" },
+          { label: "Tarde – Gestantes", total: 6, medicoTipo: "gestantes" },
         ],
       },
       {
         key: "dentFernando",
-        sessions: [
-          { label: "Manhã", total: 8 },
-          { label: "Tarde", total: 8 },
-        ],
+        sessions: [{ label: "Tarde – Odontologia", total: 10 }],
       },
       {
         key: "enfermeira",
-        sessions: [
-          { label: "Manhã", total: 15 },
-          { label: "Tarde", total: 10 },
-        ],
+        sessions: [{ label: "Tarde – Enfermagem", total: 15 }],
       },
     ],
   },
   quarta: {
     specs: [
       {
-        key: "medico",
-        sessions: [{ label: "Manhã – Clínico geral", total: 15, medicoTipo: "clinico" }],
-      },
-      {
         key: "dentFernando",
-        sessions: [{ label: "Manhã", total: 8 }],
+        sessions: [{ label: "Tarde – Odontologia", total: 10 }],
       },
       {
         key: "enfermeira",
         sessions: [
           {
-            label: "Manhã – PCCU",
+            label: "Tarde – Enfermagem (prioridade exame PCCU)",
             total: 15,
-            pccuOnly: true,
           },
-          { label: "Tarde – Enfermagem geral", total: 10 },
         ],
       },
       {
         key: "psicologa",
         /** Atendimento às quartas; agendamento só no dia útil anterior (terça-feira, salvo feriados). */
-        sessions: [
-          { label: "Manhã", total: 5, waitlistEnabled: true },
-          { label: "Tarde", total: 3, waitlistEnabled: true },
-        ],
+        sessions: [{ label: "Tarde – Psicologia", total: 8, waitlistEnabled: true }],
       },
       {
         key: "tecnicoEnfermagem",
@@ -140,20 +132,12 @@ export const BASE_SCHEDULE = {
   quinta: {
     specs: [
       {
-        key: "dentPatrick",
-        sessions: [
-          { label: "Manhã", total: 8 },
-          { label: "Tarde", total: 8 },
-        ],
+        key: "medico",
+        sessions: [{ label: "Tarde – Clínico geral", total: 15, medicoTipo: "clinico" }],
       },
       {
-        key: "nutricionista",
-        /** Atendimento só às quintas; agendamento liberado em qualquer dia útil (ver buildVisibleSegments). */
-        agendaQualquerDiaUtil: true,
-        sessions: [
-          { label: "Manhã", total: 8 },
-          { label: "Tarde", total: 8 },
-        ],
+        key: "dentPatrick",
+        sessions: [{ label: "Tarde – Odontologia", total: 10 }],
       },
       {
         key: "fisio",
@@ -161,14 +145,11 @@ export const BASE_SCHEDULE = {
         solicitacaoEncaminhamentoObrigatorio: true,
         /** Agendamento liberado em qualquer dia útil (atendimento quintas e sextas). */
         agendaQualquerDiaUtil: true,
-        sessions: [{ label: "Manhã", total: 6, waitlistEnabled: true }],
+        sessions: [{ label: "Tarde", total: 6, waitlistEnabled: true }],
       },
       {
         key: "enfermeira",
-        sessions: [
-          { label: "Manhã", total: 15 },
-          { label: "Tarde", total: 10 },
-        ],
+        sessions: [{ label: "Tarde – Enfermagem", total: 15 }],
       },
     ],
   },
@@ -177,10 +158,10 @@ export const BASE_SCHEDULE = {
       {
         key: "dentPatrick",
         sessions: [
-          { label: "Manhã", total: 8 },
-          /** Tarde fixa: sem consultas na UBS — visitas domiciliares (aviso no card; 0 vagas). */
+          { label: "Tarde – Odontologia", total: 10 },
+          /** Tarde: sem consultas na UBS — visitas domiciliares (aviso no card; 0 vagas). */
           {
-            label: "Tarde",
+            label: "Tarde – Visitas domiciliares (fora da unidade)",
             total: 0,
             visitaDomiciliarSemUnidade: true,
           },
@@ -190,14 +171,11 @@ export const BASE_SCHEDULE = {
         key: "fisio",
         solicitacaoEncaminhamentoObrigatorio: true,
         agendaQualquerDiaUtil: true,
-        sessions: [{ label: "Manhã", total: 6, waitlistEnabled: true }],
+        sessions: [{ label: "Tarde", total: 6, waitlistEnabled: true }],
       },
       {
         key: "enfermeira",
-        sessions: [
-          { label: "Manhã", total: 15 },
-          { label: "Tarde", total: 10 },
-        ],
+        sessions: [{ label: "Tarde – Enfermagem", total: 15 }],
       },
     ],
   },
@@ -453,8 +431,8 @@ export function toDateStr(date) {
 /** Minutos desde meia-noite até o fim do turno da manhã (início da tarde). 12:00. */
 const TURNO_MANHA_FIM_MINUTOS = 12 * 60;
 
-/** Fim do turno da tarde no dia do atendimento (cartões “hoje” somem após este horário). 17:00. */
-const TURNO_TARDE_FIM_MINUTOS = 17 * 60;
+/** Fim do turno da tarde no dia do atendimento (cartões “hoje” somem após este horário). 18:00 (reforma). */
+const TURNO_TARDE_FIM_MINUTOS = 18 * 60;
 
 /** `"manha"` ou `"tarde"` conforme o relógio local. */
 export function turnoAtualDoRelogio(date = new Date()) {
@@ -514,8 +492,8 @@ export function indicesSessoesAtendimentoHojeVisiveis(spec, agora = new Date()) 
 
 /**
  * Cartão de atendimento no dia atual (`same`): deve ficar oculto para todos os usuários
- * após o horário de encerramento do(s) turno(s) daquele profissional (manhã 12h; tarde 17h;
- * quem tem manhã e tarde some após 17h). Sessões sem rótulo manhã/tarde contam como “dia inteiro” até 17h.
+ * após o horário de encerramento do(s) turno(s) daquele profissional (manhã 12h; tarde 18h na reforma;
+ * quem tem manhã e tarde some após 18h). Sessões sem rótulo manhã/tarde contam como “dia inteiro” até 18h.
  */
 export function specAtendimentoHojeOcultoAposTurnos(spec, agora = new Date()) {
   if (spec.windowType !== "same") return false;
@@ -1050,24 +1028,67 @@ export function getSpecsVisiveis(vagasMap, profNames, options = {}) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-//  Expediente da UBS (solicitações por agentes / direção — horário local)
+//  Janelas de solicitação de agendamento (agentes / direção — horário local)
+//  Reforma: atendimento na unidade 13h–18h; sobras no mesmo dia podem ser solicitadas desde 7h;
+//  agendamento “véspera” (dia útil anterior ao atendimento) só a partir das 13h30.
 // ─────────────────────────────────────────────────────────────────
 
-const EXP_UBS_AGENTE_INICIO_MANHA_MIN = 7 * 60 + 30; // 7:30
-const EXP_UBS_AGENTE_FIM_MANHA_MIN = 12 * 60; // 12:00 (intervalo [início, fim) em minutos do dia)
-const EXP_UBS_AGENTE_INICIO_TARDE_MIN = 14 * 60; // 14:00
-const EXP_UBS_AGENTE_FIM_TARDE_MIN = 17 * 60; // 17:00
+/** Mesmo dia (`windowType: "same"`): das 7h até 18h (ou até encerramento informado na recepção — ver UI). */
+const JANELA_SOLICIT_MESMO_DIA_INICIO_MIN = 7 * 60;
+const JANELA_SOLICIT_MESMO_DIA_FIM_MIN = 18 * 60;
 
-/**
- * Dois períodos: 7h30–12h e 14h–17h (horário local). Fora do almoço (12h–14h) não permite solicitação.
- */
-export function estaDentroExpedienteUbs(data = new Date()) {
+/** Outro dia / véspera (`windowType: "prev"`): das 13h30 às 18h. */
+const JANELA_SOLICIT_PREV_INICIO_MIN = 13 * 60 + 30;
+const JANELA_SOLICIT_PREV_FIM_MIN = 18 * 60;
+
+function minutosRelogioLocal(data) {
   const d = data instanceof Date ? data : new Date(data);
-  const min = d.getHours() * 60 + d.getMinutes();
-  const manha = min >= EXP_UBS_AGENTE_INICIO_MANHA_MIN && min < EXP_UBS_AGENTE_FIM_MANHA_MIN;
-  const tarde = min >= EXP_UBS_AGENTE_INICIO_TARDE_MIN && min < EXP_UBS_AGENTE_FIM_TARDE_MIN;
-  return manha || tarde;
+  return d.getHours() * 60 + d.getMinutes();
 }
 
+export function estaDentroJanelaAgendamentoMesmoDia(data = new Date()) {
+  const m = minutosRelogioLocal(data);
+  return m >= JANELA_SOLICIT_MESMO_DIA_INICIO_MIN && m < JANELA_SOLICIT_MESMO_DIA_FIM_MIN;
+}
+
+export function estaDentroJanelaAgendamentoPrev(data = new Date()) {
+  const m = minutosRelogioLocal(data);
+  return m >= JANELA_SOLICIT_PREV_INICIO_MIN && m < JANELA_SOLICIT_PREV_FIM_MIN;
+}
+
+/** Há pelo menos uma janela ativa (antes das 7h ou após as 18h fica tudo fechado). */
+export function estaDentroAlgumaJanelaSolicitacaoAgendamento(data = new Date()) {
+  return estaDentroJanelaAgendamentoMesmoDia(data) || estaDentroJanelaAgendamentoPrev(data);
+}
+
+/**
+ * @param {"prev"|"same"|null|undefined} windowType — cartão de `buildVisibleSegments`
+ */
+export function estaDentroJanelaSolicitacaoAgendamento(windowType, data = new Date()) {
+  if (windowType === "same") return estaDentroJanelaAgendamentoMesmoDia(data);
+  if (windowType === "prev") return estaDentroJanelaAgendamentoPrev(data);
+  return estaDentroAlgumaJanelaSolicitacaoAgendamento(data);
+}
+
+export const MSG_FORA_JANELA_AGENDAMENTO_MESMO_DIA =
+  "Solicitações para atendimento hoje (quando houver vagas) ficam disponíveis das 7h às 18h, ou até a recepção informar que o atendimento deste profissional foi encerrado.";
+
+export const MSG_FORA_JANELA_AGENDAMENTO_PREV =
+  "Solicitações para agendar atendimento em outro dia (véspera / dia útil anterior) ficam disponíveis das 13h30 às 18h.";
+
 export const MSG_FORA_EXPEDIENTE_UBS =
-  "Solicitações de agendamento só são permitidas das 7h30 às 12h e das 14h às 17h.";
+  "Fora do horário de solicitações: atendimento hoje (com vagas) — 7h às 18h; outros dias — 13h30 às 18h.";
+
+/** @deprecated use `estaDentroAlgumaJanelaSolicitacaoAgendamento` ou `estaDentroJanelaSolicitacaoAgendamento` */
+export function estaDentroExpedienteUbs(data = new Date()) {
+  return estaDentroAlgumaJanelaSolicitacaoAgendamento(data);
+}
+
+/**
+ * @param {"prev"|"same"|null|undefined} windowType
+ */
+export function msgForaJanelaSolicitacaoAgendamento(windowType) {
+  if (windowType === "same") return MSG_FORA_JANELA_AGENDAMENTO_MESMO_DIA;
+  if (windowType === "prev") return MSG_FORA_JANELA_AGENDAMENTO_PREV;
+  return MSG_FORA_EXPEDIENTE_UBS;
+}
