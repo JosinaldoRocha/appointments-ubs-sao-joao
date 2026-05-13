@@ -26,15 +26,11 @@ import {
   vagaDocId,
   toDateStr,
   DEFAULT_PCCU_TOTAL,
-  DEFAULT_PROF_NAMES,
   collectAtendimentoDatesForListener,
   SPEC_META,
   sessionTotalEffective,
-  estaDentroExpedienteUbs,
-  MSG_FORA_EXPEDIENTE_UBS,
-  addDaysLocal,
-  shouldShowAvisoVisitaDomiciliarAmanha,
-  avisoSemAtendimentoUbAmanha,
+  estaDentroJanelaSolicitacaoAgendamento,
+  msgForaJanelaSolicitacaoAgendamento,
   normalizeAtendimentoDiasTurnosParaSpec,
 } from "../services/scheduleConfig";
 import { uploadDocumentoPacienteSolicitacao } from "../services/storageUpload";
@@ -44,10 +40,13 @@ import {
   abrirWhatsAppNavegandoJanela,
 } from "../services/whatsappSolicitacao";
 import TabVagas from "../components/TabVagas";
+import TabAvisos from "../components/TabAvisos";
+import TabCronograma from "../components/TabCronograma";
 import TabConfig from "../components/TabConfig";
 import ModalAgendar from "../components/ModalAgendar";
 import Toast from "../components/Toast";
-import { isRecepcaoPerfil, isAgenteOuDiretorPerfil } from "../utils/perfilRole";
+import { isRecepcaoPerfil, isAgenteOuDiretorPerfil, podeEditarCronogramaUbs } from "../utils/perfilRole";
+import { cronogramaUbsIguais, cronogramaUbsVazio } from "../services/cronogramaUbs";
 
 function vagasNum(v) {
   const n = Number(v);
@@ -169,6 +168,7 @@ function settingsIguaisParaDashboard(prev, next) {
     }
   }
   if (!mapaSuspensoSlotsIgual(prev.atendimentoSuspensoSlots, next.atendimentoSuspensoSlots)) return false;
+  if (!cronogramaUbsIguais(prev.cronogramaUbs, next.cronogramaUbs)) return false;
   return true;
 }
 
@@ -214,7 +214,11 @@ function profissionaisMapIgual(prev, next) {
   return true;
 }
 
-const TABS = [{ key: "vagas", label: "Vagas" }];
+const TABS_BASE = [
+  { key: "vagas", label: "Vagas" },
+  { key: "avisos", label: "Avisos" },
+  { key: "cronograma", label: "Cronograma" },
+];
 
 export default function Dashboard() {
   const { perfil, user } = useAuth();
@@ -247,6 +251,7 @@ export default function Dashboard() {
     atendimentoSuspensoSlots: {},
     atendimentoDiasAtivosPorSpec: {},
     atendimentoDiasTurnosPorSpec: {},
+    cronogramaUbs: cronogramaUbsVazio(),
   });
 
   const atendimentoDiasTurnosPorSpec = useMemo(() => {
@@ -360,6 +365,10 @@ export default function Dashboard() {
 
   const abrirModalSolicitacao = useCallback(
     async (ctx) => {
+      if (!isRecepcao && !estaDentroJanelaSolicitacaoAgendamento(ctx.windowType, new Date())) {
+        showToast(msgForaJanelaSolicitacaoAgendamento(ctx.windowType), "danger");
+        return;
+      }
       const id = vagaDocId(ctx.atendimentoDate, ctx.specKey, ctx.sessIdx);
       const total = sessionTotalEffective(ctx.dayKey, ctx.specKey, ctx.sessIdx, settings.pccuTotal, {
         atendimentoDateStr: ctx.atendimentoDate,
@@ -406,7 +415,7 @@ export default function Dashboard() {
         reservaFirestoreVagaId: liberarId,
       });
     },
-    [user, perfil, settings.pccuTotal, settings.dentQuartaVisitaDomiciliarDesde]
+    [user, perfil, settings.pccuTotal, settings.dentQuartaVisitaDomiciliarDesde, isRecepcao]
   );
 
   const handleToggleAtendimentoEncerrado = useCallback(
@@ -585,6 +594,7 @@ export default function Dashboard() {
       sessIdx,
       sessLabel,
       atendimentoDate,
+      windowType,
       solicitacaoEncaminhamentoObrigatorio,
       somenteEncaixe,
       pccuOnly,
@@ -614,9 +624,9 @@ export default function Dashboard() {
         showToast("O fluxo de solicitar vaga é para agentes de saúde. Use os botões de ocupação e reserva nas vagas.", "danger");
         return;
       }
-      if (!isRecepcao && !estaDentroExpedienteUbs(new Date())) {
+      if (!isRecepcao && !estaDentroJanelaSolicitacaoAgendamento(windowType, new Date())) {
         fecharPreAbaWa();
-        showToast(MSG_FORA_EXPEDIENTE_UBS, "danger");
+        showToast(msgForaJanelaSolicitacaoAgendamento(windowType), "danger");
         return;
       }
       const waDigits = digitosWhatsappRecepcaoParaSolicitacao(settings);
@@ -736,9 +746,7 @@ export default function Dashboard() {
     [isRecepcao, profNames, settings, user]
   );
 
-  const allTabs = isRecepcao
-    ? [...TABS, { key: "config", label: "Config." }]
-    : TABS;
+  const allTabs = isRecepcao ? [...TABS_BASE, { key: "config", label: "Config." }] : TABS_BASE;
 
   const specsVisiveis = useMemo(
     () =>
@@ -769,36 +777,6 @@ export default function Dashboard() {
       atendimentoDiasTurnosPorSpec,
     ]
   );
-
-  const avisoVisitaDomiciliarAmanha = useMemo(() => {
-    if (!isAgenteOuDiretorPerfil(perfil)) return null;
-    if (!settings.dentQuartaVisitaDomiciliarDesde) return null;
-    if (!shouldShowAvisoVisitaDomiciliarAmanha(todayStr, settings.dentQuartaVisitaDomiciliarDesde)) {
-      return null;
-    }
-    const amanhaIso = addDaysLocal(todayStr, 1);
-    const nomeDent = profNames.dentFernando || DEFAULT_PROF_NAMES.dentFernando;
-    const dataFmt = new Date(amanhaIso + "T12:00:00").toLocaleDateString("pt-BR", {
-      weekday: "long",
-      day: "numeric",
-      month: "long",
-      year: "numeric",
-    });
-    return { nomeDent, dataFmt };
-  }, [perfil, todayStr, settings.dentQuartaVisitaDomiciliarDesde, profNames]);
-
-  const avisoSemAtendimentoAmanha = useMemo(() => {
-    if (!isAgenteOuDiretorPerfil(perfil)) return null;
-    const r = avisoSemAtendimentoUbAmanha(todayStr, settings.feriados, settings.pontosFacultativos);
-    if (!r) return null;
-    const dataFmt = new Date(r.iso + "T12:00:00").toLocaleDateString("pt-BR", {
-      weekday: "long",
-      day: "numeric",
-      month: "long",
-      year: "numeric",
-    });
-    return { ...r, dataFmt };
-  }, [perfil, todayStr, settings.feriados, settings.pontosFacultativos]);
 
   return (
     <div style={styles.app}>
@@ -836,36 +814,6 @@ export default function Dashboard() {
         ))}
       </nav>
 
-      {avisoVisitaDomiciliarAmanha && (
-        <div style={styles.avisoVisitaDomiciliar} role="status">
-          <strong>Aviso —</strong> amanhã ({avisoVisitaDomiciliarAmanha.dataFmt}), o{" "}
-          {avisoVisitaDomiciliarAmanha.nomeDent} não terá atendimento na unidade pela manhã: estará
-          realizando <strong>visitas domiciliares</strong>. A agenda de quarta-feira (manhã) permanece
-          reservada para esse fim.
-        </div>
-      )}
-
-      {avisoSemAtendimentoAmanha && (
-        <div style={styles.avisoFeriadoAmanha} role="status">
-          {avisoSemAtendimentoAmanha.eFeriado && avisoSemAtendimentoAmanha.ePontoFacultativo ? (
-            <>
-              <strong>Feriado e ponto facultativo —</strong> amanhã ({avisoSemAtendimentoAmanha.dataFmt}) está
-              cadastrado nas duas listas na UBS.{" "}
-            </>
-          ) : avisoSemAtendimentoAmanha.eFeriado ? (
-            <>
-              <strong>Feriado —</strong> amanhã ({avisoSemAtendimentoAmanha.dataFmt}) é feriado na UBS.{" "}
-            </>
-          ) : (
-            <>
-              <strong>Ponto facultativo —</strong> amanhã ({avisoSemAtendimentoAmanha.dataFmt}) é ponto
-              facultativo na UBS.{" "}
-            </>
-          )}
-          <strong>Não haverá atendimento agendado</strong> nesse dia.
-        </div>
-      )}
-
       <main style={styles.main}>
         {tab === "vagas" && (
           <TabVagas
@@ -886,6 +834,30 @@ export default function Dashboard() {
             onSolicitar={isRecepcao ? undefined : abrirModalSolicitacao}
             dentQuartaVisitaDomiciliarDesde={settings.dentQuartaVisitaDomiciliarDesde}
             usuarioUid={user?.uid ?? ""}
+          />
+        )}
+        {tab === "avisos" && (
+          <TabAvisos
+            isRecepcao={isRecepcao}
+            incluirAvisosOperacionais={isAgenteOuDiretorPerfil(perfil) || isRecepcaoPerfil(perfil)}
+            specs={specsVisiveis}
+            profissionaisMap={profissionaisMap}
+            profNames={profNames}
+            feriados={settings.feriados}
+            pontosFacultativos={settings.pontosFacultativos}
+            dentQuartaVisitaDomiciliarDesde={settings.dentQuartaVisitaDomiciliarDesde}
+            atendimentoEncerradoMap={settings.atendimentoEncerradoPorSpecData || {}}
+            atendimentoSuspensoPorSpec={settings.atendimentoSuspensoPorSpec || {}}
+            atendimentoSuspensoSlots={settings.atendimentoSuspensoSlots || {}}
+            atendimentoDiasAtivosPorSpec={settings.atendimentoDiasAtivosPorSpec || {}}
+          />
+        )}
+        {tab === "cronograma" && (
+          <TabCronograma
+            cronogramaUbs={settings.cronogramaUbs ?? cronogramaUbsVazio()}
+            profNames={profNames}
+            podeEditar={podeEditarCronogramaUbs(perfil)}
+            showToast={showToast}
           />
         )}
         {tab === "config" && isRecepcao && (
@@ -964,25 +936,5 @@ const styles = {
     whiteSpace: "nowrap",
   },
   navBtnActive: { background: "#F1F5F9", color: "#0F172A", fontWeight: 600 },
-  avisoVisitaDomiciliar: {
-    margin: "0 12px 0",
-    padding: "10px 14px",
-    fontSize: 13,
-    lineHeight: 1.45,
-    color: "#1E3A5F",
-    background: "linear-gradient(90deg, #DBEAFE 0%, #E0F2FE 100%)",
-    border: "1px solid #93C5FD",
-    borderRadius: 8,
-  },
-  avisoFeriadoAmanha: {
-    margin: "8px 12px 0",
-    padding: "10px 14px",
-    fontSize: 13,
-    lineHeight: 1.45,
-    color: "#7C2D12",
-    background: "linear-gradient(90deg, #FFEDD5 0%, #FEF3C7 100%)",
-    border: "1px solid #FDBA74",
-    borderRadius: 8,
-  },
   main: { flex: 1, padding: 14, overflowY: "auto" },
 };

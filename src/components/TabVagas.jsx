@@ -7,8 +7,8 @@ import {
   DEFAULT_PROF_NAMES,
   toDateStr,
   recepcaoPodeMarcarAtendimentoFinalizado,
-  estaDentroExpedienteUbs,
-  MSG_FORA_EXPEDIENTE_UBS,
+  estaDentroJanelaSolicitacaoAgendamento,
+  msgForaJanelaSolicitacaoAgendamento,
   varianteVisitaDomiciliarNoCard,
   specAtendimentoHojeOcultoAposTurnos,
   specTemSessaoNoTurno,
@@ -17,14 +17,13 @@ import {
   reservaSolicitacaoAtiva,
   diasAtendimentoDefaultParaSpec,
   suspensaoRegistroNaoExpirado,
-  specSuspensaoAfetaAgenda,
   ORDEM_DIA_SEMANA_GRADE,
   normalizeAtendimentoDiasTurnosParaSpec,
   turnosDefaultParaSpecNoDia,
   parseAtendimentoSuspensoSlotKey,
-  suspensaoPontualSlotVisivelParaAgente,
 } from "../services/scheduleConfig";
 import { fraseVagasEsgotadasEncaixe } from "../services/whatsappSolicitacao";
+import { SessaoLabelComDestaqueTurno } from "./SessaoLabelDestaqueTurno";
 
 function dataHojeIso() {
   return toDateStr(new Date());
@@ -248,145 +247,11 @@ function recepcaoPrecisaFooterEncerrado(spec, atendimentoEncerradoMap, agora, on
   return false;
 }
 
-/** Há vaga livre na agenda ou sessão com solicitação por WhatsApp (ex.: fisioterapia). */
-function hasAnyVacancy(specs) {
-  return specs.some((spec) =>
-    spec.sessions.some((s) => {
-      if (s.waitlistEnabled) return true;
-      const tot = s.total ?? 0;
-      if (tot <= 0) return false;
-      return (s.used ?? 0) + (s.reserved ?? 0) < tot;
-    })
-  );
-}
-
-/**
- * Lista de avisos para agentes/direção: um item por turno encerrado (ou legado `turno` null).
- */
-function listaAvisosEncerradoAgente(specs, atendimentoEncerradoMap) {
-  const map = atendimentoEncerradoMap || {};
-  const out = [];
-  for (const spec of specs) {
-    const d = spec.atendimentoDate;
-    if (typeof d !== "string" || !d) continue;
-    const base = `${spec.key}_${d}`;
-    const hasM = specTemSessaoNoTurno(spec, "manha");
-    const hasT = specTemSessaoNoTurno(spec, "tarde");
-    if (map[base]) {
-      out.push({ spec, turno: null });
-      continue;
-    }
-    if (hasM && hasT) {
-      if (map[`${base}_manha`]) out.push({ spec, turno: "manha" });
-      if (map[`${base}_tarde`]) out.push({ spec, turno: "tarde" });
-    } else if (hasM && map[`${base}_manha`]) out.push({ spec, turno: "manha" });
-    else if (hasT && map[`${base}_tarde`]) out.push({ spec, turno: "tarde" });
-  }
-  return out;
-}
-
 function labelEscopoSuspensaoPontual(escopo) {
   if (escopo === "dia") return "dia inteiro";
   if (escopo === "manha") return "manhã";
   if (escopo === "tarde") return "tarde";
   return escopo;
-}
-
-function AvisoSuspensaoPontualAgente({ specKey, data, escopo, motivo, profissionaisMap }) {
-  const nome = nomeProfissionalFirestore(specKey, profissionaisMap);
-  const meta = SPEC_META[specKey];
-  const role = meta?.role || "";
-  const dataFmt = new Date(`${data}T12:00:00`).toLocaleDateString("pt-BR", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-  });
-  const turnoTxt = labelEscopoSuspensaoPontual(escopo);
-  const corpoTurno =
-    escopo === "dia"
-      ? "nesta data não haverá atendimento na UBS durante o dia inteiro."
-      : `não haverá atendimento na UBS no turno da ${turnoTxt}.`;
-  return (
-    <div style={styles.avisoSuspensaoAgente} role="status">
-      <p style={styles.avisoSuspensaoAgenteLinha}>
-        <strong>Suspensão pontual</strong> — {nome}
-        {role ? ` (${role})` : ""}: em <strong>{dataFmt}</strong> {corpoTurno}
-        {motivo ? (
-          <>
-            {" "}
-            <em style={{ fontWeight: 500 }}>Motivo:</em> {motivo}
-          </>
-        ) : null}
-      </p>
-    </div>
-  );
-}
-
-function AvisoSuspensaoAgente({ specKey, entry, profissionaisMap }) {
-  const nome = nomeProfissionalFirestore(specKey, profissionaisMap);
-  const meta = SPEC_META[specKey];
-  const role = meta?.role || "";
-  const desdeFmt = entry?.desde
-    ? new Date(`${entry.desde}T12:00:00`).toLocaleDateString("pt-BR", {
-        day: "numeric",
-        month: "long",
-        year: "numeric",
-      })
-    : "";
-  let fim = "";
-  if (entry?.indefinido) fim = "Prazo indeterminado.";
-  else if (entry?.ate)
-    fim = `Até ${new Date(`${entry.ate}T12:00:00`).toLocaleDateString("pt-BR", {
-      day: "numeric",
-      month: "long",
-      year: "numeric",
-    })}.`;
-  else fim = "Sem data fim cadastrada.";
-  return (
-    <div style={styles.avisoSuspensaoAgente} role="status">
-      <p style={styles.avisoSuspensaoAgenteLinha}>
-        <strong>Atendimento suspenso</strong> — {nome}
-        {role ? ` (${role})` : ""}: sem agendamento na UBS a partir de <strong>{desdeFmt}</strong>. {fim}
-      </p>
-    </div>
-  );
-}
-
-/** Agente/direção: aviso quando o encerramento está ativo (por turno, se aplicável). */
-function AvisoAtendimentoEncerradoAgente({ spec, turno, profissionaisMap }) {
-  const nome = nomeProfissionalFirestore(spec.key, profissionaisMap);
-  const hasM = specTemSessaoNoTurno(spec, "manha");
-  const hasT = specTemSessaoNoTurno(spec, "tarde");
-  let sufixoTurno;
-  if (turno === "manha") {
-    sufixoTurno = "da manhã";
-  } else if (turno === "tarde") {
-    sufixoTurno = "da tarde";
-  } else if (hasM && hasT) {
-    sufixoTurno = "da manhã e da tarde";
-  } else if (hasM && !hasT) {
-    sufixoTurno = "da manhã";
-  } else if (!hasM && hasT) {
-    sufixoTurno = "da tarde";
-  } else {
-    sufixoTurno = null;
-  }
-  return (
-    <div style={styles.avisoEncerradoAgente} role="status">
-      <p style={styles.avisoEncerradoAgenteLinha}>
-        {sufixoTurno != null ? (
-          <>
-            Atendimento encerrado para <strong>{nome}</strong> no turno {sufixoTurno}.
-          </>
-        ) : (
-          <>
-            Atendimento encerrado para <strong>{nome}</strong>.
-          </>
-        )}
-      </p>
-    </div>
-  );
 }
 
 export default function TabVagas({
@@ -474,8 +339,6 @@ export default function TabVagas({
     });
   }, [reativarDiasSel, modalReativarSpecKey]);
 
-  const dentroExpedienteUbs = estaDentroExpedienteUbs(agoraRecepcao);
-
   const specsLista = useMemo(() => {
     const base = (() => {
       if (isRecepcao) return specs;
@@ -484,17 +347,10 @@ export default function TabVagas({
     return base.filter((s) => !specAtendimentoHojeOcultoAposTurnos(s, agoraRecepcao));
   }, [specs, atendimentoEncerradoMap, isRecepcao, agoraRecepcao]);
 
-  /** Cartões ocultos por flag da recepção: mensagem por turno (ou legado) para agentes e direção. */
-  const avisosEncerradoAgente = useMemo(() => {
-    if (isRecepcao) return [];
-    return listaAvisosEncerradoAgente(specs, atendimentoEncerradoMap);
-  }, [specs, atendimentoEncerradoMap, isRecepcao]);
-
   const prev = specsLista.filter((s) => s.windowType === "prev");
   const same = specsLista.filter((s) => s.windowType === "same");
   const prevPorDia = agruparPrevPorDia(prev);
   const prevSecoes = secoesPrevOrdenadasPorData(prevPorDia);
-  const semVagasLivres = specsLista.length > 0 && !hasAnyVacancy(specsLista);
   const primeiroCartaoSuspender = useMemo(
     () => primeiroCartaoPorSpecEmOrdem(same, prevSecoes),
     [same, prevSecoes]
@@ -513,32 +369,6 @@ export default function TabVagas({
     );
   }, [isRecepcao, atendimentoSuspensoPorSpec]);
 
-  const avisosSuspensaoAgenteKeys = useMemo(() => {
-    if (isRecepcao) return [];
-    const m = atendimentoSuspensoPorSpec || {};
-    const hoje = dataHojeIso();
-    return Object.keys(m).filter((k) =>
-      specSuspensaoAfetaAgenda(k, m, hoje, atendimentoDiasAtivosPorSpec || {})
-    );
-  }, [isRecepcao, atendimentoSuspensoPorSpec, atendimentoDiasAtivosPorSpec]);
-
-  const avisosSuspensaoPontualAgente = useMemo(() => {
-    if (isRecepcao) return [];
-    const slots = atendimentoSuspensoSlots || {};
-    const hoje = dataHojeIso();
-    const diasCfg = atendimentoDiasAtivosPorSpec || {};
-    const out = [];
-    for (const key of Object.keys(slots)) {
-      const p = parseAtendimentoSuspensoSlotKey(key);
-      if (!p) continue;
-      if (!suspensaoPontualSlotVisivelParaAgente(p.specKey, p.data, hoje, diasCfg)) continue;
-      const motivo = typeof slots[key]?.motivo === "string" ? slots[key].motivo.trim() : "";
-      out.push({ key, ...p, motivo });
-    }
-    out.sort((a, b) => (a.data !== b.data ? a.data.localeCompare(b.data) : a.specKey.localeCompare(b.specKey)));
-    return out;
-  }, [isRecepcao, atendimentoSuspensoSlots, atendimentoDiasAtivosPorSpec]);
-
   const listaSuspensaoPontualRecepcao = useMemo(() => {
     if (!isRecepcao) return [];
     const slots = atendimentoSuspensoSlots || {};
@@ -556,28 +386,6 @@ export default function TabVagas({
   if (specs.length === 0 && !isRecepcao) {
     return (
       <div style={styles.wrap}>
-        {(avisosSuspensaoAgenteKeys.length > 0 || avisosSuspensaoPontualAgente.length > 0) && (
-          <div style={styles.avisoSuspensaoAgenteWrap}>
-            {avisosSuspensaoAgenteKeys.map((specKey) => (
-              <AvisoSuspensaoAgente
-                key={specKey}
-                specKey={specKey}
-                entry={atendimentoSuspensoPorSpec[specKey]}
-                profissionaisMap={profissionaisMap}
-              />
-            ))}
-            {avisosSuspensaoPontualAgente.map((row) => (
-              <AvisoSuspensaoPontualAgente
-                key={row.key}
-                specKey={row.specKey}
-                data={row.data}
-                escopo={row.escopo}
-                motivo={row.motivo}
-                profissionaisMap={profissionaisMap}
-              />
-            ))}
-          </div>
-        )}
         <div style={styles.empty}>
           <p style={{ fontSize: 15, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>
             Nenhum agendamento disponível hoje
@@ -591,16 +399,16 @@ export default function TabVagas({
     );
   }
 
-  if (specsLista.length === 0 && !isRecepcao && avisosEncerradoAgente.length === 0) {
+  if (specsLista.length === 0 && !isRecepcao) {
     return (
       <div style={styles.empty}>
         <p style={{ fontSize: 15, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>
           Nenhum cartão de atendimento visível
         </p>
-        <p style={{ fontSize: 13, color: "#64748B", lineHeight: 1.5 }}>
-          No dia do atendimento, os cartões somem após o horário do turno (manhã às 12h, tarde às 17h)
-          ou quando a recepção marcar como encerrado; nesse último caso, remover o aviso faz o cartão
-          voltar a aparecer no mesmo dia.
+          <p style={{ fontSize: 13, color: "#64748B", lineHeight: 1.5 }}>
+          No dia do atendimento, os cartões somem após o horário do turno (manhã às 12h, tarde às 18h) ou quando a
+          recepção marcar como encerrado. Suspensões, encerramentos e lembretes estão na aba{" "}
+          <strong>Avisos</strong>.
         </p>
       </div>
     );
@@ -608,59 +416,6 @@ export default function TabVagas({
 
   return (
     <div style={styles.wrap}>
-      {!isRecepcao && (avisosSuspensaoAgenteKeys.length > 0 || avisosSuspensaoPontualAgente.length > 0) && (
-        <div style={styles.avisoSuspensaoAgenteWrap}>
-          {avisosSuspensaoAgenteKeys.map((specKey) => (
-            <AvisoSuspensaoAgente
-              key={specKey}
-              specKey={specKey}
-              entry={atendimentoSuspensoPorSpec[specKey]}
-              profissionaisMap={profissionaisMap}
-            />
-          ))}
-          {avisosSuspensaoPontualAgente.map((row) => (
-            <AvisoSuspensaoPontualAgente
-              key={row.key}
-              specKey={row.specKey}
-              data={row.data}
-              escopo={row.escopo}
-              motivo={row.motivo}
-              profissionaisMap={profissionaisMap}
-            />
-          ))}
-        </div>
-      )}
-
-      {!isRecepcao && !dentroExpedienteUbs && (
-        <div style={styles.alertExpedienteUbs} role="status">
-          <p style={styles.alertExpedienteUbsTitle}>Fora do horário de expediente</p>
-          <p style={styles.alertExpedienteUbsText}>{MSG_FORA_EXPEDIENTE_UBS}</p>
-        </div>
-      )}
-
-      {!isRecepcao && avisosEncerradoAgente.length > 0 && (
-        <div style={styles.avisoEncerradoAgenteWrap}>
-          {avisosEncerradoAgente.map(({ spec, turno }) => (
-            <AvisoAtendimentoEncerradoAgente
-              key={`${spec.key}_${spec.atendimentoDate}_${turno ?? "legado"}`}
-              spec={spec}
-              turno={turno}
-              profissionaisMap={profissionaisMap}
-            />
-          ))}
-        </div>
-      )}
-
-      {!isRecepcao && semVagasLivres && (
-        <div style={styles.alertSemVagas} role="status">
-          <p style={styles.alertSemVagasTitle}>Não há mais vagas disponíveis</p>
-          <p style={styles.alertSemVagasText}>
-            Todas as vagas de agenda estão preenchidas no momento. Acompanhe novas aberturas pela
-            equipe ou pela recepção.
-          </p>
-        </div>
-      )}
-
       {isRecepcao && (
         <div style={styles.legend}>
           <LegendItem color="#DBEAFE" border="#93C5FD" label="Agenda: dia útil anterior ao atendimento" />
@@ -794,7 +549,7 @@ export default function TabVagas({
               isRecepcao={isRecepcao}
               onSlotAction={onSlotAction}
               onSolicitar={onSolicitar}
-              dentroExpedienteUbs={dentroExpedienteUbs}
+              agoraRecepcao={agoraRecepcao}
               atendimentoEncerradoMap={atendimentoEncerradoMap}
               onToggleAtendimentoEncerrado={onToggleAtendimentoEncerrado}
               mostrarBotaoEncerradoRecepcao={recepcaoPrecisaFooterEncerrado(
@@ -813,7 +568,6 @@ export default function TabVagas({
                 primeiroCartaoSuspender(spec)
               }
               onAbrirModalSuspender={isRecepcao ? setModalSuspenderSpecKey : undefined}
-              agoraRecepcao={agoraRecepcao}
               dentQuartaVisitaDomiciliarDesde={dentQuartaVisitaDomiciliarDesde}
               usuarioUid={usuarioUid}
             />
@@ -835,7 +589,7 @@ export default function TabVagas({
               isRecepcao={isRecepcao}
               onSlotAction={onSlotAction}
               onSolicitar={onSolicitar}
-              dentroExpedienteUbs={dentroExpedienteUbs}
+              agoraRecepcao={agoraRecepcao}
               atendimentoEncerradoMap={atendimentoEncerradoMap}
               onToggleAtendimentoEncerrado={onToggleAtendimentoEncerrado}
               mostrarBotaoEncerradoRecepcao={recepcaoPrecisaFooterEncerrado(
@@ -854,7 +608,6 @@ export default function TabVagas({
                 primeiroCartaoSuspender(spec)
               }
               onAbrirModalSuspender={isRecepcao ? setModalSuspenderSpecKey : undefined}
-              agoraRecepcao={agoraRecepcao}
               dentQuartaVisitaDomiciliarDesde={dentQuartaVisitaDomiciliarDesde}
               usuarioUid={usuarioUid}
             />
@@ -1196,9 +949,11 @@ function AgenteTurnoRow({
   dayKey,
   sessIdx,
   atendimentoDate,
+  windowType,
   onSolicitar,
   solicitacaoEncaminhamentoObrigatorio,
-  dentroExpedienteUbs = true,
+  dentroJanelaSolicitacao = true,
+  msgForaJanelaAgente = "",
   ocultarResumoVagas = false,
   usuarioUid = "",
 }) {
@@ -1209,7 +964,9 @@ function AgenteTurnoRow({
     };
     return (
       <div style={rowStyle}>
-        <p style={styles.sessLabel}>{sess.label}</p>
+        <p style={styles.sessLabel}>
+          <SessaoLabelComDestaqueTurno label={sess.label} />
+        </p>
         <div style={styles.agenteVisitaDomicLinha} role="status">
           <p style={styles.agenteVisitaDomicLinhaTitle}>Visitas domiciliares</p>
           <p style={styles.agenteVisitaDomicLinhaText}>
@@ -1247,7 +1004,7 @@ function AgenteTurnoRow({
   /** Fisioterapia e sessões com lista de espera: solicitação pelo WhatsApp mesmo com agenda cheia. */
   const podeSolicitar =
     typeof onSolicitar === "function" &&
-    dentroExpedienteUbs &&
+    dentroJanelaSolicitacao &&
     (isFisio || wl || livres > 0) &&
     !reservadaPorOutro;
   /** Esconde o aviso “vagas esgotadas” quando ainda há fluxo de lista de espera (fisio ou psicologia). */
@@ -1262,9 +1019,10 @@ function AgenteTurnoRow({
   return (
     <div style={rowStyle}>
       <p style={styles.sessLabel}>
-        {sess.label}
-        <MedicoBadge tipo={sess.medicoTipo} />
-        {sess.pccuOnly && <span style={styles.pccuTag}>PCCU</span>}
+        <SessaoLabelComDestaqueTurno label={sess.label}>
+          <MedicoBadge tipo={sess.medicoTipo} />
+          {sess.pccuOnly && <span style={styles.pccuTag}>PCCU</span>}
+        </SessaoLabelComDestaqueTurno>
       </p>
       {!ocultarResumoVagas && !ocultarEsgotadoPorListaEspera && (
         <p
@@ -1339,15 +1097,16 @@ function AgenteTurnoRow({
               solicitacaoEncaminhamentoObrigatorio,
               somenteEncaixe,
               coletaExamesRotina: !!sess.coletaExamesRotina,
+              windowType,
             })
           }
         >
           {somenteEncaixe ? "Solicitar encaixe" : "Solicitar agendamento"}
         </button>
       )}
-      {!dentroExpedienteUbs && (isFisio || wl || livres > 0) && (
-        <p style={styles.agenteTurnoHint}>{MSG_FORA_EXPEDIENTE_UBS}</p>
-      )}
+      {!dentroJanelaSolicitacao && (isFisio || wl || livres > 0) && msgForaJanelaAgente ? (
+        <p style={styles.agenteTurnoHint}>{msgForaJanelaAgente}</p>
+      ) : null}
     </div>
   );
 }
@@ -1473,7 +1232,6 @@ function SpecCard({
   isRecepcao,
   onSlotAction,
   onSolicitar,
-  dentroExpedienteUbs = true,
   atendimentoEncerradoMap = {},
   onToggleAtendimentoEncerrado,
   mostrarBotaoEncerradoRecepcao = false,
@@ -1483,6 +1241,10 @@ function SpecCard({
   dentQuartaVisitaDomiciliarDesde = "",
   usuarioUid = "",
 }) {
+  const windowType = spec.windowType;
+  const dentroJanelaSolicitacao =
+    isRecepcao || estaDentroJanelaSolicitacaoAgendamento(windowType, agoraRecepcao);
+  const msgForaJanelaAgente = isRecepcao ? "" : msgForaJanelaSolicitacaoAgendamento(windowType);
   const meta = SPEC_META[spec.key] || { role: "", av: "?", bg: "#F1F5F9", tc: "#475569" };
   const name = nomeProfissionalFirestore(spec.key, profissionaisMap);
   const indicesSessoesUi = useMemo(() => {
@@ -1553,26 +1315,6 @@ function SpecCard({
           </div>
         </div>
 
-        {visitaVariant === "vespera" && (
-          <div style={styles.visitaDomicBanner} role="status">
-            <p style={styles.visitaDomicBannerTitle}>Sem vagas para amanhã</p>
-            <p style={styles.visitaDomicBannerText}>
-              Na próxima quarta-feira, <strong>{name}</strong> não atende na unidade pela manhã — a agenda
-              está dedicada a <strong>visitas domiciliares</strong>. Não é possível agendar consulta na UBS
-              nesse turno.
-            </p>
-          </div>
-        )}
-        {visitaVariant === "hoje" && (
-          <div style={styles.visitaDomicBanner} role="status">
-            <p style={styles.visitaDomicBannerTitle}>Sem atendimento na unidade hoje</p>
-            <p style={styles.visitaDomicBannerText}>
-              Nesta data, <strong>{name}</strong> não realiza consultas na UBS: o atendimento odontológico desta
-              quarta-feira é exclusivamente em <strong>visita domiciliar</strong>.
-            </p>
-          </div>
-        )}
-
         {!isRecepcao && (
           <div style={styles.cardResumoAgente}>
             {indicesSessoesUi.map((sessIdx, arrIdx) => (
@@ -1584,9 +1326,11 @@ function SpecCard({
                 dayKey={spec.atendimentoDia}
                 sessIdx={sessIdx}
                 atendimentoDate={spec.atendimentoDate}
+                windowType={windowType}
                 onSolicitar={onSolicitar}
                 solicitacaoEncaminhamentoObrigatorio={spec.solicitacaoEncaminhamentoObrigatorio}
-                dentroExpedienteUbs={dentroExpedienteUbs}
+                dentroJanelaSolicitacao={dentroJanelaSolicitacao}
+                msgForaJanelaAgente={msgForaJanelaAgente}
                 ocultarResumoVagas={!!visitaVariant}
                 usuarioUid={usuarioUid}
               />
@@ -1691,7 +1435,9 @@ const SessionRow = memo(function SessionRow({
     return (
       <div style={styles.sessRow}>
         <div style={{ width: "100%", minWidth: 0 }}>
-          <p style={styles.sessLabel}>{sess.label}</p>
+          <p style={styles.sessLabel}>
+            <SessaoLabelComDestaqueTurno label={sess.label} />
+          </p>
           <div style={styles.agenteVisitaDomicLinha} role="status">
             <p style={styles.agenteVisitaDomicLinhaTitle}>Visitas domiciliares</p>
             <p style={styles.agenteVisitaDomicLinhaText}>
@@ -1707,9 +1453,10 @@ const SessionRow = memo(function SessionRow({
     return (
       <div style={styles.sessRowSomenteTurno}>
         <p style={styles.sessLabel}>
-          {sess.label}
-          <MedicoBadge tipo={sess.medicoTipo} />
-          {sess.pccuOnly && <span style={styles.pccuTag}>PCCU</span>}
+          <SessaoLabelComDestaqueTurno label={sess.label}>
+            <MedicoBadge tipo={sess.medicoTipo} />
+            {sess.pccuOnly && <span style={styles.pccuTag}>PCCU</span>}
+          </SessaoLabelComDestaqueTurno>
         </p>
       </div>
     );
@@ -1801,9 +1548,10 @@ const SessionRow = memo(function SessionRow({
       <div style={{ width: "100%", minWidth: 0 }}>
         <div style={styles.sessTitleRow}>
           <p style={styles.sessLabel}>
-            {sess.label}
-            <MedicoBadge tipo={sess.medicoTipo} />
-            {sess.pccuOnly && <span style={styles.pccuTag}>PCCU</span>}
+            <SessaoLabelComDestaqueTurno label={sess.label}>
+              <MedicoBadge tipo={sess.medicoTipo} />
+              {sess.pccuOnly && <span style={styles.pccuTag}>PCCU</span>}
+            </SessaoLabelComDestaqueTurno>
           </p>
           <span
             style={{
@@ -2097,25 +1845,6 @@ const styles = {
     cursor: "pointer",
     boxShadow: "0 2px 6px rgba(12, 68, 124, 0.25)",
   },
-  avisoSuspensaoAgenteWrap: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 8,
-    marginBottom: 16,
-  },
-  avisoSuspensaoAgente: {
-    padding: "10px 14px",
-    borderRadius: 10,
-    border: "1px solid #FECACA",
-    background: "linear-gradient(180deg, #FEF2F2 0%, #FFF1F2 100%)",
-  },
-  avisoSuspensaoAgenteLinha: {
-    margin: 0,
-    fontSize: 13,
-    fontWeight: 600,
-    color: "#991B1B",
-    lineHeight: 1.45,
-  },
   painelSuspRecepcao: {
     marginBottom: 22,
     padding: "16px 18px",
@@ -2185,63 +1914,6 @@ const styles = {
     cursor: "pointer",
   },
   empty: { textAlign: "center", padding: "48px 20px" },
-  alertSemVagas: {
-    marginBottom: 20,
-    padding: "16px 18px",
-    borderRadius: 12,
-    border: "1px solid #FECACA",
-    background: "linear-gradient(180deg, #FEF2F2 0%, #FFF1F2 100%)",
-  },
-  alertSemVagasTitle: {
-    margin: "0 0 6px",
-    fontSize: 15,
-    fontWeight: 700,
-    color: "#991B1B",
-  },
-  alertSemVagasText: {
-    margin: 0,
-    fontSize: 13,
-    color: "#7F1D1D",
-    lineHeight: 1.45,
-  },
-  alertExpedienteUbs: {
-    marginBottom: 20,
-    padding: "16px 18px",
-    borderRadius: 12,
-    border: "1px solid #FCD34D",
-    background: "linear-gradient(180deg, #FFFBEB 0%, #FEF3C7 100%)",
-  },
-  alertExpedienteUbsTitle: {
-    margin: "0 0 6px",
-    fontSize: 15,
-    fontWeight: 700,
-    color: "#92400E",
-  },
-  alertExpedienteUbsText: {
-    margin: 0,
-    fontSize: 13,
-    color: "#78350F",
-    lineHeight: 1.45,
-  },
-  avisoEncerradoAgenteWrap: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 8,
-    marginBottom: 16,
-  },
-  avisoEncerradoAgente: {
-    padding: "8px 12px",
-    borderRadius: 8,
-    border: "1px solid #BFDBFE",
-    background: "linear-gradient(180deg, #EFF6FF 0%, #DBEAFE 100%)",
-  },
-  avisoEncerradoAgenteLinha: {
-    margin: 0,
-    fontSize: 12,
-    fontWeight: 600,
-    color: "#1E3A8A",
-    lineHeight: 1.35,
-  },
   legend: {
     display: "flex",
     gap: 16,
@@ -2368,26 +2040,6 @@ const styles = {
     textTransform: "uppercase",
     letterSpacing: "0.04em",
   },
-  visitaDomicBanner: {
-    margin: "0 12px 10px",
-    padding: "10px 12px",
-    borderRadius: 8,
-    background: "linear-gradient(135deg, #F0FDFA 0%, #ECFEFF 100%)",
-    border: "1px solid #99F6E4",
-  },
-  visitaDomicBannerTitle: {
-    margin: "0 0 6px",
-    fontSize: 13,
-    fontWeight: 700,
-    color: "#0F766E",
-    lineHeight: 1.3,
-  },
-  visitaDomicBannerText: {
-    margin: 0,
-    fontSize: 12,
-    lineHeight: 1.5,
-    color: "#134E4A",
-  },
   /** Aviso compacto no resumo agente/direção (ex.: sexta tarde Dr. Patrick — visitas). */
   agenteVisitaDomicLinha: {
     marginTop: 6,
@@ -2444,7 +2096,7 @@ const styles = {
     display: "flex",
     alignItems: "center",
     flexWrap: "wrap",
-    gap: 4,
+    gap: 8,
     lineHeight: 1.35,
     minWidth: 0,
     flex: "1 1 140px",

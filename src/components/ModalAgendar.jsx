@@ -3,8 +3,8 @@ import { useState, useEffect, useRef } from "react";
 import {
   SPEC_META,
   toDateStr,
-  estaDentroExpedienteUbs,
-  MSG_FORA_EXPEDIENTE_UBS,
+  estaDentroJanelaSolicitacaoAgendamento,
+  msgForaJanelaSolicitacaoAgendamento,
 } from "../services/scheduleConfig";
 import {
   fraseVagasEsgotadasEncaixe,
@@ -18,6 +18,7 @@ import {
   PLACEHOLDER_CPF_SUS,
   ERRO_CPF_SUS_INCOMPLETO,
 } from "../utils/documentoCpfSus";
+import { SessaoLabelComDestaqueTurno } from "./SessaoLabelDestaqueTurno";
 
 export default function ModalAgendar({
   ctx,
@@ -41,7 +42,7 @@ export default function ModalAgendar({
   const [erro, setErro] = useState("");
   const [enviando, setEnviando] = useState(false);
   const [agoraExpediente, setAgoraExpediente] = useState(() => new Date());
-  const foraExpedienteUbs = !estaDentroExpedienteUbs(agoraExpediente);
+  const foraJanelaSolicitacao = !estaDentroJanelaSolicitacaoAgendamento(ctx.windowType, agoraExpediente);
 
   useEffect(() => {
     const t = setInterval(() => setAgoraExpediente(new Date()), 30_000);
@@ -99,6 +100,7 @@ export default function ModalAgendar({
     ctx.pccuOnly,
     ctx.livresEncaixe,
     ctx.sessLabel,
+    ctx.windowType,
   ]);
 
   useEffect(() => {
@@ -234,8 +236,8 @@ export default function ModalAgendar({
 
   async function submit() {
     setErro("");
-    if (!estaDentroExpedienteUbs(new Date())) {
-      setErro(MSG_FORA_EXPEDIENTE_UBS);
+    if (!estaDentroJanelaSolicitacaoAgendamento(ctx.windowType, new Date())) {
+      setErro(msgForaJanelaSolicitacaoAgendamento(ctx.windowType));
       return;
     }
     if (!recepcaoWhatsappOk) {
@@ -447,7 +449,14 @@ export default function ModalAgendar({
             </p>
             <p style={S.sub}>
               {nome}
-              {ctx.sessLabel ? ` · ${ctx.sessLabel}` : ""}
+              {ctx.sessLabel ? (
+                <>
+                  {" · "}
+                  <span style={S.subSessaoWrap}>
+                    <SessaoLabelComDestaqueTurno label={ctx.sessLabel} />
+                  </span>
+                </>
+              ) : null}
               {ctx.atendimentoDate
                 ? ` · Atend.: ${new Date(ctx.atendimentoDate + "T12:00:00").toLocaleDateString("pt-BR")}`
                 : ""}
@@ -465,7 +474,10 @@ export default function ModalAgendar({
             <strong>Data do atendimento:</strong> {dataAtendimentoFmt || "—"}
           </p>
           <p style={S.resumoLine}>
-            <strong>Turno (horário):</strong> {ctx.sessLabel || "—"}
+            <strong>Turno (horário):</strong>{" "}
+            <span style={S.resumoTurnoWrap}>
+              <SessaoLabelComDestaqueTurno label={ctx.sessLabel} />
+            </span>
           </p>
           <p style={S.resumoHint}>
             {isEncaminhamentoObrigatorio
@@ -721,15 +733,15 @@ export default function ModalAgendar({
           </Field>
         </div>
 
-        {(erro || foraExpedienteUbs) && (
-          <p style={S.erro}>{erro || MSG_FORA_EXPEDIENTE_UBS}</p>
+        {(erro || foraJanelaSolicitacao) && (
+          <p style={S.erro}>{erro || msgForaJanelaSolicitacaoAgendamento(ctx.windowType)}</p>
         )}
 
         <div style={S.actions}>
           <button style={S.btnCancel} onClick={onClose} disabled={enviando}>
             Cancelar
           </button>
-          <button style={S.btnOk} onClick={submit} disabled={enviando || foraExpedienteUbs}>
+          <button style={S.btnOk} onClick={submit} disabled={enviando || foraJanelaSolicitacao}>
             {enviando ? "Enviando…" : "Enviar solicitação"}
           </button>
         </div>
@@ -811,6 +823,21 @@ const S = {
   },
   title: { fontSize: 15, fontWeight: 600, color: "#0F172A", margin: 0 },
   sub: { fontSize: 12, color: "#64748B", margin: 0 },
+  /** Alinha pill de turno com o subtítulo do cabeçalho. */
+  subSessaoWrap: {
+    display: "inline-flex",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 6,
+    verticalAlign: "middle",
+  },
+  resumoTurnoWrap: {
+    display: "inline-flex",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 6,
+    verticalAlign: "middle",
+  },
   body: {},
   fisioTituloCampos: {
     fontSize: 13,

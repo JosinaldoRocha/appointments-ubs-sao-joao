@@ -486,8 +486,8 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
               Escolha uma <strong>quarta-feira</strong> de início. A partir dela, a cada <strong>15 dias</strong>{" "}
               (quinzenal: <strong>uma quarta sim, outra não</strong>) a manhã fica{" "}
               <strong>reservada para visitas domiciliares</strong> (sem vagas na unidade nesse turno). No{" "}
-              <strong>dia anterior</strong> a cada quarta de visitas, agentes de saúde e direção veem um aviso no
-              sistema. Altere ou limpe a data quando precisar.
+              <strong>dia anterior</strong> a cada quarta de visitas, agentes de saúde e direção veem o lembrete na aba{" "}
+              <strong>Avisos</strong>. Altere ou limpe a data quando precisar.
             </p>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
               <label style={{ ...S.label, margin: 0 }}>Primeira quarta (início)</label>
