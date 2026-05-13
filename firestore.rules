@@ -152,10 +152,16 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Configuração global (feriados, Fernando, PCCU): todos leem; recepção edita
+    // Configuração global: todos leem; recepção edita; direção só o cronograma institucional
     match /settings/{id} {
       allow read:  if isLoggedIn();
-      allow write: if isRecepcao();
+      allow delete: if isRecepcao();
+      allow create: if isRecepcao()
+        || (isDiretor()
+          && request.resource.data.keys().hasOnly(['cronogramaUbs', 'atualizadoEm']));
+      allow update: if isRecepcao()
+        || (isDiretor()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['cronogramaUbs', 'atualizadoEm']));
     }
 
   }
