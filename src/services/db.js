@@ -28,6 +28,7 @@ import {
   normalizeAtendimentoDiasTurnosParaSpec,
   parseAtendimentoSuspensoSlotKey,
 } from "./scheduleConfig";
+import { normalizeCronogramaUbs, cronogramaUbsVazio } from "./cronogramaUbs";
 
 const SETTINGS_ID = "ubs";
 /** Sessão única de recepcionista: `settings/sessaoRecepcao` — só um `uid` ativo por vez. */
@@ -46,6 +47,7 @@ const EMPTY_SETTINGS = {
   atendimentoSuspensoSlots: {},
   atendimentoDiasAtivosPorSpec: {},
   atendimentoDiasTurnosPorSpec: {},
+  cronogramaUbs: cronogramaUbsVazio(),
 };
 
 const DIAS_SEMANA_SPEC = new Set(["segunda", "terca", "quarta", "quinta", "sexta"]);
@@ -132,6 +134,7 @@ function normalizeSettingsData(raw = {}) {
     atendimentoSuspensoSlots: normalizeAtendimentoSuspensoSlots(d.atendimentoSuspensoSlots),
     atendimentoDiasAtivosPorSpec: normalizeAtendimentoDiasAtivosPorSpec(d.atendimentoDiasAtivosPorSpec),
     atendimentoDiasTurnosPorSpec: normalizeAtendimentoDiasTurnosPorSpecGlobal(d.atendimentoDiasTurnosPorSpec),
+    cronogramaUbs: normalizeCronogramaUbs(d.cronogramaUbs),
   };
 }
 
@@ -232,6 +235,11 @@ export async function updateSettings(partial) {
     { ...partial, atualizadoEm: serverTimestamp() },
     { merge: true }
   );
+}
+
+/** Publica o cronograma semanal da UBS em `settings/ubs.cronogramaUbs`. */
+export async function updateCronogramaUbs(cronograma) {
+  await updateSettings({ cronogramaUbs: normalizeCronogramaUbs(cronograma) });
 }
 
 // ── SESSÃO ÚNICA RECEPCIONISTA ───────────────────────────────────
