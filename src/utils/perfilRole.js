@@ -26,3 +26,9 @@ export function isAgenteOuDiretorPerfil(perfil) {
   const r = rulePerfil(perfil);
   return r === "agente" || r === "diretor";
 }
+
+/** Cronograma institucional da UBS: recepção e direção editam; demais perfis só leem. */
+export function podeEditarCronogramaUbs(perfil) {
+  const r = rulePerfil(perfil);
+  return r === "recepcao" || r === "diretor";
+}
