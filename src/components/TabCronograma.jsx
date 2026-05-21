@@ -6,44 +6,120 @@ import {
   CRONOGRAMA_TURNO_LABEL,
   DAY_LABEL,
   ORDEM_DIA_SEMANA_GRADE,
+  chaveProfissionalCronograma,
   cronogramaTemItens,
   cronogramaUbsIguais,
+  filtrarMapaCronogramaPorProfissional,
   itensCronogramaPorDiaTurno,
   labelCategoria,
   labelTipoAtendimento,
   normalizeCronogramaUbs,
   novoItemCronogramaRascunho,
   prepararItemCronogramaParaSalvar,
+  profissionaisUnicosNoCronograma,
   tiposAtendimentoParaCategoria,
   validarItemCronogramaRascunho,
 } from "../services/cronogramaUbs";
+import { filtrarSpecKeysAtivos } from "../services/scheduleConfig";
 
-export default function TabCronograma({ cronogramaUbs, profNames = {}, podeEditar, showToast }) {
+export default function TabCronograma({
+  cronogramaUbs,
+  specKeysDesativados = [],
+  profNames = {},
+  podeEditar,
+  showToast,
+}) {
   const publicado = useMemo(() => normalizeCronogramaUbs(cronogramaUbs), [cronogramaUbs]);
   const [editando, setEditando] = useState(false);
   const [rascunho, setRascunho] = useState(publicado);
   const [form, setForm] = useState(() => novoItemCronogramaRascunho());
+  const [itemEditandoId, setItemEditandoId] = useState(null);
+  const [profFiltro, setProfFiltro] = useState(null);
   const [salvando, setSalvando] = useState(false);
 
   useEffect(() => {
-    if (!editando) setRascunho(publicado);
+    if (!editando) {
+      setRascunho(publicado);
+      setItemEditandoId(null);
+      setProfFiltro(null);
+    }
   }, [publicado, editando]);
+
+  const categoriasAtivas = useMemo(() => {
+    const keys = filtrarSpecKeysAtivos(
+      CRONOGRAMA_CATEGORIAS.map((c) => c.key),
+      specKeysDesativados
+    );
+    return CRONOGRAMA_CATEGORIAS.filter((c) => keys.includes(c.key));
+  }, [specKeysDesativados]);
 
   const mapaPublicado = useMemo(() => itensCronogramaPorDiaTurno(publicado), [publicado]);
   const mapaRascunho = useMemo(() => itensCronogramaPorDiaTurno(rascunho), [rascunho]);
+  const profissionaisLista = useMemo(
+    () => profissionaisUnicosNoCronograma(editando ? rascunho : publicado),
+    [editando, rascunho, publicado]
+  );
+  const mapaExibicao = useMemo(() => {
+    const base = editando ? mapaRascunho : mapaPublicado;
+    return filtrarMapaCronogramaPorProfissional(base, profFiltro);
+  }, [editando, mapaRascunho, mapaPublicado, profFiltro]);
   const tiposForm = tiposAtendimentoParaCategoria(form.categoria);
   const rascunhoIgualPublicado = cronogramaUbsIguais(rascunho, publicado);
 
+  function limparFormulario(categoria = form.categoria) {
+    setForm(novoItemCronogramaRascunho(categoria));
+    setItemEditandoId(null);
+  }
+
   function iniciarEdicao() {
     setRascunho(publicado);
-    setForm(novoItemCronogramaRascunho());
+    limparFormulario();
+    setProfFiltro(null);
     setEditando(true);
   }
 
   function cancelar() {
     setRascunho(publicado);
-    setForm(novoItemCronogramaRascunho());
+    limparFormulario();
+    setProfFiltro(null);
     setEditando(false);
+  }
+
+  function aoSelecionarProfissional(chave) {
+    if (!chave) {
+      setProfFiltro(null);
+      return;
+    }
+    const prof = profissionaisLista.find((p) => p.chave === chave);
+    if (!prof) return;
+    setProfFiltro(prof);
+    if (editando && !itemEditandoId) {
+      setForm((prev) => ({
+        ...novoItemCronogramaRascunho(prof.categoria),
+        nome: prof.nome,
+        categoria: prof.categoria,
+        tipos: tiposAtendimentoParaCategoria(prof.categoria)[0]
+          ? [tiposAtendimentoParaCategoria(prof.categoria)[0].key]
+          : [],
+      }));
+    }
+  }
+
+  function iniciarEdicaoItem(item) {
+    setForm({
+      id: item.id,
+      categoria: item.categoria,
+      nome: item.nome,
+      dia: item.dia,
+      turno: item.turno,
+      tipos: [...item.tipos],
+    });
+    setItemEditandoId(item.id);
+    setProfFiltro({
+      categoria: item.categoria,
+      nome: item.nome,
+      chave: chaveProfissionalCronograma(item.categoria, item.nome),
+    });
   }
 
   async function salvar() {
@@ -79,21 +155,43 @@ export default function TabCronograma({ cronogramaUbs, profNames = {}, podeEdita
     });
   }
 
-  function adicionarItem() {
+  function salvarItemFormulario() {
     const erro = validarItemCronogramaRascunho(form);
     if (erro) {
       showToast(erro, "danger");
       return;
     }
-    const item = prepararItemCronogramaParaSalvar(form, `item_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
-    setRascunho((prev) => normalizeCronogramaUbs({ ...prev, itens: [...prev.itens, item] }));
-    setForm(novoItemCronogramaRascunho(form.categoria));
+    const eraEdicao = !!itemEditandoId;
+    const id =
+      itemEditandoId ||
+      `item_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const item = prepararItemCronogramaParaSalvar(form, id);
+    if (!item) return;
+    setRascunho((prev) => {
+      const existe = prev.itens.some((i) => i.id === item.id);
+      const itens = existe
+        ? prev.itens.map((i) => (i.id === item.id ? item : i))
+        : [...prev.itens, item];
+      return normalizeCronogramaUbs({ ...prev, itens });
+    });
+    const cat = form.categoria;
+    limparFormulario(cat);
+    if (profFiltro) {
+      setForm({
+        ...novoItemCronogramaRascunho(cat),
+        categoria: profFiltro.categoria,
+        nome: profFiltro.nome,
+        tipos: tiposAtendimentoParaCategoria(cat)[0] ? [tiposAtendimentoParaCategoria(cat)[0].key] : [],
+      });
+    }
+    showToast(eraEdicao ? "Atendimento atualizado." : "Atendimento adicionado.", "success");
   }
 
   function removerItem(id) {
     setRascunho((prev) =>
       normalizeCronogramaUbs({ ...prev, itens: prev.itens.filter((item) => item.id !== id) })
     );
+    if (itemEditandoId === id) limparFormulario();
   }
 
   return (
@@ -113,10 +211,34 @@ export default function TabCronograma({ cronogramaUbs, profNames = {}, podeEdita
         )}
       </div>
 
+      {(editando || profissionaisLista.length > 0) && (
+        <div style={S.filtroWrap}>
+          <label style={S.label} htmlFor="cronograma-prof-filtro">
+            {editando ? "Editar cronograma por profissional" : "Ver cronograma por profissional"}
+          </label>
+          <select
+            id="cronograma-prof-filtro"
+            style={S.inputFiltro}
+            value={profFiltro?.chave || ""}
+            onChange={(e) => aoSelecionarProfissional(e.target.value)}
+            disabled={salvando}
+          >
+            <option value="">Todos os profissionais</option>
+            {profissionaisLista.map((p) => (
+              <option key={p.chave} value={p.chave}>
+                {p.nome} — {labelCategoria(p.categoria)}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       {editando ? (
         <>
           <div style={S.card}>
-            <p style={S.sectionTitle}>Adicionar atendimento semanal</p>
+            <p style={S.sectionTitle}>
+              {itemEditandoId ? "Editar atendimento semanal" : "Adicionar atendimento semanal"}
+            </p>
             <div style={S.formGrid}>
               <Field label="Categoria do profissional">
                 <select
@@ -125,7 +247,7 @@ export default function TabCronograma({ cronogramaUbs, profNames = {}, podeEdita
                   onChange={(e) => aoMudarCategoria(e.target.value)}
                   disabled={salvando}
                 >
-                  {CRONOGRAMA_CATEGORIAS.map((c) => (
+                  {categoriasAtivas.map((c) => (
                     <option key={c.key} value={c.key}>
                       {c.label}
                     </option>
@@ -186,12 +308,43 @@ export default function TabCronograma({ cronogramaUbs, profNames = {}, podeEdita
                 ))}
               </div>
             </div>
-            <button type="button" style={S.btnAdicionar} disabled={salvando} onClick={adicionarItem}>
-              Adicionar ao cronograma
-            </button>
+            <div style={S.formAcoes}>
+              <button type="button" style={S.btnAdicionar} disabled={salvando} onClick={salvarItemFormulario}>
+                {itemEditandoId ? "Salvar alterações" : "Adicionar ao cronograma"}
+              </button>
+              {itemEditandoId && (
+                <button
+                  type="button"
+                  style={S.btnCancelarForm}
+                  disabled={salvando}
+                  onClick={() => {
+                    const cat = profFiltro?.categoria || form.categoria;
+                    limparFormulario(cat);
+                    if (profFiltro) {
+                      setForm({
+                        ...novoItemCronogramaRascunho(cat),
+                        categoria: profFiltro.categoria,
+                        nome: profFiltro.nome,
+                        tipos: tiposAtendimentoParaCategoria(cat)[0]
+                          ? [tiposAtendimentoParaCategoria(cat)[0].key]
+                          : [],
+                      });
+                    }
+                  }}
+                >
+                  Cancelar edição
+                </button>
+              )}
+            </div>
           </div>
 
-          <CronogramaGrade mapa={mapaRascunho} editavel onRemover={removerItem} />
+          <CronogramaGrade
+            mapa={mapaExibicao}
+            editavel
+            onRemover={removerItem}
+            onEditar={iniciarEdicaoItem}
+            itemEditandoId={itemEditandoId}
+          />
 
           <div style={S.actions}>
             <button
@@ -208,7 +361,7 @@ export default function TabCronograma({ cronogramaUbs, profNames = {}, podeEdita
           </div>
         </>
       ) : cronogramaTemItens(publicado) ? (
-        <CronogramaGrade mapa={mapaPublicado} />
+        <CronogramaGrade mapa={mapaExibicao} />
       ) : (
         <div style={S.vazio} role="status">
           <p style={S.vazioTitulo}>Nenhum cronograma publicado ainda.</p>
@@ -223,7 +376,7 @@ export default function TabCronograma({ cronogramaUbs, profNames = {}, podeEdita
   );
 }
 
-function CronogramaGrade({ mapa, editavel = false, onRemover }) {
+function CronogramaGrade({ mapa, editavel = false, onRemover, onEditar, itemEditandoId = null }) {
   return (
     <div style={S.grade}>
       {ORDEM_DIA_SEMANA_GRADE.map((dia) => (
@@ -246,9 +399,21 @@ function CronogramaGrade({ mapa, editavel = false, onRemover }) {
                             <span style={S.itemCategoria}>{labelCategoria(item.categoria)}</span>
                           </div>
                           {editavel && (
-                            <button type="button" style={S.btnRemover} onClick={() => onRemover(item.id)}>
-                              Remover
-                            </button>
+                            <div style={S.itemAcoes}>
+                              <button
+                                type="button"
+                                style={{
+                                  ...S.btnEditarItem,
+                                  ...(itemEditandoId === item.id ? S.btnEditarItemAtivo : {}),
+                                }}
+                                onClick={() => onEditar?.(item)}
+                              >
+                                Editar
+                              </button>
+                              <button type="button" style={S.btnRemover} onClick={() => onRemover(item.id)}>
+                                Remover
+                              </button>
+                            </div>
                           )}
                         </div>
                         <div style={S.tags}>
@@ -330,13 +495,39 @@ const S = {
   tiposWrap: { marginTop: 12 },
   tiposLista: { display: "flex", flexDirection: "column", gap: 8, marginTop: 8 },
   tipoChk: { display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#334155", cursor: "pointer" },
+  filtroWrap: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+    marginBottom: 14,
+    maxWidth: 420,
+  },
+  inputFiltro: {
+    fontFamily: "inherit",
+    fontSize: 13,
+    color: "#0F172A",
+    border: "1px solid #CBD5E1",
+    borderRadius: 8,
+    padding: "8px 10px",
+    background: "#fff",
+  },
+  formAcoes: { display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" },
   btnAdicionar: {
-    marginTop: 14,
     fontSize: 13,
     fontWeight: 600,
     color: "#0C447C",
     background: "#E6F1FB",
     border: "1px solid #BFDBFE",
+    borderRadius: 8,
+    padding: "8px 14px",
+    cursor: "pointer",
+  },
+  btnCancelarForm: {
+    fontSize: 13,
+    fontWeight: 600,
+    color: "#475569",
+    background: "#F1F5F9",
+    border: "1px solid #E2E8F0",
     borderRadius: 8,
     padding: "8px 14px",
     cursor: "pointer",
@@ -388,6 +579,21 @@ const S = {
   itemTopo: { display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" },
   itemNome: { display: "block", fontSize: 13, color: "#0F172A" },
   itemCategoria: { display: "block", fontSize: 11, color: "#64748B", marginTop: 2 },
+  itemAcoes: { display: "flex", gap: 6, flexShrink: 0 },
+  btnEditarItem: {
+    fontSize: 11,
+    color: "#0C447C",
+    background: "#E6F1FB",
+    border: "1px solid #BFDBFE",
+    borderRadius: 6,
+    padding: "4px 8px",
+    cursor: "pointer",
+  },
+  btnEditarItemAtivo: {
+    background: "#0C447C",
+    color: "#fff",
+    borderColor: "#0C447C",
+  },
   btnRemover: {
     fontSize: 11,
     color: "#B91C1C",
@@ -396,7 +602,6 @@ const S = {
     borderRadius: 6,
     padding: "4px 8px",
     cursor: "pointer",
-    flexShrink: 0,
   },
   tags: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 },
   tag: {
