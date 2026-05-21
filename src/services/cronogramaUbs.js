@@ -24,13 +24,20 @@ export const CRONOGRAMA_TIPOS_POR_CATEGORIA = {
     { key: "clinico", label: "Atendimento clínico geral" },
     { key: "gestantes", label: "Atendimento para gestantes" },
     { key: "receitas", label: "Troca de receitas" },
+    { key: "visita_domiciliar", label: "Visita domiciliar" },
   ],
   enfermeira: [
     { key: "enfermagem", label: "Atendimento de enfermagem" },
     { key: "pccu", label: "PCCU" },
   ],
-  dentFernando: [{ key: "odontologia", label: "Atendimento odontológico" }],
-  dentPatrick: [{ key: "odontologia", label: "Atendimento odontológico" }],
+  dentFernando: [
+    { key: "odontologia", label: "Atendimento odontológico" },
+    { key: "visita_domiciliar", label: "Visita domiciliar" },
+  ],
+  dentPatrick: [
+    { key: "odontologia", label: "Atendimento odontológico" },
+    { key: "visita_domiciliar", label: "Visita domiciliar" },
+  ],
   psicologa: [{ key: "psicologia", label: "Atendimento psicológico" }],
   fisio: [{ key: "fisioterapia", label: "Atendimento de fisioterapia" }],
   nutricionista: [{ key: "nutricao", label: "Atendimento nutricional" }],
@@ -136,6 +143,44 @@ export function cronogramaUbsIguais(a, b) {
 
 export function cronogramaTemItens(cronograma) {
   return normalizeCronogramaUbs(cronograma).itens.length > 0;
+}
+
+/** Chave estável para agrupar itens do mesmo profissional (categoria + nome). */
+export function chaveProfissionalCronograma(categoria, nome) {
+  return `${categoria}::${String(nome || "").trim()}`;
+}
+
+/** Profissionais distintos no cronograma, ordenados por categoria e nome. */
+export function profissionaisUnicosNoCronograma(cronograma) {
+  const seen = new Map();
+  for (const item of normalizeCronogramaUbs(cronograma).itens) {
+    const k = chaveProfissionalCronograma(item.categoria, item.nome);
+    if (!seen.has(k)) {
+      seen.set(k, { categoria: item.categoria, nome: item.nome, chave: k });
+    }
+  }
+  return [...seen.values()].sort((a, b) => {
+    const ca = labelCategoria(a.categoria).localeCompare(labelCategoria(b.categoria), "pt-BR");
+    if (ca !== 0) return ca;
+    return a.nome.localeCompare(b.nome, "pt-BR");
+  });
+}
+
+export function itemPertenceAoProfissional(item, prof) {
+  if (!prof) return true;
+  return chaveProfissionalCronograma(item.categoria, item.nome) === prof.chave;
+}
+
+export function filtrarMapaCronogramaPorProfissional(mapa, prof) {
+  if (!prof) return mapa;
+  const out = {};
+  for (const dia of ORDEM_DIA_SEMANA_GRADE) {
+    out[dia] = { manha: [], tarde: [] };
+    for (const turno of CRONOGRAMA_TURNOS) {
+      out[dia][turno] = (mapa[dia]?.[turno] || []).filter((item) => itemPertenceAoProfissional(item, prof));
+    }
+  }
+  return out;
 }
 
 export function itensCronogramaPorDiaTurno(cronograma) {

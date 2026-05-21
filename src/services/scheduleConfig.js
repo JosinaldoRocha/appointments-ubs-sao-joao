@@ -28,12 +28,396 @@ export const DEFAULT_PROF_NAMES = {
   nutricionista:  "Nutricionista",
 };
 
-/** Tipos de sessão do médico (UI / filtros) */
+const SPEC_KEYS_VALIDOS = new Set(Object.keys(DEFAULT_PROF_NAMES));
+
+/** Modo de liberação da agenda para agentes/direção. */
+export const AGENDA_MODO = {
+  PADRAO: "padrao",
+  DIA_UTIL_ANTERIOR: "dia_util_anterior",
+  QUALQUER_DIA_UTIL: "qualquer_dia_util",
+  /** Agendamento só nos dias da semana escolhidos pela recepção (antes do atendimento). */
+  DIAS_AGENDAMENTO: "dias_agendamento",
+  /** @deprecated — leitura legada; gravar como `dias_agendamento`. */
+  COLETA_EXAMES: "coleta_exames",
+};
+
+export const AGENDA_MODO_OPCOES = [
+  {
+    value: AGENDA_MODO.PADRAO,
+    label: "Padrão da especialidade (ex.: dia útil anterior ao atendimento)",
+  },
+  {
+    value: AGENDA_MODO.DIA_UTIL_ANTERIOR,
+    label: "Dia útil anterior ao atendimento",
+  },
+  {
+    value: AGENDA_MODO.QUALQUER_DIA_UTIL,
+    label: "Qualquer dia útil antes do atendimento",
+  },
+  {
+    value: AGENDA_MODO.DIAS_AGENDAMENTO,
+    label: "Dias específicos da semana",
+  },
+];
+
+/** Normaliza modo salvo no Firestore (`coleta_exames` → `dias_agendamento`). */
+export function normalizarAgendaModo(modo) {
+  if (modo === AGENDA_MODO.COLETA_EXAMES) return AGENDA_MODO.DIAS_AGENDAMENTO;
+  return modo;
+}
+
+export function isModoDiasAgendamento(modo) {
+  const m = normalizarAgendaModo(modo);
+  return m === AGENDA_MODO.DIAS_AGENDAMENTO;
+}
+
+/** Dias da semana (chaves da grade) em que agentes podem agendar, quando o modo é `dias_agendamento`. */
+export function normalizeDiasAgendamentoLista(raw) {
+  if (!Array.isArray(raw)) return [];
+  const ordem = new Map(ORDEM_DIA_SEMANA_GRADE.map((d, i) => [d, i]));
+  return [
+    ...new Set(
+      raw.filter((d) => typeof d === "string" && ordem.has(d.trim())).map((d) => d.trim())
+    ),
+  ].sort((a, b) => ordem.get(a) - ordem.get(b));
+}
+
+/** Padrão em código (ex.: coleta de exames: sexta, segunda e terça antes da quarta). */
+export function defaultDiasAgendamentoParaSpec(specKey) {
+  if (specKey === "tecnicoEnfermagem") return ["sexta", "segunda", "terca"];
+  return [];
+}
+
+/** Dias efetivos para liberar cartão `prev` no modo dias específicos. */
+export function resolveDiasAgendamento(specKey, profCfg) {
+  const modo = normalizarAgendaModo(profCfg?.agendaModo);
+  if (modo !== AGENDA_MODO.DIAS_AGENDAMENTO) return null;
+  const dias = normalizeDiasAgendamentoLista(profCfg?.diasAgendamento);
+  if (dias.length) return dias;
+  return defaultDiasAgendamentoParaSpec(specKey);
+}
+
+export function isSpecKeyCustom(specKey) {
+  return typeof specKey === "string" && specKey.startsWith("custom_");
+}
+
+export function specKeyValido(specKey) {
+  const k = typeof specKey === "string" ? specKey.trim() : "";
+  return SPEC_KEYS_VALIDOS.has(k) || isSpecKeyCustom(k);
+}
+
+/** Profissionais removidos da agenda pela recepção (`settings/ubs.specKeysDesativados`). */
+export function normalizeSpecKeysDesativados(raw) {
+  if (!Array.isArray(raw)) return [];
+  return [
+    ...new Set(
+      raw
+        .filter((k) => typeof k === "string" && specKeyValido(k.trim()))
+        .map((k) => k.trim())
+    ),
+  ];
+}
+
+export function specKeyEstaDesativado(specKey, specKeysDesativados) {
+  if (typeof specKey !== "string" || !specKey.trim()) return false;
+  const set = new Set(normalizeSpecKeysDesativados(specKeysDesativados));
+  return set.has(specKey.trim());
+}
+
+/** Filtra chaves da grade (`DEFAULT_PROF_NAMES`) que ainda estão ativas na UBS. */
+export function filtrarSpecKeysAtivos(keys, specKeysDesativados) {
+  const off = new Set(normalizeSpecKeysDesativados(specKeysDesativados));
+  return keys.filter((k) => !off.has(k));
+}
+
+/** Tipos de sessão do médico (UI / filtros / configuração na recepção) */
 export const MEDICO_TIPO = {
   receitas:  { label: "Troca de receitas", short: "Receitas",  color: "#7C3AED", bg: "#EDE9FE" },
   clinico:   { label: "Clínico geral",     short: "Clínico",   color: "#0C447C", bg: "#DBEAFE" },
   gestantes: { label: "Gestantes",         short: "Gestantes", color: "#BE185D", bg: "#FCE7F3" },
+  visitas_domiciliares: {
+    label: "Visitas domiciliares",
+    short: "Visitas dom.",
+    color: "#0F766E",
+    bg: "#CCFBF1",
+  },
 };
+
+const MEDICO_TIPOS_VALIDOS = new Set(Object.keys(MEDICO_TIPO));
+
+/** Uma linha da agenda do médico configurada pela recepção. */
+export function normalizeMedicoSessoesConfig(raw) {
+  if (!Array.isArray(raw)) return [];
+  const diasSet = new Set(ORDEM_DIA_SEMANA_GRADE);
+  const out = [];
+  const seen = new Set();
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const medicoTipo = typeof item.medicoTipo === "string" ? item.medicoTipo.trim() : "";
+    const dia = typeof item.dia === "string" ? item.dia.trim() : "";
+    const turno = item.turno === "manha" || item.turno === "tarde" ? item.turno : "";
+    const vagas = Number(item.vagas);
+    if (!MEDICO_TIPOS_VALIDOS.has(medicoTipo) || !diasSet.has(dia) || !turno) continue;
+    if (!Number.isFinite(vagas) || vagas < 0 || vagas > 99) continue;
+    const uk = `${medicoTipo}|${dia}|${turno}`;
+    if (seen.has(uk)) continue;
+    seen.add(uk);
+    const id =
+      typeof item.id === "string" && item.id.trim()
+        ? item.id.trim().slice(0, 80)
+        : `ms_${medicoTipo}_${dia}_${turno}`;
+    out.push({
+      id,
+      medicoTipo,
+      dia,
+      turno,
+      vagas: Math.round(vagas),
+    });
+  }
+  const ordemDia = new Map(ORDEM_DIA_SEMANA_GRADE.map((d, i) => [d, i]));
+  out.sort(
+    (a, b) =>
+      ordemDia.get(a.dia) - ordemDia.get(b.dia) ||
+      (a.turno === "manha" ? 0 : 1) - (b.turno === "manha" ? 0 : 1) ||
+      a.medicoTipo.localeCompare(b.medicoTipo)
+  );
+  return out;
+}
+
+/** Grade padrão do médico extraída de `BASE_SCHEDULE` (antes de salvar configuração customizada). */
+export function defaultMedicoSessoesFromBaseSchedule() {
+  const out = [];
+  let n = 0;
+  for (const [dia, dayData] of Object.entries(BASE_SCHEDULE)) {
+    const spec = dayData.specs?.find((s) => s.key === "medico");
+    if (!spec?.sessions?.length) continue;
+    for (const sess of spec.sessions) {
+      const turno = sessaoLabelParaTurno(sess.label) || "tarde";
+      const medicoTipo = sess.medicoTipo || "clinico";
+      out.push({
+        id: `def_${n++}`,
+        medicoTipo,
+        dia,
+        turno,
+        vagas: sess.visitaDomiciliarSemUnidade ? 0 : sess.total ?? 0,
+      });
+    }
+  }
+  return out;
+}
+
+export function medicoTemSessoesConfiguradasNoFirestore(profCfgMedico) {
+  const arr = profCfgMedico?.sessoes;
+  return Array.isArray(arr) && arr.length > 0;
+}
+
+/** Sessões do médico: Firestore ou padrão em código. */
+export function medicoSessoesEfetivas(profCfgMedico) {
+  if (medicoTemSessoesConfiguradasNoFirestore(profCfgMedico)) {
+    return normalizeMedicoSessoesConfig(profCfgMedico.sessoes);
+  }
+  return defaultMedicoSessoesFromBaseSchedule();
+}
+
+export function medicoLabelSessao(turno, medicoTipo) {
+  const prefix = turno === "manha" ? "Manhã" : "Tarde";
+  if (medicoTipo === "visitas_domiciliares") return `${prefix} – Visitas domiciliares`;
+  const tipo = MEDICO_TIPO[medicoTipo]?.label || medicoTipo;
+  return `${prefix} – ${tipo}`;
+}
+
+/** Converte linha de config em sessão da agenda (rótulo, vagas, flags). */
+export function medicoConfigParaSessaoAgenda(linha) {
+  const vagas = Math.max(0, Number(linha.vagas) || 0);
+  if (linha.medicoTipo === "visitas_domiciliares" && vagas === 0) {
+    return {
+      label: `${linha.turno === "manha" ? "Manhã" : "Tarde"} – Visitas domiciliares (fora da unidade)`,
+      total: 0,
+      medicoTipo: "visitas_domiciliares",
+      visitaDomiciliarSemUnidade: true,
+    };
+  }
+  return {
+    label: medicoLabelSessao(linha.turno, linha.medicoTipo),
+    total: vagas,
+    medicoTipo: linha.medicoTipo,
+  };
+}
+
+/** Spec do médico para um dia da grade, a partir da configuração salva. */
+export function buildMedicoSpecForDay(atendimentoDia, profCfgMap = {}) {
+  const linhas = medicoSessoesEfetivas(profCfgMap.medico).filter((s) => s.dia === atendimentoDia);
+  if (!linhas.length) return null;
+  const tmpl = findSpecTemplateInBaseSchedule("medico") || { key: "medico" };
+  return {
+    ...tmpl,
+    key: "medico",
+    sessions: linhas.map(medicoConfigParaSessaoAgenda),
+  };
+}
+
+/** Dias com atendimento do médico (config ou grade em código). */
+export function diasAtendimentoMedicoEfetivos(profCfgMap = {}) {
+  if (medicoTemSessoesConfiguradasNoFirestore(profCfgMap.medico)) {
+    return [
+      ...new Set(medicoSessoesEfetivas(profCfgMap.medico).map((s) => s.dia)),
+    ].sort(
+      (a, b) =>
+        ORDEM_DIA_SEMANA_GRADE.indexOf(a) - ORDEM_DIA_SEMANA_GRADE.indexOf(b)
+    );
+  }
+  return diasAtendimentoDefaultParaSpec("medico");
+}
+
+/** Mapa dia → turnos para `atendimentoDiasTurnos` a partir das sessões do médico. */
+export function gradeMapFromMedicoSessoes(sessoes) {
+  const out = {};
+  for (const s of normalizeMedicoSessoesConfig(sessoes)) {
+    if (!out[s.dia]) out[s.dia] = [];
+    if (!out[s.dia].includes(s.turno)) out[s.dia].push(s.turno);
+    out[s.dia].sort();
+  }
+  return out;
+}
+
+/** Tipos de atendimento da enfermeira (UI / configuração na recepção). */
+export const ENFERMEIRA_ATENDIMENTO_TIPO = {
+  pccu: { label: "PCCU (exame)", short: "PCCU", color: "#B45309", bg: "#FEF3C7" },
+  enfermagem: { label: "Enfermagem", short: "Enfermagem", color: "#27500A", bg: "#EAF3DE" },
+};
+
+const ENFERMEIRA_TIPOS_VALIDOS = new Set(Object.keys(ENFERMEIRA_ATENDIMENTO_TIPO));
+
+function sessaoBaseEhPccuEnfermeira(sess) {
+  return sess?.pccuOnly === true || /\bPCCU\b/i.test(String(sess?.label || ""));
+}
+
+export function normalizeEnfermeiraSessoesConfig(raw) {
+  if (!Array.isArray(raw)) return [];
+  const diasSet = new Set(ORDEM_DIA_SEMANA_GRADE);
+  const out = [];
+  const seen = new Set();
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const enfermeiraTipo =
+      typeof item.enfermeiraTipo === "string" ? item.enfermeiraTipo.trim() : "";
+    const dia = typeof item.dia === "string" ? item.dia.trim() : "";
+    const turno = item.turno === "manha" || item.turno === "tarde" ? item.turno : "";
+    const vagas = Number(item.vagas);
+    if (!ENFERMEIRA_TIPOS_VALIDOS.has(enfermeiraTipo) || !diasSet.has(dia) || !turno) continue;
+    if (!Number.isFinite(vagas) || vagas < 0 || vagas > 99) continue;
+    const uk = `${enfermeiraTipo}|${dia}|${turno}`;
+    if (seen.has(uk)) continue;
+    seen.add(uk);
+    const id =
+      typeof item.id === "string" && item.id.trim()
+        ? item.id.trim().slice(0, 80)
+        : `es_${enfermeiraTipo}_${dia}_${turno}`;
+    out.push({
+      id,
+      enfermeiraTipo,
+      dia,
+      turno,
+      vagas: Math.round(vagas),
+    });
+  }
+  const ordemDia = new Map(ORDEM_DIA_SEMANA_GRADE.map((d, i) => [d, i]));
+  out.sort(
+    (a, b) =>
+      ordemDia.get(a.dia) - ordemDia.get(b.dia) ||
+      (a.turno === "manha" ? 0 : 1) - (b.turno === "manha" ? 0 : 1) ||
+      a.enfermeiraTipo.localeCompare(b.enfermeiraTipo)
+  );
+  return out;
+}
+
+export function defaultEnfermeiraSessoesFromBaseSchedule(pccuTotal = DEFAULT_PCCU_TOTAL) {
+  const out = [];
+  let n = 0;
+  for (const [dia, dayData] of Object.entries(BASE_SCHEDULE)) {
+    const spec = dayData.specs?.find((s) => s.key === "enfermeira");
+    if (!spec?.sessions?.length) continue;
+    for (const sess of spec.sessions) {
+      const turno = sessaoLabelParaTurno(sess.label) || "tarde";
+      const ehPccu = sessaoBaseEhPccuEnfermeira(sess);
+      out.push({
+        id: `def_${n++}`,
+        enfermeiraTipo: ehPccu ? "pccu" : "enfermagem",
+        dia,
+        turno,
+        vagas: ehPccu ? pccuTotal ?? sess.total ?? DEFAULT_PCCU_TOTAL : sess.total ?? 15,
+      });
+    }
+  }
+  return out;
+}
+
+export function enfermeiraTemSessoesConfiguradasNoFirestore(profCfgEnfermeira) {
+  const arr = profCfgEnfermeira?.sessoes;
+  return Array.isArray(arr) && arr.length > 0;
+}
+
+export function enfermeiraSessoesEfetivas(profCfgEnfermeira, pccuTotal = DEFAULT_PCCU_TOTAL) {
+  if (enfermeiraTemSessoesConfiguradasNoFirestore(profCfgEnfermeira)) {
+    return normalizeEnfermeiraSessoesConfig(profCfgEnfermeira.sessoes);
+  }
+  return defaultEnfermeiraSessoesFromBaseSchedule(pccuTotal);
+}
+
+export function enfermeiraLabelSessao(turno, enfermeiraTipo) {
+  const prefix = turno === "manha" ? "Manhã" : "Tarde";
+  if (enfermeiraTipo === "pccu") {
+    return `${prefix} – Enfermagem (prioridade exame PCCU)`;
+  }
+  return `${prefix} – Enfermagem`;
+}
+
+export function enfermeiraConfigParaSessaoAgenda(linha) {
+  const vagas = Math.max(0, Number(linha.vagas) || 0);
+  const sess = {
+    label: enfermeiraLabelSessao(linha.turno, linha.enfermeiraTipo),
+    total: vagas,
+  };
+  if (linha.enfermeiraTipo === "pccu") {
+    sess.pccuOnly = true;
+  }
+  return sess;
+}
+
+export function buildEnfermeiraSpecForDay(atendimentoDia, profCfgMap = {}, pccuTotal = DEFAULT_PCCU_TOTAL) {
+  const linhas = enfermeiraSessoesEfetivas(profCfgMap.enfermeira, pccuTotal).filter(
+    (s) => s.dia === atendimentoDia
+  );
+  if (!linhas.length) return null;
+  const tmpl = findSpecTemplateInBaseSchedule("enfermeira") || { key: "enfermeira" };
+  return {
+    ...tmpl,
+    key: "enfermeira",
+    sessions: linhas.map(enfermeiraConfigParaSessaoAgenda),
+  };
+}
+
+export function diasAtendimentoEnfermeiraEfetivos(profCfgMap = {}, pccuTotal = DEFAULT_PCCU_TOTAL) {
+  if (enfermeiraTemSessoesConfiguradasNoFirestore(profCfgMap.enfermeira)) {
+    return [
+      ...new Set(enfermeiraSessoesEfetivas(profCfgMap.enfermeira, pccuTotal).map((s) => s.dia)),
+    ].sort(
+      (a, b) =>
+        ORDEM_DIA_SEMANA_GRADE.indexOf(a) - ORDEM_DIA_SEMANA_GRADE.indexOf(b)
+    );
+  }
+  return diasAtendimentoDefaultParaSpec("enfermeira");
+}
+
+export function gradeMapFromEnfermeiraSessoes(sessoes) {
+  const out = {};
+  for (const s of normalizeEnfermeiraSessoesConfig(sessoes)) {
+    if (!out[s.dia]) out[s.dia] = [];
+    if (!out[s.dia].includes(s.turno)) out[s.dia].push(s.turno);
+    out[s.dia].sort();
+  }
+  return out;
+}
 
 // Dia útil anterior ao atendimento = dia de agendamento normal
 export const AGENDA_PREV = {
@@ -250,6 +634,185 @@ export function findSpecTemplateInBaseSchedule(specKey) {
   return null;
 }
 
+/** Configuração por `specKey` em `settings/ubs.profissionalConfigPorSpec`. */
+export function normalizeProfissionalConfigPorSpec(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const modosValidos = new Set(Object.values(AGENDA_MODO));
+  const out = {};
+  for (const [sk, v] of Object.entries(raw)) {
+    if (!specKeyValido(sk)) continue;
+    if (!v || typeof v !== "object" || Array.isArray(v)) continue;
+    const entry = {};
+    if (typeof v.agendaModo === "string") {
+      const modo = normalizarAgendaModo(v.agendaModo);
+      if (modosValidos.has(modo) || modosValidos.has(v.agendaModo)) {
+        entry.agendaModo = modo;
+      }
+    }
+    const diasAg = normalizeDiasAgendamentoLista(v.diasAgendamento);
+    if (diasAg.length) entry.diasAgendamento = diasAg;
+    if (typeof v.role === "string" && v.role.trim()) entry.role = v.role.trim().slice(0, 80);
+    const vb = Number(v.vagasBase);
+    if (Number.isFinite(vb) && vb >= 0 && vb <= 99) entry.vagasBase = Math.round(vb);
+    if (Array.isArray(v.vagasPorSessao)) {
+      const arr = v.vagasPorSessao
+        .map((n) => {
+          const x = Number(n);
+          return Number.isFinite(x) && x >= 0 && x <= 99 ? Math.round(x) : null;
+        })
+        .filter((n) => n != null);
+      if (arr.length) entry.vagasPorSessao = arr;
+    }
+    if (v.vagasPorTipo && typeof v.vagasPorTipo === "object" && !Array.isArray(v.vagasPorTipo)) {
+      const porTipo = {};
+      for (const [tk, n] of Object.entries(v.vagasPorTipo)) {
+        const x = Number(n);
+        if (Number.isFinite(x) && x >= 0 && x <= 99) porTipo[String(tk)] = Math.round(x);
+      }
+      if (Object.keys(porTipo).length) entry.vagasPorTipo = porTipo;
+    }
+    if ((sk === "medico" || sk === "enfermeira") && Array.isArray(v.sessoes)) {
+      const sessoes =
+        sk === "medico"
+          ? normalizeMedicoSessoesConfig(v.sessoes)
+          : normalizeEnfermeiraSessoesConfig(v.sessoes);
+      if (sessoes.length) entry.sessoes = sessoes;
+    }
+    if (Object.keys(entry).length) out[sk] = entry;
+  }
+  return out;
+}
+
+/** Modo de agenda padrão conforme a grade em código (sem override no Firestore). */
+export function defaultAgendaModoParaSpec(specKey) {
+  const tmpl = findSpecTemplateInBaseSchedule(specKey);
+  if (!tmpl) return AGENDA_MODO.DIA_UTIL_ANTERIOR;
+  if (tmpl.agendaQualquerDiaUtil) return AGENDA_MODO.QUALQUER_DIA_UTIL;
+  if ((tmpl.sessions || []).some((s) => s.coletaExamesRotina)) return AGENDA_MODO.DIAS_AGENDAMENTO;
+  return AGENDA_MODO.PADRAO;
+}
+
+/** Tipos de sessão distintos na grade (para editar vagas na Config). */
+export function getSessionDefsForSpecKey(specKey) {
+  const seen = new Map();
+  for (const dayData of Object.values(BASE_SCHEDULE)) {
+    const spec = dayData.specs?.find((s) => s.key === specKey);
+    if (!spec?.sessions?.length) continue;
+    for (const sess of spec.sessions) {
+      if (sess.visitaDomiciliarSemUnidade) continue;
+      const id = sess.medicoTipo || sess.label || "sessao";
+      if (seen.has(id)) continue;
+      const base = sess.pccuOnly ? DEFAULT_PCCU_TOTAL : sess.total;
+      seen.set(id, {
+        id,
+        label: sess.label || id,
+        defaultTotal: base ?? 0,
+        medicoTipo: sess.medicoTipo || null,
+      });
+    }
+  }
+  return [...seen.values()];
+}
+
+function iniciaisDeRole(role) {
+  const w = String(role || "PR")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (w.length >= 2) return (w[0][0] + w[1][0]).toUpperCase();
+  return (w[0]?.slice(0, 2) || "PR").toUpperCase();
+}
+
+/** Meta visual do card (grade fixa ou profissional customizado). */
+export function getSpecMetaForKey(specKey, { profissionalConfigPorSpec = {}, roleFallback = "" } = {}) {
+  if (SPEC_META[specKey]) return SPEC_META[specKey];
+  const cfg = profissionalConfigPorSpec[specKey];
+  const role = cfg?.role || roleFallback || "Profissional";
+  return {
+    role,
+    av: iniciaisDeRole(role),
+    bg: "#F1F5F9",
+    tc: "#334155",
+  };
+}
+
+function enrichSpecAgendaFromConfig(spec, profissionalConfigPorSpec = {}) {
+  const cfg = profissionalConfigPorSpec[spec.key];
+  const modo = cfg?.agendaModo;
+  if (!modo || modo === AGENDA_MODO.PADRAO) return spec;
+  const sessions = (spec.sessions || []).map((s) => ({ ...s }));
+  if (modo === AGENDA_MODO.QUALQUER_DIA_UTIL) {
+    return { ...spec, sessions, agendaQualquerDiaUtil: true };
+  }
+  if (modo === AGENDA_MODO.DIA_UTIL_ANTERIOR) {
+    return { ...spec, sessions, agendaQualquerDiaUtil: false };
+  }
+  if (isModoDiasAgendamento(modo)) {
+    return { ...spec, sessions, agendaQualquerDiaUtil: false };
+  }
+  return spec;
+}
+
+function applyVagasOverrideToSessions(sessions, specKey, profissionalConfigPorSpec = {}) {
+  if (
+    (specKey === "medico" && medicoTemSessoesConfiguradasNoFirestore(profissionalConfigPorSpec.medico)) ||
+    (specKey === "enfermeira" &&
+      enfermeiraTemSessoesConfiguradasNoFirestore(profissionalConfigPorSpec.enfermeira))
+  ) {
+    return sessions;
+  }
+  const cfg = profissionalConfigPorSpec[specKey];
+  if (!cfg) return sessions;
+  const porTipo = cfg.vagasPorTipo;
+  const porIdx = cfg.vagasPorSessao;
+  return sessions.map((sess, idx) => {
+    if (sess.visitaDomiciliarSemUnidade) return sess;
+    let base = null;
+    if (porTipo && sess.medicoTipo != null && porTipo[sess.medicoTipo] != null) {
+      base = Number(porTipo[sess.medicoTipo]);
+    } else if (Array.isArray(porIdx) && porIdx[idx] != null) {
+      base = Number(porIdx[idx]);
+    } else if (cfg.vagasBase != null && (sessions.length === 1 || idx === 0)) {
+      base = Number(cfg.vagasBase);
+    }
+    if (!Number.isFinite(base) || base < 0) return sess;
+    return { ...sess, total: base };
+  });
+}
+
+/** Monta spec sintético para profissional customizado em um dia da grade. */
+export function buildCustomSpecForDay(specKey, atendimentoDia, profCfg, mapaTurnos) {
+  const turnos = mapaTurnos?.[atendimentoDia];
+  if (!Array.isArray(turnos) || !turnos.length) return null;
+  const role = profCfg?.role || "Profissional";
+  const vagas = Number(profCfg?.vagasBase);
+  const vagasBase = Number.isFinite(vagas) && vagas >= 0 ? Math.round(vagas) : 8;
+  const sessions = [];
+  for (const t of turnos) {
+    const prefix = t === "manha" ? "Manhã" : "Tarde";
+    const sess = { label: `${prefix} – ${role}`, total: vagasBase };
+    sessions.push(sess);
+  }
+  let spec = { key: specKey, sessions };
+  if (profCfg?.agendaModo === AGENDA_MODO.QUALQUER_DIA_UTIL) {
+    spec = { ...spec, agendaQualquerDiaUtil: true };
+  }
+  return enrichSpecAgendaFromConfig(spec, { [specKey]: profCfg });
+}
+
+/** `specKey` de profissionais criados pela recepção (não estão em `DEFAULT_PROF_NAMES`). */
+export function listaSpecKeysCustom(profissionaisMap = {}, profissionalConfigPorSpec = {}) {
+  const keys = new Set();
+  for (const p of Object.values(profissionaisMap || {})) {
+    const sk = p.specKey || (p.custom ? p.id : null);
+    if (sk && isSpecKeyCustom(sk)) keys.add(sk);
+  }
+  for (const sk of Object.keys(profissionalConfigPorSpec || {})) {
+    if (isSpecKeyCustom(sk)) keys.add(sk);
+  }
+  return [...keys].sort();
+}
+
 /** Dias em que o profissional entra na agenda (`settings` ou grade em código). */
 export function diasAtendimentoEfetivosParaSpec(specKey, atendimentoDiasAtivosPorSpec = {}) {
   const raw = atendimentoDiasAtivosPorSpec?.[specKey];
@@ -260,14 +823,20 @@ export function diasAtendimentoEfetivosParaSpec(specKey, atendimentoDiasAtivosPo
 }
 
 /** Grade do dia + profissionais com dia extra em `atendimentoDiasAtivosPorSpec`. */
-export function listaSpecConfigsParaDiaAtendimento(atendimentoDia, atendimentoDiasAtivosPorSpec = {}) {
+export function listaSpecConfigsParaDiaAtendimento(
+  atendimentoDia,
+  atendimentoDiasAtivosPorSpec = {},
+  specKeysDesativados = []
+) {
   const seen = new Set();
   const out = [];
   for (const spec of BASE_SCHEDULE[atendimentoDia]?.specs || []) {
+    if (specKeyEstaDesativado(spec.key, specKeysDesativados)) continue;
     seen.add(spec.key);
     out.push(spec);
   }
   for (const specKey of Object.keys(atendimentoDiasAtivosPorSpec || {})) {
+    if (specKeyEstaDesativado(specKey, specKeysDesativados)) continue;
     const dias = atendimentoDiasAtivosPorSpec[specKey];
     if (!Array.isArray(dias) || !dias.includes(atendimentoDia)) continue;
     if (seen.has(specKey)) continue;
@@ -368,11 +937,35 @@ export function suspensaoRegistroNaoExpirado(entry, todayStr) {
 }
 
 /**
+ * Chaves de suspensões vencidas para remoção em `settings/ubs`.
+ * Período: `ate` passou (ou cadastro inválido). Pontual: data anterior a `todayStr`.
+ */
+export function coletarLimpezaSuspensoesExpiradas(
+  atendimentoSuspensoPorSpec = {},
+  atendimentoSuspensoSlots = {},
+  todayStr
+) {
+  const periodoSpecKeys = [];
+  for (const [specKey, entry] of Object.entries(atendimentoSuspensoPorSpec || {})) {
+    if (!specTemRegistroSuspensao(specKey, atendimentoSuspensoPorSpec)) continue;
+    if (!suspensaoRegistroNaoExpirado(entry, todayStr)) periodoSpecKeys.push(specKey);
+  }
+  const slotKeys = [];
+  for (const key of Object.keys(atendimentoSuspensoSlots || {})) {
+    const p = parseAtendimentoSuspensoSlotKey(key);
+    if (!p) continue;
+    if (p.data < todayStr) slotKeys.push(key);
+  }
+  return { periodoSpecKeys, slotKeys };
+}
+
+/**
  * Nos próximos 14 dias (calendário), existe data em que o `specKey` fica suspenso
  * (considera dias efetivos em `atendimentoDiasAtivosPorSpec`, se houver).
  */
 export function specSuspensaoAfetaAgenda(specKey, map, todayStr, atendimentoDiasAtivosPorSpec = {}) {
   if (!specTemRegistroSuspensao(specKey, map)) return false;
+  if (!suspensaoRegistroNaoExpirado(map[specKey], todayStr)) return false;
   const diasEf = diasAtendimentoEfetivosParaSpec(specKey, atendimentoDiasAtivosPorSpec);
   const d0 = parseDateStr(todayStr);
   for (let add = 0; add < 14; add++) {
@@ -400,9 +993,25 @@ export function encaixeExtraForSpec(specKey) {
  * @param {string} [opts.dentQuartaVisitaDomiciliarDesde] — primeira quarta (AAAA-MM-DD) ou vazio
  */
 export function sessionTotalEffective(dayKey, specKey, sessIdx, pccuTotal, opts = {}) {
+  const profCfg = opts.profissionalConfigPorSpec || {};
   const spec = BASE_SCHEDULE[dayKey]?.specs.find((s) => s.key === specKey);
   const tmpl = !spec ? findSpecTemplateInBaseSchedule(specKey) : null;
-  const sess = spec?.sessions?.[sessIdx] ?? tmpl?.sessions?.[sessIdx];
+  let sess = spec?.sessions?.[sessIdx] ?? tmpl?.sessions?.[sessIdx];
+  if (specKey === "medico" && medicoTemSessoesConfiguradasNoFirestore(profCfg.medico)) {
+    const built = buildMedicoSpecForDay(dayKey, profCfg);
+    sess = built?.sessions?.[sessIdx];
+  }
+  if (specKey === "enfermeira" && enfermeiraTemSessoesConfiguradasNoFirestore(profCfg.enfermeira)) {
+    const built = buildEnfermeiraSpecForDay(dayKey, profCfg, pccuTotal);
+    sess = built?.sessions?.[sessIdx];
+  }
+  if (!sess && isSpecKeyCustom(specKey)) {
+    const turnos = opts.atendimentoDiasTurnosPorSpec?.[specKey]?.[dayKey];
+    const built = buildCustomSpecForDay(specKey, dayKey, profCfg[specKey], {
+      [dayKey]: turnos,
+    });
+    sess = built?.sessions?.[sessIdx];
+  }
   if (!sess) return 0;
   if (sess.visitaDomiciliarSemUnidade) return 0;
   if (
@@ -415,6 +1024,8 @@ export function sessionTotalEffective(dayKey, specKey, sessIdx, pccuTotal, opts 
   ) {
     return 0;
   }
+  const overridden = applyVagasOverrideToSessions([sess], specKey, profCfg);
+  sess = overridden[0] || sess;
   const base = sess.pccuOnly ? (pccuTotal ?? sess.total ?? DEFAULT_PCCU_TOTAL) : sess.total;
   return base + encaixeExtraForSpec(specKey);
 }
@@ -736,9 +1347,11 @@ export function collectAtendimentoDatesForListener(
   return [...seen];
 }
 
-function cloneSessionsWithTotals(spec, pccuTotal) {
-  const extra = encaixeExtraForSpec(spec.key);
-  return spec.sessions.map((sess) => {
+function cloneSessionsWithTotals(spec, pccuTotal, profissionalConfigPorSpec = {}) {
+  const enriched = enrichSpecAgendaFromConfig(spec, profissionalConfigPorSpec);
+  const extra = encaixeExtraForSpec(enriched.key);
+  const sessions = applyVagasOverrideToSessions(enriched.sessions || [], enriched.key, profissionalConfigPorSpec);
+  return sessions.map((sess) => {
     if (sess.visitaDomiciliarSemUnidade) {
       return { ...sess, total: 0, encaixeExtra: 0 };
     }
@@ -773,36 +1386,55 @@ function mergeSessionCounts(sessions, specKey, atendimentoDateStr, vagasMap) {
   });
 }
 
-/** Exames/coleta (PCCU da enfermeira): janela especial de agendamento. */
-function isSessaoExameColeta(specKey, sess) {
-  if (specKey !== "tecnicoEnfermagem") return false;
-  if (sess?.coletaExamesRotina === true) return true;
-  return /\bcoleta de exames\b/i.test(String(sess?.label || ""));
-}
-
-function podeAgendarExameColetaNaData(todayStr, atendimentoDateStr) {
-  const today = parseDateStr(todayStr);
-  const atendimento = parseDateStr(atendimentoDateStr);
-  if (JS_DAY_TO_KEY[atendimento.getDay()] !== "quarta") return false;
-  const diffMs = atendimento.getTime() - today.getTime();
-  const diffDays = Math.round(diffMs / (24 * 60 * 60 * 1000));
-  if (diffDays <= 0) return false;
-  const todayKey = JS_DAY_TO_KEY[today.getDay()];
-  if (todayKey === "sexta" && diffDays === 5) return true;
-  if (todayKey === "segunda" && diffDays === 2) return true;
-  if (todayKey === "terca" && diffDays === 1) return true;
+/** Sessão usa dias da semana configuráveis para abrir a agenda (modo `dias_agendamento`). */
+function specUsaDiasAgendamentoConfiguraveis(specKey, sess, profissionalConfigPorSpec = {}) {
+  const cfg = profissionalConfigPorSpec[specKey];
+  if (resolveDiasAgendamento(specKey, cfg)) return true;
+  if (!cfg?.agendaModo && (sess?.coletaExamesRotina || (specKey === "tecnicoEnfermagem" && /\bcoleta de exames\b/i.test(String(sess?.label || ""))))) {
+    return true;
+  }
   return false;
 }
 
-function filtrarSessoesPrevPorJanela({ sessions, specKey, todayStr, atendimentoDateStr, podeAgendarPrevPadrao }) {
+/**
+ * Hoje é um dos dias permitidos, dia útil, e anterior à data de atendimento.
+ * @param {string[]} diasPermitidos — chaves `segunda` … `sexta`
+ */
+export function podeAgendarNosDiasConfigurados(todayStr, atendimentoDateStr, diasPermitidos, holidaySet) {
+  if (!Array.isArray(diasPermitidos) || !diasPermitidos.length) return false;
+  if (!todayStr || !atendimentoDateStr || todayStr >= atendimentoDateStr) return false;
+  const today = parseDateStr(todayStr);
+  if (!isBusinessDay(today, holidaySet)) return false;
+  const todayKey = JS_DAY_TO_KEY[today.getDay()];
+  return diasPermitidos.includes(todayKey);
+}
+
+function filtrarSessoesPrevPorJanela({
+  sessions,
+  specKey,
+  todayStr,
+  atendimentoDateStr,
+  podeAgendarPrevPadrao,
+  profissionalConfigPorSpec = {},
+  holidaySet,
+}) {
   return sessions.filter((sess) => {
-    if (!isSessaoExameColeta(specKey, sess)) return podeAgendarPrevPadrao;
-    return podeAgendarExameColetaNaData(todayStr, atendimentoDateStr);
+    const dias = resolveDiasAgendamento(specKey, profissionalConfigPorSpec[specKey]);
+    if (dias) {
+      return podeAgendarNosDiasConfigurados(todayStr, atendimentoDateStr, dias, holidaySet);
+    }
+    if (specUsaDiasAgendamentoConfiguraveis(specKey, sess, profissionalConfigPorSpec)) {
+      const legado = defaultDiasAgendamentoParaSpec(specKey);
+      return podeAgendarNosDiasConfigurados(todayStr, atendimentoDateStr, legado, holidaySet);
+    }
+    return podeAgendarPrevPadrao;
   });
 }
 
-function filtrarSessoesMesmoDiaPorJanela({ sessions, specKey }) {
-  return sessions.filter((sess) => !isSessaoExameColeta(specKey, sess));
+function filtrarSessoesMesmoDiaPorJanela({ sessions, specKey, profissionalConfigPorSpec = {} }) {
+  return sessions.filter(
+    (sess) => !specUsaDiasAgendamentoConfiguraveis(specKey, sess, profissionalConfigPorSpec)
+  );
 }
 
 /** Agrupa por profissional + dia da semana de atendimento (ex.: fisioterapia quinta vs sexta). */
@@ -868,22 +1500,39 @@ export function buildVisibleSegments({
   atendimentoDiasAtivosPorSpec = {},
   /** `specKey` → mapa dia → turnos; quando definido no cadastro do profissional, restringe sessões (manhã/tarde). */
   atendimentoDiasTurnosPorSpec = {},
+  /** Chaves removidas da agenda pela recepção — não geram cartões de agendamento. */
+  specKeysDesativados = [],
+  /** Overrides de vagas e modo de agenda (`settings/ubs.profissionalConfigPorSpec`). */
+  profissionalConfigPorSpec = {},
+  /** Profissionais `custom_*` ativos (além da grade em código). */
+  customSpecKeys = [],
 }) {
   const holidaySet = nonWorkingDaySet(feriados, pontosFacultativos);
   const todayStr = toDateStr(today);
   const dedupe = new Set();
   const result = [];
+  const profCfgMap = normalizeProfissionalConfigPorSpec(profissionalConfigPorSpec);
 
-  for (const atendimentoDia of Object.keys(BASE_SCHEDULE)) {
-    const specsDia = listaSpecConfigsParaDiaAtendimento(atendimentoDia, atendimentoDiasAtivosPorSpec);
-    for (const spec of specsDia) {
-      const diasDefault = diasAtendimentoDefaultParaSpec(spec.key);
+  function processarSpecNoDia(spec, atendimentoDia) {
+      const diasDefault =
+        spec.key === "medico"
+          ? diasAtendimentoMedicoEfetivos(profCfgMap)
+          : spec.key === "enfermeira"
+            ? diasAtendimentoEnfermeiraEfetivos(profCfgMap, pccuTotal)
+            : diasAtendimentoDefaultParaSpec(spec.key);
       const diasCfgRaw = atendimentoDiasAtivosPorSpec?.[spec.key];
       const diasPerm =
         Array.isArray(diasCfgRaw) && diasCfgRaw.length > 0
           ? [...new Set(diasCfgRaw.filter((d) => ORDEM_DIA_SEMANA_GRADE.includes(d)))]
-          : diasDefault;
-      if (!diasPerm.includes(atendimentoDia)) continue;
+          : isSpecKeyCustom(spec.key)
+            ? Object.keys(
+                normalizeAtendimentoDiasTurnosParaSpec(
+                  spec.key,
+                  atendimentoDiasTurnosPorSpec?.[spec.key]
+                ) || {}
+              )
+            : diasDefault;
+      if (!diasPerm.includes(atendimentoDia)) return;
 
       const mapaTurnosProf = normalizeAtendimentoDiasTurnosParaSpec(
         spec.key,
@@ -901,7 +1550,7 @@ export function buildVisibleSegments({
 
         if (atendimentoSuspensoNaData(spec.key, attStr, atendimentoSuspensoPorSpec)) continue;
 
-        let baseSessions = cloneSessionsWithTotals(spec, pccuTotal);
+        let baseSessions = cloneSessionsWithTotals(spec, pccuTotal, profCfgMap);
         if (
           spec.key === "dentFernando" &&
           atendimentoDia === "quarta" &&
@@ -915,7 +1564,33 @@ export function buildVisibleSegments({
           });
         }
 
-        if (mapaTurnosProf) {
+        if (spec.key === "medico" && medicoTemSessoesConfiguradasNoFirestore(profCfgMap.medico)) {
+          const permitidos = new Set(
+            medicoSessoesEfetivas(profCfgMap.medico)
+              .filter((s) => s.dia === atendimentoDia)
+              .map((s) => s.turno)
+          );
+          baseSessions = baseSessions.filter((sess) => {
+            if (sess.visitaDomiciliarSemUnidade) return true;
+            const t = sessaoLabelParaTurno(sess.label);
+            if (t == null) return true;
+            return permitidos.has(t);
+          });
+        } else if (
+          spec.key === "enfermeira" &&
+          enfermeiraTemSessoesConfiguradasNoFirestore(profCfgMap.enfermeira)
+        ) {
+          const permitidos = new Set(
+            enfermeiraSessoesEfetivas(profCfgMap.enfermeira, pccuTotal)
+              .filter((s) => s.dia === atendimentoDia)
+              .map((s) => s.turno)
+          );
+          baseSessions = baseSessions.filter((sess) => {
+            const t = sessaoLabelParaTurno(sess.label);
+            if (t == null) return true;
+            return permitidos.has(t);
+          });
+        } else if (mapaTurnosProf) {
           const permitidosNoDia = mapaTurnosProf[atendimentoDia];
           if (!Array.isArray(permitidosNoDia) || permitidosNoDia.length === 0) continue;
           baseSessions = baseSessions.filter((sess) => {
@@ -946,6 +1621,8 @@ export function buildVisibleSegments({
           todayStr,
           atendimentoDateStr: attStr,
           podeAgendarPrevPadrao: podeAgendarPrev,
+          profissionalConfigPorSpec: profCfgMap,
+          holidaySet,
         });
 
         if (sessionsPrev.length > 0) {
@@ -977,6 +1654,7 @@ export function buildVisibleSegments({
         const sessionsSame = filtrarSessoesMesmoDiaPorJanela({
           sessions,
           specKey: spec.key,
+          profissionalConfigPorSpec: profCfgMap,
         });
         const temVagaMesmoDia = sessionsSame.some((s) => s.used + s.reserved < s.total);
 
@@ -1003,6 +1681,54 @@ export function buildVisibleSegments({
           }
         }
       }
+  }
+
+  for (const atendimentoDia of Object.keys(BASE_SCHEDULE)) {
+    const specsDia = listaSpecConfigsParaDiaAtendimento(
+      atendimentoDia,
+      atendimentoDiasAtivosPorSpec,
+      specKeysDesativados
+    );
+    for (const specRaw of specsDia) {
+      let spec = specRaw;
+      if (spec.key === "medico") {
+        if (medicoTemSessoesConfiguradasNoFirestore(profCfgMap.medico)) {
+          const built = buildMedicoSpecForDay(atendimentoDia, profCfgMap);
+          if (!built) continue;
+          spec = built;
+        }
+      }
+      if (spec.key === "enfermeira") {
+        if (enfermeiraTemSessoesConfiguradasNoFirestore(profCfgMap.enfermeira)) {
+          const built = buildEnfermeiraSpecForDay(atendimentoDia, profCfgMap, pccuTotal);
+          if (!built) continue;
+          spec = built;
+        }
+      }
+      processarSpecNoDia(enrichSpecAgendaFromConfig(spec, profCfgMap), atendimentoDia);
+    }
+  }
+
+  for (const atendimentoDia of ORDEM_DIA_SEMANA_GRADE) {
+    for (const specKey of customSpecKeys) {
+      if (specKeyEstaDesativado(specKey, specKeysDesativados)) continue;
+      const diasCfgRaw = atendimentoDiasAtivosPorSpec?.[specKey];
+      const diasPerm =
+        Array.isArray(diasCfgRaw) && diasCfgRaw.length > 0
+          ? [...new Set(diasCfgRaw.filter((d) => ORDEM_DIA_SEMANA_GRADE.includes(d)))]
+          : Object.keys(
+              normalizeAtendimentoDiasTurnosParaSpec(
+                specKey,
+                atendimentoDiasTurnosPorSpec?.[specKey]
+              ) || {}
+            );
+      if (!diasPerm.includes(atendimentoDia)) continue;
+      const mapaTurnos = normalizeAtendimentoDiasTurnosParaSpec(
+        specKey,
+        atendimentoDiasTurnosPorSpec?.[specKey]
+      );
+      const built = buildCustomSpecForDay(specKey, atendimentoDia, profCfgMap[specKey], mapaTurnos);
+      if (built) processarSpecNoDia(built, atendimentoDia);
     }
   }
 

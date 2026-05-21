@@ -26,7 +26,12 @@ import {
   diasAtendimentoDefaultParaSpec,
   ORDEM_DIA_SEMANA_GRADE,
   normalizeAtendimentoDiasTurnosParaSpec,
+  normalizeSpecKeysDesativados,
+  normalizeProfissionalConfigPorSpec,
   parseAtendimentoSuspensoSlotKey,
+  isSpecKeyCustom,
+  coletarLimpezaSuspensoesExpiradas,
+  toDateStr,
 } from "./scheduleConfig";
 import { normalizeCronogramaUbs, cronogramaUbsVazio } from "./cronogramaUbs";
 
@@ -47,6 +52,8 @@ const EMPTY_SETTINGS = {
   atendimentoSuspensoSlots: {},
   atendimentoDiasAtivosPorSpec: {},
   atendimentoDiasTurnosPorSpec: {},
+  profissionalConfigPorSpec: {},
+  specKeysDesativados: [],
   cronogramaUbs: cronogramaUbsVazio(),
 };
 
@@ -134,6 +141,8 @@ function normalizeSettingsData(raw = {}) {
     atendimentoSuspensoSlots: normalizeAtendimentoSuspensoSlots(d.atendimentoSuspensoSlots),
     atendimentoDiasAtivosPorSpec: normalizeAtendimentoDiasAtivosPorSpec(d.atendimentoDiasAtivosPorSpec),
     atendimentoDiasTurnosPorSpec: normalizeAtendimentoDiasTurnosPorSpecGlobal(d.atendimentoDiasTurnosPorSpec),
+    profissionalConfigPorSpec: normalizeProfissionalConfigPorSpec(d.profissionalConfigPorSpec),
+    specKeysDesativados: normalizeSpecKeysDesativados(d.specKeysDesativados),
     cronogramaUbs: normalizeCronogramaUbs(d.cronogramaUbs),
   };
 }
@@ -192,17 +201,140 @@ export async function updateProfissional(id, data) {
   await updateDoc(doc(db, "profissionais", id), { ...data, atualizadoEm: serverTimestamp() });
 }
 
-/** Cria documento em `profissionais` (nome, specKey, role, …). */
+/** Cria documento em `profissionais` (nome, specKey, role, …). Retorna o id do documento. */
 export async function createProfissional(data) {
-  await addDoc(collection(db, "profissionais"), {
+  const ref = await addDoc(collection(db, "profissionais"), {
     ...data,
     criadoEm: serverTimestamp(),
     atualizadoEm: serverTimestamp(),
   });
+  return ref.id;
+}
+
+/** Grava ou remove override de vagas/agenda em `settings/ubs.profissionalConfigPorSpec`. */
+export async function patchProfissionalConfigPorSpec(specKey, configEntry) {
+  const sk = typeof specKey === "string" ? specKey.trim() : "";
+  if (!sk) throw new Error("specKey inválido");
+  const patch =
+    configEntry && typeof configEntry === "object" && Object.keys(configEntry).length
+      ? { [sk]: configEntry }
+      : { [sk]: deleteField() };
+  await setDoc(
+    doc(db, "settings", SETTINGS_ID),
+    {
+      atualizadoEm: serverTimestamp(),
+      profissionalConfigPorSpec: patch,
+    },
+    { merge: true }
+  );
 }
 
 export async function deleteProfissional(id) {
   await deleteDoc(doc(db, "profissionais", id));
+}
+
+const FIRESTORE_BATCH_LIMIT = 450;
+
+async function deleteDocRefsInBatches(refs) {
+  if (!refs.length) return;
+  for (let i = 0; i < refs.length; i += FIRESTORE_BATCH_LIMIT) {
+    const batch = [];
+    const chunk = refs.slice(i, i + FIRESTORE_BATCH_LIMIT);
+    for (const ref of chunk) {
+      batch.push(deleteDoc(ref));
+    }
+    await Promise.all(batch);
+  }
+}
+
+/** Remove de `settings/ubs` suspensões, encerramentos, dias ativos/turnos e visita domiciliar (Fernando) do `specKey`. */
+async function purgeSettingsParaSpecKey(specKey) {
+  const ref = doc(db, "settings", SETTINGS_ID);
+  const snap = await getDoc(ref);
+  const data = snap.exists() ? normalizeSettingsData(snap.data()) : { ...EMPTY_SETTINGS };
+
+  const atendimentoSuspensoSlots = {};
+  for (const k of Object.keys(data.atendimentoSuspensoSlots || {})) {
+    const p = parseAtendimentoSuspensoSlotKey(k);
+    if (p?.specKey === specKey) atendimentoSuspensoSlots[k] = deleteField();
+  }
+
+  const atendimentoEncerradoPorSpecData = {};
+  const prefix = `${specKey}_`;
+  for (const k of Object.keys(data.atendimentoEncerradoPorSpecData || {})) {
+    if (k.startsWith(prefix)) atendimentoEncerradoPorSpecData[k] = deleteField();
+  }
+
+  const patch = {
+    atualizadoEm: serverTimestamp(),
+    atendimentoSuspensoPorSpec: { [specKey]: deleteField() },
+    atendimentoDiasAtivosPorSpec: { [specKey]: deleteField() },
+    atendimentoDiasTurnosPorSpec: { [specKey]: deleteField() },
+    profissionalConfigPorSpec: { [specKey]: deleteField() },
+  };
+  if (Object.keys(atendimentoSuspensoSlots).length) {
+    patch.atendimentoSuspensoSlots = atendimentoSuspensoSlots;
+  }
+  if (Object.keys(atendimentoEncerradoPorSpecData).length) {
+    patch.atendimentoEncerradoPorSpecData = atendimentoEncerradoPorSpecData;
+  }
+  if (specKey === "dentFernando") {
+    patch.dentQuartaVisitaDomiciliarDesde = "";
+  }
+
+  const cronograma = data.cronogramaUbs;
+  const itensFiltrados = (cronograma?.itens || []).filter((item) => item.categoria !== specKey);
+  if (itensFiltrados.length !== (cronograma?.itens || []).length) {
+    patch.cronogramaUbs = normalizeCronogramaUbs({ ...cronograma, itens: itensFiltrados });
+  }
+
+  const desativados = normalizeSpecKeysDesativados(data.specKeysDesativados);
+  if (!desativados.includes(specKey)) {
+    patch.specKeysDesativados = [...desativados, specKey];
+  }
+
+  await setDoc(ref, patch, { merge: true });
+}
+
+/** Tira o `specKey` da lista de profissionais removidos da agenda (ex.: ao cadastrar de novo). */
+export async function restaurarSpecKeyNaAgenda(specKey) {
+  const sk = typeof specKey === "string" ? specKey.trim() : "";
+  if (!sk) return;
+  const ref = doc(db, "settings", SETTINGS_ID);
+  const snap = await getDoc(ref);
+  const list = normalizeSpecKeysDesativados(snap.exists() ? snap.data().specKeysDesativados : []);
+  const next = list.filter((k) => k !== sk);
+  if (next.length === list.length) return;
+  await updateSettings({ specKeysDesativados: next });
+}
+
+/** Apaga documentos em `vagas` e `listaEspera` vinculados ao `specKey`. */
+async function purgeColecoesOperacionaisParaSpecKey(specKey) {
+  const vagaSnap = await getDocs(query(collection(db, "vagas"), where("specKey", "==", specKey)));
+  const vagaRefs = vagaSnap.docs.map((d) => d.ref);
+  await deleteDocRefsInBatches(vagaRefs);
+
+  try {
+    const esperaSnap = await getDocs(
+      query(collection(db, "listaEspera"), where("specKey", "==", specKey))
+    );
+    await deleteDocRefsInBatches(esperaSnap.docs.map((d) => d.ref));
+  } catch {
+    /* índice ausente ou coleção sem campo specKey — ignorar */
+  }
+}
+
+/**
+ * Remove da agenda e apaga dados operacionais do `specKey` (suspensões, vagas, cronograma, etc.).
+ * Marca `specKeysDesativados` para não exibir cartão nem linha na Config.
+ * @param {string} [id] — documento em `profissionais`; omitido se só havia suspensão/dados sem cadastro.
+ */
+export async function deleteProfissionalComRelacionados(id, specKey) {
+  const sk = typeof specKey === "string" ? specKey.trim() : "";
+  if (!sk) throw new Error("specKey inválido");
+  await purgeSettingsParaSpecKey(sk);
+  await purgeColecoesOperacionaisParaSpecKey(sk);
+  if (id) await deleteProfissional(id);
 }
 
 // ── CONFIGURAÇÃO GLOBAL (feriados, pontos facultativos, Fernando, PCCU) ─
@@ -235,6 +367,32 @@ export async function updateSettings(partial) {
     { ...partial, atualizadoEm: serverTimestamp() },
     { merge: true }
   );
+}
+
+/** Monta patch Firestore para apagar suspensões de período/slots já vencidos. */
+export function buildPatchLimparSuspensoesExpiradas(settings, hoje = toDateStr(new Date())) {
+  const { periodoSpecKeys, slotKeys } = coletarLimpezaSuspensoesExpiradas(
+    settings?.atendimentoSuspensoPorSpec,
+    settings?.atendimentoSuspensoSlots,
+    hoje
+  );
+  if (!periodoSpecKeys.length && !slotKeys.length) return null;
+  const atendimentoSuspensoPorSpec = {};
+  for (const sk of periodoSpecKeys) atendimentoSuspensoPorSpec[sk] = deleteField();
+  const atendimentoSuspensoSlots = {};
+  for (const k of slotKeys) atendimentoSuspensoSlots[k] = deleteField();
+  return { atendimentoSuspensoPorSpec, atendimentoSuspensoSlots };
+}
+
+/**
+ * Remove do Firestore suspensões por período após `ate` e slots pontuais em datas passadas.
+ * @returns {boolean} true se houve escrita
+ */
+export async function limparSuspensoesExpiradasSeNecessario(settings, hoje = toDateStr(new Date())) {
+  const patch = buildPatchLimparSuspensoesExpiradas(settings, hoje);
+  if (!patch) return false;
+  await updateSettings(patch);
+  return true;
 }
 
 /** Publica o cronograma semanal da UBS em `settings/ubs.cronogramaUbs`. */
