@@ -17,10 +17,7 @@ import {
   reservaSolicitacaoAtiva,
   diasAtendimentoDefaultParaSpec,
   suspensaoRegistroNaoExpirado,
-  ORDEM_DIA_SEMANA_GRADE,
-  normalizeAtendimentoDiasTurnosParaSpec,
-  turnosDefaultParaSpecNoDia,
-  parseAtendimentoSuspensoSlotKey,
+  filtrarSpecKeysAtivos,
 } from "../services/scheduleConfig";
 import { fraseVagasEsgotadasEncaixe } from "../services/whatsappSolicitacao";
 import { SessaoLabelComDestaqueTurno } from "./SessaoLabelDestaqueTurno";
@@ -35,12 +32,6 @@ function dataAmanhaIso() {
   d.setHours(12, 0, 0, 0);
   d.setDate(d.getDate() + 1);
   return toDateStr(d);
-}
-
-function profissionalDocPorSpecKey(profissionaisMap, specKey) {
-  return (
-    Object.values(profissionaisMap || {}).find((p) => p.specKey === specKey || p.id === specKey) || null
-  );
 }
 
 /** Data no título: ex. "30 de Março" (sem dia da semana). */
@@ -112,21 +103,6 @@ function menorAtendimentoDateLista(listaSpecs) {
     if (!min || d < min) min = d;
   }
   return min;
-}
-
-/** Primeiro cartão de cada `spec.key` na ordem: seção "hoje" e depois prev por data. */
-function primeiroCartaoPorSpecEmOrdem(same, prevSecoes) {
-  const id = (spec) => `${spec.windowType}|${spec.atendimentoDate}|${spec.key}|${spec.atendimentoDia}`;
-  const first = {};
-  for (const s of same || []) {
-    if (first[s.key] == null) first[s.key] = id(s);
-  }
-  for (const sec of prevSecoes || []) {
-    for (const s of sec.lista || []) {
-      if (first[s.key] == null) first[s.key] = id(s);
-    }
-  }
-  return (spec) => first[spec.key] === id(spec);
 }
 
 /** Agrupa cartões prev por `atendimentoDia`. */
@@ -254,26 +230,43 @@ function labelEscopoSuspensaoPontual(escopo) {
   return escopo;
 }
 
+/** Turno padrão no modal de suspensão pontual (ex.: enfermeira → tarde; coleta → manhã). */
+function turnoPadraoSuspensaoPontual(specKey) {
+  const dias = diasAtendimentoDefaultParaSpec(specKey);
+  let hasManha = false;
+  let hasTarde = false;
+  for (const dia of dias) {
+    for (const t of turnosDefaultParaSpecNoDia(specKey, dia)) {
+      if (t === "manha") hasManha = true;
+      if (t === "tarde") hasTarde = true;
+    }
+  }
+  if (hasTarde && !hasManha) return "tarde";
+  if (hasManha && !hasTarde) return "manha";
+  return "manha";
+}
+
 export default function TabVagas({
   specs,
   profissionaisMap = {},
+  specKeysDesativados = [],
   isRecepcao,
   onSlotAction,
   onSolicitar,
   atendimentoEncerradoMap = {},
   onToggleAtendimentoEncerrado,
   atendimentoSuspensoPorSpec = {},
-  atendimentoSuspensoSlots = {},
-  atendimentoDiasAtivosPorSpec = {},
   onSuspenderAtendimentoSpec,
-  onRemoverSuspensaoPontual,
-  onReativarAtendimentoSpec,
   dentQuartaVisitaDomiciliarDesde = "",
   usuarioUid = "",
 }) {
   const [agoraRecepcao, setAgoraRecepcao] = useState(() => new Date());
   const [modalSuspenderSpecKey, setModalSuspenderSpecKey] = useState(null);
-  const [modalReativarSpecKey, setModalReativarSpecKey] = useState(null);
+
+  const specKeysAtivosAgenda = useMemo(
+    () => filtrarSpecKeysAtivos(Object.keys(DEFAULT_PROF_NAMES), specKeysDesativados),
+    [specKeysDesativados]
+  );
   const [suspendModo, setSuspendModo] = useState("pontual");
   const [suspendPontualData, setSuspendPontualData] = useState("");
   const [suspendPontualEscopo, setSuspendPontualEscopo] = useState("manha");
@@ -281,9 +274,6 @@ export default function TabVagas({
   const [suspendFormDesde, setSuspendFormDesde] = useState("");
   const [suspendFormIndef, setSuspendFormIndef] = useState(true);
   const [suspendFormAte, setSuspendFormAte] = useState("");
-  const [reativarDiasSel, setReativarDiasSel] = useState(() => new Set());
-  /** `{ [dia]: { manha, tarde } }` só para dias marcados na reativação */
-  const [reativarTurnosPorDia, setReativarTurnosPorDia] = useState({});
 
   useEffect(() => {
     const t = setInterval(() => setAgoraRecepcao(new Date()), 30_000);
@@ -295,49 +285,12 @@ export default function TabVagas({
     const hoje = dataHojeIso();
     setSuspendModo("pontual");
     setSuspendPontualData(hoje);
-    setSuspendPontualEscopo("manha");
+    setSuspendPontualEscopo(turnoPadraoSuspensaoPontual(modalSuspenderSpecKey));
     setSuspendPontualMotivo("");
     setSuspendFormDesde(hoje);
     setSuspendFormIndef(true);
     setSuspendFormAte("");
   }, [modalSuspenderSpecKey]);
-
-  useEffect(() => {
-    if (!modalReativarSpecKey) return;
-    const sk = modalReativarSpecKey;
-    const def = diasAtendimentoDefaultParaSpec(sk);
-    const cfg = atendimentoDiasAtivosPorSpec?.[sk];
-    const fromCfg = Array.isArray(cfg) ? cfg.filter((d) => ORDEM_DIA_SEMANA_GRADE.includes(d)) : [];
-    const initialDias = fromCfg.length > 0 ? fromCfg : [...def];
-    setReativarDiasSel(new Set(initialDias));
-
-    const prof = profissionalDocPorSpecKey(profissionaisMap, sk);
-    const norm = normalizeAtendimentoDiasTurnosParaSpec(sk, prof?.atendimentoDiasTurnos);
-    const turnos = {};
-    for (const dia of initialDias) {
-      const t = norm?.[dia] || turnosDefaultParaSpecNoDia(sk, dia);
-      const hasT = t.length > 0;
-      turnos[dia] = {
-        manha: hasT ? t.includes("manha") : true,
-        tarde: hasT ? t.includes("tarde") : true,
-      };
-    }
-    setReativarTurnosPorDia(turnos);
-  }, [modalReativarSpecKey, atendimentoDiasAtivosPorSpec, profissionaisMap]);
-
-  useEffect(() => {
-    if (!modalReativarSpecKey) return;
-    setReativarTurnosPorDia((prev) => {
-      const next = { ...prev };
-      for (const d of reativarDiasSel) {
-        if (next[d] == null) next[d] = { manha: true, tarde: true };
-      }
-      for (const k of Object.keys(next)) {
-        if (!reativarDiasSel.has(k)) delete next[k];
-      }
-      return next;
-    });
-  }, [reativarDiasSel, modalReativarSpecKey]);
 
   const specsLista = useMemo(() => {
     const base = (() => {
@@ -351,37 +304,6 @@ export default function TabVagas({
   const same = specsLista.filter((s) => s.windowType === "same");
   const prevPorDia = agruparPrevPorDia(prev);
   const prevSecoes = secoesPrevOrdenadasPorData(prevPorDia);
-  const primeiroCartaoSuspender = useMemo(
-    () => primeiroCartaoPorSpecEmOrdem(same, prevSecoes),
-    [same, prevSecoes]
-  );
-
-  const listaSuspensaoRecepcao = useMemo(() => {
-    if (!isRecepcao) return [];
-    const m = atendimentoSuspensoPorSpec || {};
-    const hoje = dataHojeIso();
-    return Object.entries(m).filter(
-      ([, v]) =>
-        v &&
-        typeof v.desde === "string" &&
-        /^\d{4}-\d{2}-\d{2}$/.test(v.desde.trim()) &&
-        suspensaoRegistroNaoExpirado(v, hoje)
-    );
-  }, [isRecepcao, atendimentoSuspensoPorSpec]);
-
-  const listaSuspensaoPontualRecepcao = useMemo(() => {
-    if (!isRecepcao) return [];
-    const slots = atendimentoSuspensoSlots || {};
-    const out = [];
-    for (const key of Object.keys(slots)) {
-      const p = parseAtendimentoSuspensoSlotKey(key);
-      if (!p) continue;
-      const motivo = typeof slots[key]?.motivo === "string" ? slots[key].motivo.trim() : "";
-      out.push({ key, ...p, motivo });
-    }
-    out.sort((a, b) => (a.data !== b.data ? b.data.localeCompare(a.data) : a.specKey.localeCompare(b.specKey)));
-    return out;
-  }, [isRecepcao, atendimentoSuspensoSlots]);
 
   if (specs.length === 0 && !isRecepcao) {
     return (
@@ -433,105 +355,14 @@ export default function TabVagas({
         </div>
       )}
 
-      {isRecepcao && listaSuspensaoRecepcao.length > 0 && (
-        <div style={styles.painelSuspRecepcao}>
-          <p style={styles.painelSuspRecepcaoTitle}>Atendimentos suspensos (sem agendamento na agenda)</p>
-          <div style={styles.painelSuspRecepcaoGrid}>
-            {listaSuspensaoRecepcao.map(([specKey, entry]) => (
-              <div key={specKey} style={styles.painelSuspCard}>
-                <p style={styles.painelSuspCardNome}>
-                  {nomeProfissionalFirestore(specKey, profissionaisMap)}
-                  <span style={styles.painelSuspCardMeta}>
-                    {SPEC_META[specKey]?.role ? ` · ${SPEC_META[specKey].role}` : ""}
-                  </span>
-                </p>
-                <p style={styles.painelSuspCardDetalhe}>
-                  Sem vagas a partir de{" "}
-                  <strong>
-                    {new Date(`${entry.desde}T12:00:00`).toLocaleDateString("pt-BR", {
-                      day: "numeric",
-                      month: "long",
-                      year: "numeric",
-                    })}
-                  </strong>
-                  {entry.indefinido
-                    ? " — prazo indeterminado."
-                    : entry.ate
-                      ? ` — até ${new Date(`${entry.ate}T12:00:00`).toLocaleDateString("pt-BR", {
-                          day: "numeric",
-                          month: "long",
-                          year: "numeric",
-                        })}.`
-                      : " — sem data fim cadastrada."}
-                </p>
-                {typeof onReativarAtendimentoSpec === "function" && (
-                  <button
-                    type="button"
-                    style={styles.btnReativarSusp}
-                    onClick={() => setModalReativarSpecKey(specKey)}
-                  >
-                    Reativar atendimento…
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {isRecepcao && listaSuspensaoPontualRecepcao.length > 0 && (
-        <div style={styles.painelSuspPontualRecepcao}>
-          <p style={styles.painelSuspRecepcaoTitle}>Suspensões em datas específicas</p>
-          <div style={styles.painelSuspRecepcaoGrid}>
-            {listaSuspensaoPontualRecepcao.map((row) => (
-              <div key={row.key} style={styles.painelSuspCardPontual}>
-                <p style={styles.painelSuspCardNome}>
-                  {nomeProfissionalFirestore(row.specKey, profissionaisMap)}
-                  <span style={styles.painelSuspCardMeta}>
-                    {SPEC_META[row.specKey]?.role ? ` · ${SPEC_META[row.specKey].role}` : ""}
-                  </span>
-                </p>
-                <p style={styles.painelSuspCardDetalhe}>
-                  <strong>
-                    {new Date(`${row.data}T12:00:00`).toLocaleDateString("pt-BR", {
-                      weekday: "long",
-                      day: "numeric",
-                      month: "long",
-                      year: "numeric",
-                    })}
-                  </strong>
-                  {" — "}
-                  <strong>{labelEscopoSuspensaoPontual(row.escopo)}</strong>
-                  {row.motivo ? (
-                    <>
-                      <br />
-                      <span style={{ fontWeight: 500, color: "#57534E" }}>Motivo: {row.motivo}</span>
-                    </>
-                  ) : null}
-                </p>
-                {typeof onRemoverSuspensaoPontual === "function" && (
-                  <button
-                    type="button"
-                    style={styles.btnRemoverSuspPontual}
-                    onClick={() => onRemoverSuspensaoPontual(row.key)}
-                  >
-                    Remover suspensão
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       {isRecepcao && specs.length === 0 && (
         <div style={styles.empty}>
           <p style={{ fontSize: 15, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>
             Nenhum cartão de agenda neste período
           </p>
           <p style={{ fontSize: 13, color: "#64748B", lineHeight: 1.5 }}>
-            Se todos os profissionais estiverem com atendimento suspenso, use o painel acima para reativar quando
-            houver profissional na unidade.
+            Se todos os profissionais estiverem com atendimento suspenso, consulte a aba{" "}
+            <strong>Avisos</strong> para reativar quando houver profissional na unidade.
           </p>
         </div>
       )}
@@ -558,16 +389,6 @@ export default function TabVagas({
                 agoraRecepcao,
                 onToggleAtendimentoEncerrado
               )}
-              mostrarBotaoSuspenderAtendimento={
-                isRecepcao &&
-                typeof onSuspenderAtendimentoSpec === "function" &&
-                !suspensaoRegistroNaoExpirado(
-                  atendimentoSuspensoPorSpec[spec.key],
-                  dataHojeIso()
-                ) &&
-                primeiroCartaoSuspender(spec)
-              }
-              onAbrirModalSuspender={isRecepcao ? setModalSuspenderSpecKey : undefined}
               dentQuartaVisitaDomiciliarDesde={dentQuartaVisitaDomiciliarDesde}
               usuarioUid={usuarioUid}
             />
@@ -598,22 +419,63 @@ export default function TabVagas({
                 agoraRecepcao,
                 onToggleAtendimentoEncerrado
               )}
-              mostrarBotaoSuspenderAtendimento={
-                isRecepcao &&
-                typeof onSuspenderAtendimentoSpec === "function" &&
-                !suspensaoRegistroNaoExpirado(
-                  atendimentoSuspensoPorSpec[spec.key],
-                  dataHojeIso()
-                ) &&
-                primeiroCartaoSuspender(spec)
-              }
-              onAbrirModalSuspender={isRecepcao ? setModalSuspenderSpecKey : undefined}
               dentQuartaVisitaDomiciliarDesde={dentQuartaVisitaDomiciliarDesde}
               usuarioUid={usuarioUid}
             />
           ))}
         </Section>
       ))}
+
+      {isRecepcao && typeof onSuspenderAtendimentoSpec === "function" && (
+        <div style={styles.painelSuspenderAcesso}>
+          <p style={styles.painelSuspRecepcaoTitle}>Suspender atendimento de um profissional</p>
+          <p style={styles.painelSuspenderAcessoHint}>
+            Disponível para qualquer funcionário da agenda (médico, enfermeira, odontologia, etc.), mesmo quando não
+            houver cartão visível acima. Use suspensão pontual para um dia/turno ou por período para vários dias.
+            Suspensões em vigor e encerramentos estão na aba <strong>Avisos</strong>.
+          </p>
+          <div style={styles.painelSuspenderAcessoGrid}>
+            {specKeysAtivosAgenda.map((specKey) => {
+              const meta = SPEC_META[specKey];
+              const suspensoPeriodo = suspensaoRegistroNaoExpirado(
+                atendimentoSuspensoPorSpec[specKey],
+                dataHojeIso()
+              );
+              return (
+                <div key={specKey} style={styles.painelSuspenderAcessoItem}>
+                  <div style={styles.painelSuspenderAcessoInfo}>
+                    <span
+                      style={{
+                        ...styles.painelSuspenderAcessoAv,
+                        background: meta?.bg || "#F1F5F9",
+                        color: meta?.tc || "#475569",
+                      }}
+                    >
+                      {meta?.av || "?"}
+                    </span>
+                    <div>
+                      <p style={styles.painelSuspenderAcessoNome}>
+                        {nomeProfissionalFirestore(specKey, profissionaisMap)}
+                      </p>
+                      <p style={styles.painelSuspenderAcessoRole}>{meta?.role || specKey}</p>
+                      {suspensoPeriodo && (
+                        <p style={styles.painelSuspenderAcessoBadge}>Suspensão por período em vigor</p>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    style={styles.btnSuspenderAcessoItem}
+                    onClick={() => setModalSuspenderSpecKey(specKey)}
+                  >
+                    Suspender…
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {modalSuspenderSpecKey && typeof onSuspenderAtendimentoSpec === "function" && (
         <div
@@ -774,127 +636,6 @@ export default function TabVagas({
                 }}
               >
                 Confirmar suspensão
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {modalReativarSpecKey && typeof onReativarAtendimentoSpec === "function" && (
-        <div
-          style={styles.modalBackdrop}
-          role="presentation"
-          onClick={() => setModalReativarSpecKey(null)}
-        >
-          <div
-            style={styles.modalBox}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="titulo-reativar"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h2 id="titulo-reativar" style={styles.modalTitle}>
-              Reativar atendimento
-            </h2>
-            <p style={styles.modalLead}>
-              {nomeProfissionalFirestore(modalReativarSpecKey, profissionaisMap)}
-              {SPEC_META[modalReativarSpecKey]?.role
-                ? ` (${SPEC_META[modalReativarSpecKey].role})`
-                : ""}
-            </p>
-            <p style={styles.modalHint}>
-              Marque livremente os dias de <strong>segunda a sexta-feira</strong> e, em cada dia, os <strong>turnos</strong>{" "}
-              (manhã e/ou tarde) com atendimento. Pode incluir dias que ainda não estão na grade em código ou desmarcar
-              dias/turnos atuais se a agenda do profissional mudar na unidade.
-            </p>
-            <div style={styles.modalChecksCol}>
-              {ORDEM_DIA_SEMANA_GRADE.map((dia) => {
-                const marcado = reativarDiasSel.has(dia);
-                const t = reativarTurnosPorDia[dia] || { manha: true, tarde: true };
-                return (
-                  <div key={dia} style={styles.modalDiaTurnoBlock}>
-                    <label style={styles.modalCheck}>
-                      <input
-                        type="checkbox"
-                        checked={marcado}
-                        onChange={() => {
-                          setReativarDiasSel((prev) => {
-                            const n = new Set(prev);
-                            if (n.has(dia)) n.delete(dia);
-                            else n.add(dia);
-                            return n;
-                          });
-                        }}
-                      />
-                      <span style={{ fontWeight: 700 }}>{DAY_LABEL[dia] || dia}</span>
-                    </label>
-                    {marcado && (
-                      <div style={styles.modalTurnosInline}>
-                        <label style={styles.modalCheckTurno}>
-                          <input
-                            type="checkbox"
-                            checked={!!t.manha}
-                            onChange={() =>
-                              setReativarTurnosPorDia((prev) => {
-                                const cur = prev[dia] || { manha: true, tarde: true };
-                                return { ...prev, [dia]: { ...cur, manha: !cur.manha } };
-                              })
-                            }
-                          />
-                          <span>Manhã</span>
-                        </label>
-                        <label style={styles.modalCheckTurno}>
-                          <input
-                            type="checkbox"
-                            checked={!!t.tarde}
-                            onChange={() =>
-                              setReativarTurnosPorDia((prev) => {
-                                const cur = prev[dia] || { manha: true, tarde: true };
-                                return { ...prev, [dia]: { ...cur, tarde: !cur.tarde } };
-                              })
-                            }
-                          />
-                          <span>Tarde</span>
-                        </label>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-            <div style={styles.modalFooter}>
-              <button type="button" style={styles.modalBtnGhost} onClick={() => setModalReativarSpecKey(null)}>
-                Cancelar
-              </button>
-              <button
-                type="button"
-                style={styles.modalBtnPrimary}
-                onClick={() => {
-                  const dias = [...reativarDiasSel].filter((d) => ORDEM_DIA_SEMANA_GRADE.includes(d)).sort();
-                  if (dias.length === 0) {
-                    window.alert("Selecione pelo menos um dia da semana (segunda a sexta-feira).");
-                    return;
-                  }
-                  const turnosFirestore = {};
-                  for (const d of dias) {
-                    const tu = reativarTurnosPorDia[d] || { manha: true, tarde: true };
-                    const arr = [];
-                    if (tu.manha) arr.push("manha");
-                    if (tu.tarde) arr.push("tarde");
-                    if (arr.length === 0) {
-                      window.alert(
-                        `Para ${DAY_LABEL[d] || d}, marque pelo menos um turno (manhã ou tarde).`
-                      );
-                      return;
-                    }
-                    turnosFirestore[d] = arr.sort();
-                  }
-                  void Promise.resolve(
-                    onReativarAtendimentoSpec(modalReativarSpecKey, dias, turnosFirestore)
-                  ).then(() => setModalReativarSpecKey(null));
-                }}
-              >
-                Reativar e salvar dias
               </button>
             </div>
           </div>
@@ -1235,8 +976,6 @@ function SpecCard({
   atendimentoEncerradoMap = {},
   onToggleAtendimentoEncerrado,
   mostrarBotaoEncerradoRecepcao = false,
-  mostrarBotaoSuspenderAtendimento = false,
-  onAbrirModalSuspender,
   agoraRecepcao = new Date(),
   dentQuartaVisitaDomiciliarDesde = "",
   usuarioUid = "",
@@ -1355,21 +1094,6 @@ function SpecCard({
               />
             );
           })}
-
-        {isRecepcao &&
-          !visitaVariant &&
-          mostrarBotaoSuspenderAtendimento &&
-          typeof onAbrirModalSuspender === "function" && (
-            <div style={styles.cardFooterRecepcao}>
-              <button
-                type="button"
-                style={styles.btnSuspenderAtendimento}
-                onClick={() => onAbrirModalSuspender(spec.key)}
-              >
-                Suspender atendimento…
-              </button>
-            </div>
-          )}
 
         {isRecepcao &&
           !visitaVariant &&
@@ -1845,6 +1569,65 @@ const styles = {
     cursor: "pointer",
     boxShadow: "0 2px 6px rgba(12, 68, 124, 0.25)",
   },
+  painelSuspenderAcesso: {
+    marginTop: 22,
+    padding: "16px 18px",
+    borderRadius: 12,
+    border: "1px solid #FDBA74",
+    background: "linear-gradient(180deg, #FFFBEB 0%, #FEF3C7 100%)",
+  },
+  painelSuspenderAcessoHint: {
+    margin: "0 0 14px",
+    fontSize: 13,
+    color: "#78716C",
+    lineHeight: 1.45,
+  },
+  painelSuspenderAcessoGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 280px), 1fr))",
+    gap: 10,
+  },
+  painelSuspenderAcessoItem: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    padding: "10px 12px",
+    borderRadius: 10,
+    background: "#fff",
+    border: "1px solid #FDE68A",
+  },
+  painelSuspenderAcessoInfo: { display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: 1 },
+  painelSuspenderAcessoAv: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 12,
+    fontWeight: 800,
+    flexShrink: 0,
+  },
+  painelSuspenderAcessoNome: { margin: 0, fontSize: 14, fontWeight: 700, color: "#0F172A" },
+  painelSuspenderAcessoRole: { margin: "2px 0 0", fontSize: 12, color: "#64748B" },
+  painelSuspenderAcessoBadge: {
+    margin: "4px 0 0",
+    fontSize: 11,
+    fontWeight: 600,
+    color: "#C2410C",
+  },
+  btnSuspenderAcessoItem: {
+    padding: "8px 12px",
+    fontSize: 12,
+    fontWeight: 700,
+    borderRadius: 8,
+    border: "1px solid #F97316",
+    background: "#FFF7ED",
+    color: "#9A3412",
+    cursor: "pointer",
+    flexShrink: 0,
+  },
   painelSuspRecepcao: {
     marginBottom: 22,
     padding: "16px 18px",
@@ -1900,17 +1683,6 @@ const styles = {
     border: "none",
     background: "#C2410C",
     color: "#fff",
-    cursor: "pointer",
-  },
-  btnSuspenderAtendimento: {
-    width: "100%",
-    padding: "10px 12px",
-    fontSize: 13,
-    fontWeight: 700,
-    borderRadius: 8,
-    border: "1px solid #F97316",
-    background: "linear-gradient(180deg, #FFF7ED 0%, #FFEDD5 100%)",
-    color: "#9A3412",
     cursor: "pointer",
   },
   empty: { textAlign: "center", padding: "48px 20px" },
