@@ -8,6 +8,7 @@ const { initializeApp } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
 const { getMessaging } = require("firebase-admin/messaging");
 const { deleteExpiredVagasInFirestore } = require("./vagasRetention");
+const { limparSuspensoesExpiradasNoFirestore } = require("./suspensaoRetention");
 
 initializeApp();
 const db = getFirestore();
@@ -71,5 +72,18 @@ exports.expirarDocumentosVagas = onSchedule(
   async () => {
     const n = await deleteExpiredVagasInFirestore(db);
     if (n > 0) console.log(`expirarDocumentosVagas: removidos ${n} documento(s).`);
+  }
+);
+
+/** Apaga suspensões por período vencidas e slots pontuais em datas passadas (diário, TZ São Paulo). */
+exports.limparSuspensoesExpiradas = onSchedule(
+  {
+    schedule: "0 4 * * *",
+    timeZone: "America/Sao_Paulo",
+    memory: "256MiB",
+  },
+  async () => {
+    const n = await limparSuspensoesExpiradasNoFirestore(db);
+    if (n > 0) console.log(`limparSuspensoesExpiradas: removidas ${n} chave(s).`);
   }
 );
