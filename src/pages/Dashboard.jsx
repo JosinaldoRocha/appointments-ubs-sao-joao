@@ -16,6 +16,7 @@ import {
   addAtendimentoSuspensoSlot,
   removeAtendimentoSuspensoSlot,
   clearSpecAtendimentoSuspenso,
+  limparSuspensoesExpiradasSeNecessario,
   updateProfissional,
   digitosWhatsappRecepcaoParaSolicitacao,
   tryReservaSolicitacaoAgente,
@@ -32,6 +33,7 @@ import {
   estaDentroJanelaSolicitacaoAgendamento,
   msgForaJanelaSolicitacaoAgendamento,
   normalizeAtendimentoDiasTurnosParaSpec,
+  listaSpecKeysCustom,
 } from "../services/scheduleConfig";
 import { uploadDocumentoPacienteSolicitacao } from "../services/storageUpload";
 import {
@@ -169,6 +171,18 @@ function settingsIguaisParaDashboard(prev, next) {
   }
   if (!mapaSuspensoSlotsIgual(prev.atendimentoSuspensoSlots, next.atendimentoSuspensoSlots)) return false;
   if (!cronogramaUbsIguais(prev.cronogramaUbs, next.cronogramaUbs)) return false;
+  const prevOff = [...(prev.specKeysDesativados || [])].sort().join(",");
+  const nextOff = [...(next.specKeysDesativados || [])].sort().join(",");
+  if (prevOff !== nextOff) return false;
+  const cfgKeys = new Set([
+    ...Object.keys(prev.profissionalConfigPorSpec || {}),
+    ...Object.keys(next.profissionalConfigPorSpec || {}),
+  ]);
+  for (const k of cfgKeys) {
+    if (JSON.stringify(prev.profissionalConfigPorSpec?.[k]) !== JSON.stringify(next.profissionalConfigPorSpec?.[k])) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -251,6 +265,8 @@ export default function Dashboard() {
     atendimentoSuspensoSlots: {},
     atendimentoDiasAtivosPorSpec: {},
     atendimentoDiasTurnosPorSpec: {},
+    profissionalConfigPorSpec: {},
+    specKeysDesativados: [],
     cronogramaUbs: cronogramaUbsVazio(),
   });
 
@@ -274,6 +290,8 @@ export default function Dashboard() {
   const [paginaVisivel, setPaginaVisivel] = useState(
     () => typeof document !== "undefined" && document.visibilityState === "visible"
   );
+  /** Atualiza à meia-noite / ao voltar à aba — agenda e limpeza de suspensões usam o dia local correto. */
+  const [diaCalendario, setDiaCalendario] = useState(() => toDateStr(new Date()));
 
   const vagasMapRef = useRef({});
   vagasMapRef.current = vagasMap;
@@ -284,14 +302,18 @@ export default function Dashboard() {
   const settingsSlotRef = useRef({
     pccuTotal: settings.pccuTotal,
     dentQuartaVisitaDomiciliarDesde: settings.dentQuartaVisitaDomiciliarDesde,
+    profissionalConfigPorSpec: settings.profissionalConfigPorSpec,
+    atendimentoDiasTurnosPorSpec,
   });
   const manterReservaAoFecharModalRef = useRef(false);
   settingsSlotRef.current = {
     pccuTotal: settings.pccuTotal,
     dentQuartaVisitaDomiciliarDesde: settings.dentQuartaVisitaDomiciliarDesde,
+    profissionalConfigPorSpec: settings.profissionalConfigPorSpec,
+    atendimentoDiasTurnosPorSpec,
   };
 
-  const todayStr = toDateStr(new Date());
+  const todayStr = diaCalendario;
   const listenDates = useMemo(
     () =>
       collectAtendimentoDatesForListener(
@@ -309,6 +331,20 @@ export default function Dashboard() {
     const onVis = () => setPaginaVisivel(document.visibilityState === "visible");
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
+  useEffect(() => {
+    const atualizarDia = () => {
+      const hoje = toDateStr(new Date());
+      setDiaCalendario((prev) => (prev !== hoje ? hoje : prev));
+    };
+    atualizarDia();
+    const id = setInterval(atualizarDia, 60_000);
+    document.addEventListener("visibilitychange", atualizarDia);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", atualizarDia);
+    };
   }, []);
 
   useEffect(() => {
@@ -346,6 +382,13 @@ export default function Dashboard() {
   }, [isRecepcao, perfil?.id, perfil?.telefoneWhatsapp, perfil?.nome]);
 
   useEffect(() => {
+    if (!isRecepcao) return;
+    limparSuspensoesExpiradasSeNecessario(settings, diaCalendario).catch((e) =>
+      console.error("limparSuspensoesExpiradas", e)
+    );
+  }, [isRecepcao, diaCalendario, settings.atendimentoSuspensoPorSpec, settings.atendimentoSuspensoSlots]);
+
+  useEffect(() => {
     if (!modal?.reservaFirestoreVagaId || !user?.uid) return undefined;
     const id = modal.reservaFirestoreVagaId;
     const uid = user.uid;
@@ -373,6 +416,8 @@ export default function Dashboard() {
       const total = sessionTotalEffective(ctx.dayKey, ctx.specKey, ctx.sessIdx, settings.pccuTotal, {
         atendimentoDateStr: ctx.atendimentoDate,
         dentQuartaVisitaDomiciliarDesde: settings.dentQuartaVisitaDomiciliarDesde,
+        profissionalConfigPorSpec: settings.profissionalConfigPorSpec,
+        atendimentoDiasTurnosPorSpec,
       });
       const meta = {
         atendimentoDate: ctx.atendimentoDate,
@@ -415,7 +460,7 @@ export default function Dashboard() {
         reservaFirestoreVagaId: liberarId,
       });
     },
-    [user, perfil, settings.pccuTotal, settings.dentQuartaVisitaDomiciliarDesde, isRecepcao]
+    [user, perfil, settings.pccuTotal, settings.dentQuartaVisitaDomiciliarDesde, settings.profissionalConfigPorSpec, atendimentoDiasTurnosPorSpec, isRecepcao]
   );
 
   const handleToggleAtendimentoEncerrado = useCallback(
@@ -512,10 +557,17 @@ export default function Dashboard() {
   const handleSlotAction = useCallback(
     async ({ vagaId, specKey, dayKey, sessIdx, atendimentoDate, action, silent }) => {
       if (!isRecepcao) return;
-      const { pccuTotal, dentQuartaVisitaDomiciliarDesde } = settingsSlotRef.current;
+      const {
+        pccuTotal,
+        dentQuartaVisitaDomiciliarDesde,
+        profissionalConfigPorSpec,
+        atendimentoDiasTurnosPorSpec: diasTurnosMap,
+      } = settingsSlotRef.current;
       const total = sessionTotalEffective(dayKey, specKey, sessIdx, pccuTotal, {
         atendimentoDateStr: atendimentoDate,
         dentQuartaVisitaDomiciliarDesde,
+        profissionalConfigPorSpec,
+        atendimentoDiasTurnosPorSpec: diasTurnosMap,
       });
       if (!total) return;
 
@@ -748,6 +800,11 @@ export default function Dashboard() {
 
   const allTabs = isRecepcao ? [...TABS_BASE, { key: "config", label: "Config." }] : TABS_BASE;
 
+  const customSpecKeys = useMemo(
+    () => listaSpecKeysCustom(profissionaisMap, settings.profissionalConfigPorSpec || {}),
+    [profissionaisMap, settings.profissionalConfigPorSpec]
+  );
+
   const specsVisiveis = useMemo(
     () =>
       buildVisibleSegments({
@@ -762,6 +819,9 @@ export default function Dashboard() {
         atendimentoSuspensoSlots: settings.atendimentoSuspensoSlots || {},
         atendimentoDiasAtivosPorSpec: settings.atendimentoDiasAtivosPorSpec || {},
         atendimentoDiasTurnosPorSpec,
+        specKeysDesativados: settings.specKeysDesativados || [],
+        profissionalConfigPorSpec: settings.profissionalConfigPorSpec || {},
+        customSpecKeys,
       }),
     [
       todayStr,
@@ -775,6 +835,9 @@ export default function Dashboard() {
       settings.atendimentoSuspensoSlots,
       settings.atendimentoDiasAtivosPorSpec,
       atendimentoDiasTurnosPorSpec,
+      settings.specKeysDesativados,
+      settings.profissionalConfigPorSpec,
+      customSpecKeys,
     ]
   );
 
@@ -826,11 +889,8 @@ export default function Dashboard() {
               isRecepcao ? handleToggleAtendimentoEncerrado : undefined
             }
             atendimentoSuspensoPorSpec={settings.atendimentoSuspensoPorSpec || {}}
-            atendimentoSuspensoSlots={settings.atendimentoSuspensoSlots || {}}
-            atendimentoDiasAtivosPorSpec={settings.atendimentoDiasAtivosPorSpec || {}}
+            specKeysDesativados={settings.specKeysDesativados || []}
             onSuspenderAtendimentoSpec={isRecepcao ? handleSuspenderAtendimentoSpec : undefined}
-            onRemoverSuspensaoPontual={isRecepcao ? handleRemoverSuspensaoPontual : undefined}
-            onReativarAtendimentoSpec={isRecepcao ? handleReativarAtendimentoSpec : undefined}
             onSolicitar={isRecepcao ? undefined : abrirModalSolicitacao}
             dentQuartaVisitaDomiciliarDesde={settings.dentQuartaVisitaDomiciliarDesde}
             usuarioUid={user?.uid ?? ""}
@@ -850,11 +910,15 @@ export default function Dashboard() {
             atendimentoSuspensoPorSpec={settings.atendimentoSuspensoPorSpec || {}}
             atendimentoSuspensoSlots={settings.atendimentoSuspensoSlots || {}}
             atendimentoDiasAtivosPorSpec={settings.atendimentoDiasAtivosPorSpec || {}}
+            specKeysDesativados={settings.specKeysDesativados || []}
+            onRemoverSuspensaoPontual={isRecepcao ? handleRemoverSuspensaoPontual : undefined}
+            onReativarAtendimentoSpec={isRecepcao ? handleReativarAtendimentoSpec : undefined}
           />
         )}
         {tab === "cronograma" && (
           <TabCronograma
             cronogramaUbs={settings.cronogramaUbs ?? cronogramaUbsVazio()}
+            specKeysDesativados={settings.specKeysDesativados || []}
             profNames={profNames}
             podeEditar={podeEditarCronogramaUbs(perfil)}
             showToast={showToast}
@@ -864,6 +928,8 @@ export default function Dashboard() {
           <TabConfig
             profNames={profNames}
             profissionaisMap={profissionaisMap}
+            profissionalConfigPorSpec={settings.profissionalConfigPorSpec || {}}
+            specKeysDesativados={settings.specKeysDesativados || []}
             showToast={showToast}
             isRecepcao={isRecepcao}
           />
