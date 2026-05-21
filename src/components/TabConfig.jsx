@@ -1,12 +1,14 @@
 // src/components/TabConfig.jsx
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   getAllUsers,
   createUser,
   deleteUser,
   updateProfissional,
   createProfissional,
-  deleteProfissional,
+  deleteProfissionalComRelacionados,
+  restaurarSpecKeyNaAgenda,
+  patchProfissionalConfigPorSpec,
   listenSettings,
   updateSettings,
   updateUser,
@@ -29,6 +31,29 @@ import {
   DAY_LABEL,
   defaultAtendimentoDiasTurnosParaSpec,
   normalizeAtendimentoDiasTurnosParaSpec,
+  filtrarSpecKeysAtivos,
+  specKeyEstaDesativado,
+  AGENDA_MODO,
+  AGENDA_MODO_OPCOES,
+  defaultAgendaModoParaSpec,
+  defaultDiasAgendamentoParaSpec,
+  getSessionDefsForSpecKey,
+  getSpecMetaForKey,
+  isModoDiasAgendamento,
+  isSpecKeyCustom,
+  listaSpecKeysCustom,
+  MEDICO_TIPO,
+  medicoSessoesEfetivas,
+  normalizeMedicoSessoesConfig,
+  defaultMedicoSessoesFromBaseSchedule,
+  gradeMapFromMedicoSessoes,
+  medicoTemSessoesConfiguradasNoFirestore,
+  ENFERMEIRA_ATENDIMENTO_TIPO,
+  enfermeiraSessoesEfetivas,
+  normalizeEnfermeiraSessoesConfig,
+  gradeMapFromEnfermeiraSessoes,
+  normalizarAgendaModo,
+  normalizeDiasAgendamentoLista,
 } from "../services/scheduleConfig";
 import PasswordInput from "./PasswordInput";
 
@@ -68,7 +93,85 @@ function resolverDocumentoProfissional(specKey, profissionaisMap) {
   return null;
 }
 
-export default function TabConfig({ profNames, profissionaisMap = {}, showToast, isRecepcao }) {
+const ROLES_SUGERIDAS = [
+  "Clínico Geral",
+  "Odontologia",
+  "Psicologia",
+  "Fisioterapia",
+  "Enfermagem",
+  "Téc. Enfermagem",
+  "Nutrição",
+  "Pediatria",
+  "Outro",
+];
+
+function montarPatchProfissionalConfig(
+  specKey,
+  {
+    agendaModo,
+    vagasPorTipo,
+    vagasBase,
+    role,
+    isCustom,
+    diasAgendamento,
+    medicoSessoes,
+    enfermeiraSessoes,
+  }
+) {
+  const usaSessoesConfig =
+    specKey === "medico" || specKey === "enfermeira" || isCustom;
+  const defs = usaSessoesConfig ? [] : getSessionDefsForSpecKey(specKey);
+  const defModo = isCustom ? AGENDA_MODO.DIA_UTIL_ANTERIOR : defaultAgendaModoParaSpec(specKey);
+  const entry = {};
+  if (isCustom && role?.trim()) entry.role = role.trim();
+
+  const modo = normalizarAgendaModo(agendaModo || AGENDA_MODO.PADRAO);
+  if (isModoDiasAgendamento(modo)) {
+    entry.agendaModo = AGENDA_MODO.DIAS_AGENDAMENTO;
+    const dias = normalizeDiasAgendamentoLista(diasAgendamento);
+    if (dias.length) entry.diasAgendamento = dias;
+  } else if (modo !== AGENDA_MODO.PADRAO && modo !== defModo) {
+    entry.agendaModo = modo;
+    entry.diasAgendamento = deleteField();
+  }
+
+  if (specKey === "medico" && Array.isArray(medicoSessoes)) {
+    const sessoes = normalizeMedicoSessoesConfig(medicoSessoes);
+    if (sessoes.length) entry.sessoes = sessoes;
+  }
+  if (specKey === "enfermeira" && Array.isArray(enfermeiraSessoes)) {
+    const sessoes = normalizeEnfermeiraSessoesConfig(enfermeiraSessoes);
+    if (sessoes.length) entry.sessoes = sessoes;
+  }
+
+  if (specKey !== "medico" && specKey !== "enfermeira" && isCustom) {
+    const vb = Number(vagasBase);
+    if (Number.isFinite(vb) && vb >= 0) entry.vagasBase = Math.round(vb);
+  } else if (defs.length > 0 && vagasPorTipo && typeof vagasPorTipo === "object") {
+    const porTipo = {};
+    let mudou = false;
+    for (const d of defs) {
+      const v = Number(vagasPorTipo[d.id]);
+      if (!Number.isFinite(v) || v < 0) continue;
+      if (Math.round(v) !== d.defaultTotal) {
+        porTipo[d.medicoTipo || d.id] = Math.round(v);
+        mudou = true;
+      }
+    }
+    if (mudou) entry.vagasPorTipo = porTipo;
+  }
+
+  return Object.keys(entry).length ? entry : null;
+}
+
+export default function TabConfig({
+  profNames,
+  profissionaisMap = {},
+  profissionalConfigPorSpec = {},
+  specKeysDesativados = [],
+  showToast,
+  isRecepcao,
+}) {
   const [users, setUsers] = useState([]);
   const [section, setSection] = useState("profissionais");
   const [novoUser, setNovoUser] = useState({
@@ -109,7 +212,7 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
     return un;
   }, []);
 
-  async function salvarNomeProfissional(specKey, nome, gradeMapTurnos) {
+  async function salvarNomeProfissional(specKey, nome, gradeMapTurnos, extras = {}) {
     const n = nome.trim();
     if (!n) {
       showToast("Informe o nome do profissional.", "danger");
@@ -121,63 +224,205 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
         if (Array.isArray(arr) && arr.length) raw[dia] = [...arr];
       }
     }
-    const normalized = normalizeAtendimentoDiasTurnosParaSpec(specKey, raw);
-    if (!normalized) {
-      showToast(
-        "Marque pelo menos um dia da semana (segunda a sexta) e um turno (manhã ou tarde) em que o profissional atende na UBS.",
-        "danger"
-      );
-      return;
+    const isMedico = specKey === "medico";
+    const isEnfermeira = specKey === "enfermeira";
+    let normalized;
+    let gradeParaSalvar = gradeMapTurnos;
+    if (isMedico || isEnfermeira) {
+      const sessoes = isMedico
+        ? normalizeMedicoSessoesConfig(extras.medicoSessoes || [])
+        : normalizeEnfermeiraSessoesConfig(extras.enfermeiraSessoes || []);
+      if (!sessoes.length) {
+        showToast(
+          isMedico
+            ? "Adicione pelo menos um atendimento do médico (tipo, dia, turno e vagas)."
+            : "Adicione pelo menos um atendimento da enfermeira (PCCU ou enfermagem: dia, turno e vagas).",
+          "danger"
+        );
+        return;
+      }
+      normalized = isMedico
+        ? gradeMapFromMedicoSessoes(sessoes)
+        : gradeMapFromEnfermeiraSessoes(sessoes);
+      gradeParaSalvar = normalized;
+      if (!normalized || !Object.keys(normalized).length) {
+        showToast("Cada atendimento precisa de dia e turno válidos.", "danger");
+        return;
+      }
+    } else {
+      normalized = normalizeAtendimentoDiasTurnosParaSpec(specKey, raw);
+      if (!normalized) {
+        showToast(
+          "Marque pelo menos um dia da semana (segunda a sexta) e um turno (manhã ou tarde) em que o profissional atende na UBS.",
+          "danger"
+        );
+        return;
+      }
     }
     const defGrade = defaultAtendimentoDiasTurnosParaSpec(specKey);
-    const igualAoPadraoDoCodigo = JSON.stringify(normalized) === JSON.stringify(defGrade);
+    const igualAoPadraoDoCodigo =
+      !isMedico && !isEnfermeira && JSON.stringify(normalized) === JSON.stringify(defGrade);
 
-    const role = SPEC_META[specKey]?.role;
+    const role =
+      extras.role?.trim() ||
+      SPEC_META[specKey]?.role ||
+      profissionalConfigPorSpec[specKey]?.role;
     const existente = resolverDocumentoProfissional(specKey, profissionaisMap);
+    const diasAtivos = Object.keys(normalized);
+    if (isModoDiasAgendamento(extras.agendaModo)) {
+      const dias = normalizeDiasAgendamentoLista(extras.diasAgendamento);
+      if (!dias.length) {
+        showToast(
+          "No modo «Dias específicos da semana», marque pelo menos um dia em que o agendamento fica disponível.",
+          "danger"
+        );
+        return;
+      }
+    }
+    const cfgPatch = montarPatchProfissionalConfig(specKey, {
+      agendaModo: extras.agendaModo,
+      vagasPorTipo: extras.vagasPorTipo,
+      vagasBase: extras.vagasBase,
+      role,
+      isCustom: isSpecKeyCustom(specKey),
+      diasAgendamento: extras.diasAgendamento,
+      medicoSessoes: extras.medicoSessoes,
+      enfermeiraSessoes: extras.enfermeiraSessoes,
+    });
     try {
+      await restaurarSpecKeyNaAgenda(specKey);
       if (existente?.id) {
         await updateProfissional(existente.id, {
           nome: n,
           specKey,
+          ...(role ? { role } : {}),
           ...(igualAoPadraoDoCodigo
             ? { atendimentoDiasTurnos: deleteField() }
             : { atendimentoDiasTurnos: normalized }),
         });
-        showToast(`Profissional atualizado: ${n}`, "success");
       } else {
         await createProfissional({
           nome: n,
           specKey,
           ...(role ? { role } : {}),
+          ...(isSpecKeyCustom(specKey) ? { custom: true } : {}),
           ...(igualAoPadraoDoCodigo ? {} : { atendimentoDiasTurnos: normalized }),
         });
-        showToast(`Profissional cadastrado: ${n}`, "success");
       }
+      await patchProfissionalConfigPorSpec(specKey, cfgPatch);
+      if (diasAtivos.length) {
+        await updateSettings({
+          atendimentoDiasAtivosPorSpec: { [specKey]: diasAtivos },
+        });
+      }
+      showToast(`Profissional ${existente?.id ? "atualizado" : "cadastrado"}: ${n}`, "success");
     } catch {
       showToast("Erro ao salvar o profissional.", "danger");
     }
   }
 
-  async function excluirProfissional(specKey) {
-    const d = resolverDocumentoProfissional(specKey, profissionaisMap);
-    if (!d?.id) {
-      showToast("Não há cadastro no Firestore para excluir nesta linha.", "info");
+  async function criarNovoProfissional(payload) {
+    const n = (payload.nome || "").trim();
+    const role = (payload.role || "").trim();
+    if (!n) {
+      showToast("Informe o nome do profissional.", "danger");
       return;
     }
+    if (!role) {
+      showToast("Informe a função ou área de atuação.", "danger");
+      return;
+    }
+    const raw = {};
+    for (const [dia, arr] of Object.entries(payload.gradeMapTurnos || {})) {
+      if (Array.isArray(arr) && arr.length) raw[dia] = [...arr];
+    }
+    const normalized = normalizeAtendimentoDiasTurnosParaSpec("custom_novo", raw);
+    if (!normalized) {
+      showToast(
+        "Marque pelo menos um dia da semana (segunda a sexta) e um turno (manhã ou tarde).",
+        "danger"
+      );
+      return;
+    }
+    const vagas = Number(payload.vagasBase);
+    if (!Number.isFinite(vagas) || vagas < 0) {
+      showToast("Informe a quantidade de vagas (0 ou mais).", "danger");
+      return;
+    }
+    if (isModoDiasAgendamento(payload.agendaModo)) {
+      const dias = normalizeDiasAgendamentoLista(payload.diasAgendamento);
+      if (!dias.length) {
+        showToast(
+          "Marque os dias da semana em que o agendamento pode ser feito (ex.: terça, quarta e quinta antes de uma sexta de atendimento).",
+          "danger"
+        );
+        return;
+      }
+    }
+    try {
+      const docId = await createProfissional({
+        nome: n,
+        role,
+        custom: true,
+        atendimentoDiasTurnos: normalized,
+      });
+      const specKey = `custom_${docId}`;
+      await updateProfissional(docId, { specKey });
+      const cfgPatch = montarPatchProfissionalConfig(specKey, {
+        agendaModo: payload.agendaModo || AGENDA_MODO.DIA_UTIL_ANTERIOR,
+        vagasBase: vagas,
+        role,
+        isCustom: true,
+        diasAgendamento: payload.diasAgendamento,
+      });
+      await patchProfissionalConfigPorSpec(specKey, cfgPatch);
+      await updateSettings({
+        atendimentoDiasAtivosPorSpec: { [specKey]: Object.keys(normalized) },
+      });
+      showToast(`${n} adicionado à agenda da unidade.`, "success");
+    } catch {
+      showToast("Erro ao cadastrar o novo profissional.", "danger");
+    }
+  }
+
+  async function excluirProfissional(specKey) {
+    const d = resolverDocumentoProfissional(specKey, profissionaisMap);
+    const meta = SPEC_META[specKey];
+    const rotulo = meta?.role || DEFAULT_PROF_NAMES[specKey] || specKey;
     if (
       !window.confirm(
-        "Excluir este profissional do cadastro? O nome nas vagas volta ao padrão da unidade."
+        `Remover ${rotulo} da unidade?\n\nO cartão de agendamento deixa de aparecer para todos. Serão apagados cadastro, suspensões, vagas, cronograma e demais dados ligados a este profissional.`
       )
     ) {
       return;
     }
     try {
-      await deleteProfissional(d.id);
-      showToast("Profissional excluído. Nome padrão restaurado.", "info");
+      await deleteProfissionalComRelacionados(d?.id, specKey);
+      showToast(`${rotulo} removido da agenda e da configuração.`, "info");
     } catch {
-      showToast("Erro ao excluir o profissional.", "danger");
+      showToast("Erro ao remover o profissional.", "danger");
     }
   }
+
+  async function restaurarProfissionalNaGrade(specKey) {
+    try {
+      await restaurarSpecKeyNaAgenda(specKey);
+      showToast(
+        "Profissional disponível de novo na lista. Preencha o nome e salve para voltar à agenda.",
+        "success"
+      );
+    } catch {
+      showToast("Erro ao restaurar o profissional.", "danger");
+    }
+  }
+
+  const specKeysAtivos = filtrarSpecKeysAtivos(Object.keys(DEFAULT_PROF_NAMES), specKeysDesativados);
+  const specKeysRemovidos = Object.keys(DEFAULT_PROF_NAMES).filter((k) =>
+    specKeyEstaDesativado(k, specKeysDesativados)
+  );
+  const specKeysCustomAtivos = listaSpecKeysCustom(profissionaisMap, profissionalConfigPorSpec).filter(
+    (k) => !specKeyEstaDesativado(k, specKeysDesativados)
+  );
 
   async function salvarRegras() {
     const vVisita = (dentQuartaVisitaDomiciliarDesde || "").trim();
@@ -373,12 +618,13 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
         <div>
           <p style={S.hint}>
             <strong>Profissionais nas vagas da agenda</strong> — cada linha corresponde a uma{" "}
-            <em>chave de agenda</em> do sistema (médico, odontologia, etc.). Informe o nome, marque os{" "}
-            <strong>dias da semana</strong> (segunda a sexta) e os <strong>turnos</strong> (manhã e/ou tarde)
-            em que o profissional atende na UBS (inclusive dias ainda fora da grade no sistema, para quando a agenda
-            mudar); <strong>Salvar</strong> grava nome e disponibilidade.{" "}
-            <strong>Excluir</strong> remove o cadastro no Firestore e o nome volta ao padrão. A quantidade de
-            vagas por sessão continua definida no código (<code style={S.code}>scheduleConfig</code>).
+            <em>chave de agenda</em> do sistema (médico, odontologia, etc.). No <strong>médico</strong> e na{" "}
+            <strong>enfermeira</strong>, cadastre cada tipo de atendimento (ex.: PCCU, gestantes) com dia, turno e vagas.
+            Nos demais,
+            marque dias e turnos na UBS; <strong>Salvar</strong> grava nome, agenda e regras de agendamento.{" "}
+            <strong>Excluir</strong> tira o profissional da agenda e desta lista, apagando cadastro, suspensões,
+            vagas e cronograma. Use <strong>Restaurar</strong> (abaixo) para voltar a exibir na unidade. Em{" "}
+            <strong>Novo profissional</strong> cadastre quem foi contratado e ainda não está na lista fixa da UBS.
           </p>
           <p style={S.hintMuted}>
             Para <strong>contas de login</strong> (agente, recepção, direção), use a aba{" "}
@@ -388,7 +634,12 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
             .
           </p>
           <hr style={S.sectionDivider} />
-          {Object.keys(DEFAULT_PROF_NAMES).map((key, i, keys) => {
+          {specKeysAtivos.length === 0 && (
+            <p style={S.hintMuted}>
+              Nenhum profissional ativo na grade. Restaure um perfil na seção abaixo para voltar a exibir na agenda.
+            </p>
+          )}
+          {specKeysAtivos.map((key, i, keys) => {
             const isFirst = i === 0;
             const isLast = i === keys.length - 1;
             return (
@@ -404,12 +655,67 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
                   specKey={key}
                   nome={profNames[key] || DEFAULT_PROF_NAMES[key]}
                   doc={resolverDocumentoProfissional(key, profissionaisMap)}
-                  onSave={(sk, nomeVal, grade) => salvarNomeProfissional(sk, nomeVal, grade)}
+                  profCfg={profissionalConfigPorSpec[key]}
+                  isMedico={key === "medico"}
+                  isEnfermeira={key === "enfermeira"}
+                  pccuTotal={pccuTotal}
+                  showToast={showToast}
+                  onSave={(sk, nomeVal, grade, extras) => salvarNomeProfissional(sk, nomeVal, grade, extras)}
                   onDelete={excluirProfissional}
                 />
               </div>
             );
           })}
+          {specKeysCustomAtivos.length > 0 && (
+            <>
+              <hr style={S.sectionDivider} />
+              <p style={S.sectionTitle}>Profissionais adicionados na unidade</p>
+              {specKeysCustomAtivos.map((key) => (
+                <div key={key} style={S.profBlock}>
+                  <ProfRow
+                    specKey={key}
+                    nome={profNames[key] || "Profissional"}
+                    doc={resolverDocumentoProfissional(key, profissionaisMap)}
+                    profCfg={profissionalConfigPorSpec[key]}
+                    isCustom
+                    showToast={showToast}
+                    onSave={(sk, nomeVal, grade, extras) => salvarNomeProfissional(sk, nomeVal, grade, extras)}
+                    onDelete={excluirProfissional}
+                  />
+                </div>
+              ))}
+            </>
+          )}
+
+          <hr style={S.sectionDivider} />
+          <NovoProfissionalForm onCreate={criarNovoProfissional} />
+
+          {specKeysRemovidos.length > 0 && (
+            <>
+              <hr style={S.sectionDivider} />
+              <p style={S.sectionTitle}>Removidos da agenda</p>
+              <p style={S.hintMuted}>
+                Estes perfis não aparecem na aba Vagas nem para os agentes. Restaure e salve o nome para reativar.
+              </p>
+              {specKeysRemovidos.map((key) => {
+                const meta = SPEC_META[key] || {};
+                return (
+                  <div key={key} style={S.profRemovidoRow}>
+                    <div>
+                      <strong>{meta.role || key}</strong>
+                      <span style={S.hintMuted}>
+                        {" "}
+                        — {DEFAULT_PROF_NAMES[key] || key}
+                      </span>
+                    </div>
+                    <button type="button" style={S.btnSave} onClick={() => restaurarProfissionalNaGrade(key)}>
+                      Restaurar
+                    </button>
+                  </div>
+                );
+              })}
+            </>
+          )}
         </div>
       )}
 
@@ -510,7 +816,11 @@ export default function TabConfig({ profNames, profissionaisMap = {}, showToast,
           <hr style={S.sectionDivider} />
 
           <div>
-            <label style={S.label}>Vagas PCCU (quarta-feira manhã — exclusivo exame)</label>
+            <label style={S.label}>Vagas PCCU (padrão legado)</label>
+            <p style={S.hintMuted}>
+              Usado só enquanto a enfermeira não tiver agenda customizada salva. Prefira definir cada linha de{" "}
+              <strong>PCCU</strong> no card da enfermeira (dia, turno e vagas).
+            </p>
             <input
               type="number"
               min={1}
@@ -737,10 +1047,366 @@ function gradeMapInicialProf(specKey, doc) {
   return out;
 }
 
-function ProfRow({ specKey, nome, doc, onSave, onDelete }) {
+function NovoProfissionalForm({ onCreate }) {
+  const [aberto, setAberto] = useState(false);
+  const [nome, setNome] = useState("");
+  const [role, setRole] = useState("");
+  const [roleOutro, setRoleOutro] = useState("");
+  const [vagasBase, setVagasBase] = useState(8);
+  const [agendaModo, setAgendaModo] = useState(AGENDA_MODO.DIA_UTIL_ANTERIOR);
+  const [diasAgendamento, setDiasAgendamento] = useState([]);
+  const [gradeMap, setGradeMap] = useState(() => {
+    const out = {};
+    for (const dia of ORDEM_DIA_SEMANA_GRADE) out[dia] = [];
+    return out;
+  });
+  const [saving, setSaving] = useState(false);
+
+  function toggleTurno(dia, turno) {
+    setGradeMap((prev) => {
+      const cur = new Set(prev[dia] || []);
+      if (cur.has(turno)) cur.delete(turno);
+      else cur.add(turno);
+      return { ...prev, [dia]: [...cur].sort() };
+    });
+  }
+
+  function toggleDiaAgendamento(dia) {
+    setDiasAgendamento((prev) => {
+      const s = new Set(prev);
+      if (s.has(dia)) s.delete(dia);
+      else s.add(dia);
+      return normalizeDiasAgendamentoLista([...s]);
+    });
+  }
+
+  async function handleCreate() {
+    setSaving(true);
+    try {
+      const roleFinal = role === "Outro" ? roleOutro.trim() : role;
+      await onCreate({
+        nome,
+        role: roleFinal,
+        gradeMapTurnos: gradeMap,
+        vagasBase,
+        agendaModo,
+        diasAgendamento,
+      });
+      setNome("");
+      setRole("");
+      setRoleOutro("");
+      setVagasBase(8);
+      setAgendaModo(AGENDA_MODO.DIA_UTIL_ANTERIOR);
+      setDiasAgendamento([]);
+      setGradeMap(() => {
+        const out = {};
+        for (const dia of ORDEM_DIA_SEMANA_GRADE) out[dia] = [];
+        return out;
+      });
+      setAberto(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div>
+      <p style={S.sectionTitle}>Novo profissional</p>
+      <p style={S.hintMuted}>
+        Use quando alguém for contratado e precisar aparecer na agenda (além dos perfis fixos acima).
+      </p>
+      {!aberto ? (
+        <button type="button" style={S.btnAdd} onClick={() => setAberto(true)}>
+          + Adicionar profissional
+        </button>
+      ) : (
+        <div style={S.novoProfPanel}>
+          <Field label="Nome do profissional">
+            <input
+              style={S.input}
+              value={nome}
+              onChange={(e) => setNome(e.target.value)}
+              placeholder="Ex.: Dra. Maria Silva"
+            />
+          </Field>
+          <Field label="Função ou área">
+            <select style={S.input} value={role} onChange={(e) => setRole(e.target.value)}>
+              <option value="">Selecione…</option>
+              {ROLES_SUGERIDAS.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+            {role === "Outro" && (
+              <input
+                style={{ ...S.input, marginTop: 6 }}
+                value={roleOutro}
+                onChange={(e) => setRoleOutro(e.target.value)}
+                placeholder="Descreva a função"
+              />
+            )}
+          </Field>
+          <Field label="Vagas por atendimento (turno)">
+            <input
+              type="number"
+              min={0}
+              max={99}
+              style={{ ...S.input, maxWidth: 100 }}
+              value={vagasBase}
+              onChange={(e) => setVagasBase(Number(e.target.value))}
+            />
+          </Field>
+          <Field label="Como funciona o agendamento">
+            <select style={S.input} value={agendaModo} onChange={(e) => setAgendaModo(e.target.value)}>
+              {AGENDA_MODO_OPCOES.filter((o) => o.value !== AGENDA_MODO.PADRAO).map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {isModoDiasAgendamento(agendaModo) && (
+            <Field label="Dias em que o agendamento fica disponível">
+              <DiasAgendamentoSelector
+                dias={diasAgendamento}
+                onToggle={toggleDiaAgendamento}
+                hint="Ex.: nutricionista atende na sexta — marque terça, quarta e quinta para liberar agendamento até 3 dias antes."
+              />
+            </Field>
+          )}
+          <p style={S.gradeTitle}>Dias e turnos na UBS</p>
+          <GradeDiasTurnos gradeMap={gradeMap} onToggle={toggleTurno} />
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+            <button
+              type="button"
+              style={{ ...S.btnAdd, opacity: saving ? 0.6 : 1 }}
+              disabled={saving}
+              onClick={handleCreate}
+            >
+              {saving ? "Cadastrando…" : "Cadastrar profissional"}
+            </button>
+            <button type="button" style={S.btnDel} onClick={() => setAberto(false)}>
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DiasAgendamentoSelector({ dias, onToggle, hint }) {
+  const ativos = dias || [];
+  return (
+    <div style={S.diasAgendamentoBox}>
+      {hint ? <p style={S.gradeHint}>{hint}</p> : null}
+      <div style={S.gradeList}>
+        {ORDEM_DIA_SEMANA_GRADE.map((dia) => (
+          <label key={dia} style={S.gradeChk}>
+            <input type="checkbox" checked={ativos.includes(dia)} onChange={() => onToggle(dia)} />
+            {DAY_LABEL[dia] || dia}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function novoIdSessaoProf(prefix) {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function ProfissionalSessoesEditor({
+  sessoes,
+  onChange,
+  showToast,
+  tiposMap,
+  tipoField,
+  normalizeFn,
+  idPrefix,
+  hint,
+  defaultNovo,
+}) {
+  const [novo, setNovo] = useState(defaultNovo);
+
+  function atualizar(lista) {
+    onChange(normalizeFn(lista));
+  }
+
+  function remover(id) {
+    atualizar(sessoes.filter((s) => s.id !== id));
+  }
+
+  function adicionar() {
+    const vagas = Number(novo.vagas);
+    if (!Number.isFinite(vagas) || vagas < 0) return;
+    const linha = {
+      id: novoIdSessaoProf(idPrefix),
+      [tipoField]: novo[tipoField],
+      dia: novo.dia,
+      turno: novo.turno,
+      vagas: Math.round(vagas),
+    };
+    const uk = `${linha[tipoField]}|${linha.dia}|${linha.turno}`;
+    if (sessoes.some((s) => `${s[tipoField]}|${s.dia}|${s.turno}` === uk)) {
+      showToast?.("Já existe atendimento com este tipo, dia e turno.", "info");
+      return;
+    }
+    atualizar([...sessoes, linha]);
+  }
+
+  return (
+    <div style={S.medicoSessoesWrap}>
+      {hint ? <p style={S.gradeHint}>{hint}</p> : null}
+      {sessoes.length > 0 && (
+        <ul style={S.medicoSessoesList}>
+          {sessoes.map((s) => (
+            <li key={s.id} style={S.medicoSessaoItem}>
+              <span style={S.medicoSessaoTxt}>
+                <strong>{tiposMap[s[tipoField]]?.label || s[tipoField]}</strong>
+                {" · "}
+                {DAY_LABEL[s.dia] || s.dia}
+                {" · "}
+                {s.turno === "manha" ? "Manhã" : "Tarde"}
+                {" · "}
+                {s.vagas} vaga{s.vagas !== 1 ? "s" : ""}
+              </span>
+              <button type="button" style={S.btnDel} onClick={() => remover(s.id)}>
+                Remover
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div style={S.medicoSessaoForm}>
+        <select
+          style={S.input}
+          value={novo[tipoField]}
+          onChange={(e) => setNovo((n) => ({ ...n, [tipoField]: e.target.value }))}
+        >
+          {Object.entries(tiposMap).map(([k, m]) => (
+            <option key={k} value={k}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+        <select style={S.input} value={novo.dia} onChange={(e) => setNovo((n) => ({ ...n, dia: e.target.value }))}>
+          {ORDEM_DIA_SEMANA_GRADE.map((d) => (
+            <option key={d} value={d}>
+              {DAY_LABEL[d]}
+            </option>
+          ))}
+        </select>
+        <select
+          style={S.input}
+          value={novo.turno}
+          onChange={(e) => setNovo((n) => ({ ...n, turno: e.target.value }))}
+        >
+          <option value="manha">Manhã</option>
+          <option value="tarde">Tarde</option>
+        </select>
+        <input
+          type="number"
+          min={0}
+          max={99}
+          style={S.inputNum}
+          value={novo.vagas}
+          onChange={(e) => setNovo((n) => ({ ...n, vagas: Number(e.target.value) }))}
+          title="Quantidade de vagas"
+        />
+        <button type="button" style={S.btnSave} onClick={adicionar}>
+          Adicionar
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function GradeDiasTurnos({ gradeMap, onToggle }) {
+  return (
+    <div style={S.gradeList}>
+      {ORDEM_DIA_SEMANA_GRADE.map((dia) => {
+        const ativos = gradeMap[dia] || [];
+        return (
+          <div key={dia} style={S.gradeRow}>
+            <span style={S.gradeDia}>{DAY_LABEL[dia] || dia}</span>
+            <div style={S.gradeTurnos}>
+              <label style={S.gradeChk}>
+                <input
+                  type="checkbox"
+                  checked={ativos.includes("manha")}
+                  onChange={() => onToggle(dia, "manha")}
+                />
+                Manhã
+              </label>
+              <label style={S.gradeChk}>
+                <input
+                  type="checkbox"
+                  checked={ativos.includes("tarde")}
+                  onChange={() => onToggle(dia, "tarde")}
+                />
+                Tarde
+              </label>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ProfRow({
+  specKey,
+  nome,
+  doc,
+  profCfg,
+  isCustom = false,
+  isMedico = false,
+  isEnfermeira = false,
+  pccuTotal = DEFAULT_PCCU_TOTAL,
+  onSave,
+  onDelete,
+  showToast,
+}) {
   const [val, setVal] = useState(nome);
   const [gradeMap, setGradeMap] = useState(() => gradeMapInicialProf(specKey, doc));
-  const meta = SPEC_META[specKey] || {};
+  const [medicoSessoes, setMedicoSessoes] = useState(() =>
+    isMedico ? medicoSessoesEfetivas(profCfg) : []
+  );
+  const [enfermeiraSessoes, setEnfermeiraSessoes] = useState(() =>
+    isEnfermeira ? enfermeiraSessoesEfetivas(profCfg, pccuTotal) : []
+  );
+  const sessionDefs = useMemo(
+    () => (isCustom || isMedico || isEnfermeira ? [] : getSessionDefsForSpecKey(specKey)),
+    [specKey, isCustom, isMedico, isEnfermeira]
+  );
+  const [vagasPorTipo, setVagasPorTipo] = useState(() => {
+    const out = {};
+    for (const d of sessionDefs) {
+      const saved = profCfg?.vagasPorTipo?.[d.medicoTipo || d.id];
+      out[d.id] = saved != null ? saved : d.defaultTotal;
+    }
+    return out;
+  });
+  const [vagasBase, setVagasBase] = useState(() => {
+    const v = profCfg?.vagasBase;
+    return v != null ? v : 8;
+  });
+  const [agendaModo, setAgendaModo] = useState(() =>
+    normalizarAgendaModo(profCfg?.agendaModo || defaultAgendaModoParaSpec(specKey))
+  );
+  const [diasAgendamento, setDiasAgendamento] = useState(() =>
+    normalizeDiasAgendamentoLista(
+      profCfg?.diasAgendamento?.length
+        ? profCfg.diasAgendamento
+        : defaultDiasAgendamentoParaSpec(specKey)
+    )
+  );
+  const meta = getSpecMetaForKey(specKey, {
+    profissionalConfigPorSpec: { [specKey]: profCfg },
+    roleFallback: doc?.role,
+  });
   const snapDocGrade = doc?.id
     ? JSON.stringify(doc?.atendimentoDiasTurnos || {})
     : `new-${specKey}`;
@@ -749,6 +1415,31 @@ function ProfRow({ specKey, nome, doc, onSave, onDelete }) {
   useEffect(() => {
     setGradeMap(gradeMapInicialProf(specKey, doc));
   }, [specKey, doc?.id, snapDocGrade]);
+
+  useEffect(() => {
+    setAgendaModo(normalizarAgendaModo(profCfg?.agendaModo || defaultAgendaModoParaSpec(specKey)));
+    setDiasAgendamento(
+      normalizeDiasAgendamentoLista(
+        profCfg?.diasAgendamento?.length
+          ? profCfg.diasAgendamento
+          : defaultDiasAgendamentoParaSpec(specKey)
+      )
+    );
+    if (isMedico) {
+      setMedicoSessoes(medicoSessoesEfetivas(profCfg));
+    } else if (isEnfermeira) {
+      setEnfermeiraSessoes(enfermeiraSessoesEfetivas(profCfg, pccuTotal));
+    } else if (isCustom) {
+      setVagasBase(profCfg?.vagasBase != null ? profCfg.vagasBase : 8);
+    } else {
+      const out = {};
+      for (const d of sessionDefs) {
+        const saved = profCfg?.vagasPorTipo?.[d.medicoTipo || d.id];
+        out[d.id] = saved != null ? saved : d.defaultTotal;
+      }
+      setVagasPorTipo(out);
+    }
+  }, [specKey, profCfg, isCustom, isMedico, isEnfermeira, pccuTotal, sessionDefs]);
 
   const temCadastro = Boolean(doc?.id);
 
@@ -761,6 +1452,15 @@ function ProfRow({ specKey, nome, doc, onSave, onDelete }) {
     });
   }
 
+  function toggleDiaAgendamento(dia) {
+    setDiasAgendamento((prev) => {
+      const s = new Set(prev);
+      if (s.has(dia)) s.delete(dia);
+      else s.add(dia);
+      return normalizeDiasAgendamentoLista([...s]);
+    });
+  }
+
   return (
     <div style={S.profRow}>
       <div style={{ ...S.avSmall, background: meta.bg || "#F1F5F9", color: meta.tc || "#475569" }}>
@@ -769,51 +1469,149 @@ function ProfRow({ specKey, nome, doc, onSave, onDelete }) {
       <div style={{ flex: 1, minWidth: 0 }}>
         <p style={S.profRole}>{meta.role || specKey}</p>
         <input style={S.input} value={val} onChange={(e) => setVal(e.target.value)} />
-        <p style={S.gradeTitle}>Dias e turnos na UBS (segunda a sexta)</p>
-        <p style={S.gradeHint}>
-          Todos os dias e os dois turnos podem ser marcados, mesmo que ainda não apareçam na grade do app — assim a
-          recepção antecipa mudanças na agenda.
-        </p>
-        {specKey === "dentPatrick" && (
-          <p style={{ ...S.profHintMuted, marginTop: 4 }}>
-            Às <strong>sexta-feiras à tarde</strong> o Dr. Patrick não atende na unidade (turno reservado para{" "}
-            <strong>visitas domiciliares</strong>).
-          </p>
+        {isMedico ? (
+          <>
+            <p style={S.gradeTitle}>Atendimentos na agenda</p>
+            <ProfissionalSessoesEditor
+              sessoes={medicoSessoes}
+              onChange={setMedicoSessoes}
+              showToast={showToast}
+              tiposMap={MEDICO_TIPO}
+              tipoField="medicoTipo"
+              normalizeFn={normalizeMedicoSessoesConfig}
+              idPrefix="ms"
+              hint={
+                <>
+                  Cadastre cada tipo com <strong>dia</strong>, <strong>turno</strong> (manhã e tarde sempre
+                  disponíveis; hoje a UBS funciona das 13h às 18h) e <strong>vagas</strong>. Ex.: gestantes, terça à
+                  tarde, 6 vagas.
+                </>
+              }
+              defaultNovo={{ medicoTipo: "clinico", dia: "segunda", turno: "tarde", vagas: 8 }}
+            />
+          </>
+        ) : isEnfermeira ? (
+          <>
+            <p style={S.gradeTitle}>Atendimentos na agenda (PCCU e enfermagem)</p>
+            <ProfissionalSessoesEditor
+              sessoes={enfermeiraSessoes}
+              onChange={setEnfermeiraSessoes}
+              showToast={showToast}
+              tiposMap={ENFERMEIRA_ATENDIMENTO_TIPO}
+              tipoField="enfermeiraTipo"
+              normalizeFn={normalizeEnfermeiraSessoesConfig}
+              idPrefix="es"
+              hint={
+                <>
+                  Informe <strong>PCCU</strong> ou <strong>enfermagem</strong>, o <strong>dia</strong>, o{" "}
+                  <strong>turno</strong> (manhã/tarde) e as <strong>vagas</strong>. Ex.: PCCU, quarta à tarde, 15
+                  vagas.
+                </>
+              }
+              defaultNovo={{ enfermeiraTipo: "pccu", dia: "quarta", turno: "tarde", vagas: 15 }}
+            />
+          </>
+        ) : (
+          <>
+            <p style={S.gradeTitle}>Dias e turnos na UBS (segunda a sexta)</p>
+            <p style={S.gradeHint}>
+              Todos os dias e os dois turnos podem ser marcados, mesmo que ainda não apareçam na grade do app — assim a
+              recepção antecipa mudanças na agenda.
+            </p>
+            {specKey === "dentPatrick" && (
+              <p style={{ ...S.profHintMuted, marginTop: 4 }}>
+                Às <strong>sexta-feiras à tarde</strong> o Dr. Patrick não atende na unidade (turno reservado para{" "}
+                <strong>visitas domiciliares</strong>).
+              </p>
+            )}
+            <GradeDiasTurnos gradeMap={gradeMap} onToggle={toggleTurno} />
+          </>
         )}
-        <div style={S.gradeList}>
-          {ORDEM_DIA_SEMANA_GRADE.map((dia) => {
-            const ativos = gradeMap[dia] || [];
-            return (
-              <div key={dia} style={S.gradeRow}>
-                <span style={S.gradeDia}>{DAY_LABEL[dia] || dia}</span>
-                <div style={S.gradeTurnos}>
-                  <label style={S.gradeChk}>
-                    <input
-                      type="checkbox"
-                      checked={ativos.includes("manha")}
-                      onChange={() => toggleTurno(dia, "manha")}
-                    />
-                    Manhã
-                  </label>
-                  <label style={S.gradeChk}>
-                    <input
-                      type="checkbox"
-                      checked={ativos.includes("tarde")}
-                      onChange={() => toggleTurno(dia, "tarde")}
-                    />
-                    Tarde
-                  </label>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        <p style={S.gradeTitle}>
+          {isMedico || isEnfermeira ? "Regra de agendamento" : "Vagas e agendamento"}
+        </p>
+        {isMedico || isEnfermeira ? null : isCustom ? (
+          <div style={S.vagasAgendaRow}>
+            <label style={S.vagasAgendaLbl}>
+              Vagas por turno
+              <input
+                type="number"
+                min={0}
+                max={99}
+                style={S.inputNum}
+                value={vagasBase}
+                onChange={(e) => setVagasBase(Number(e.target.value))}
+              />
+            </label>
+          </div>
+        ) : (
+          <div style={S.vagasAgendaCol}>
+            {sessionDefs.map((d) => (
+              <label key={d.id} style={S.vagasAgendaLbl}>
+                {d.label}
+                <input
+                  type="number"
+                  min={0}
+                  max={99}
+                  style={S.inputNum}
+                  value={vagasPorTipo[d.id] ?? d.defaultTotal}
+                  onChange={(e) =>
+                    setVagasPorTipo((prev) => ({ ...prev, [d.id]: Number(e.target.value) }))
+                  }
+                />
+              </label>
+            ))}
+          </div>
+        )}
+        <label style={S.vagasAgendaLblFull}>
+          Agendamento para agentes
+          <select style={S.input} value={agendaModo} onChange={(e) => setAgendaModo(e.target.value)}>
+            {AGENDA_MODO_OPCOES.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {isModoDiasAgendamento(agendaModo) && (
+          <>
+            <p style={{ ...S.gradeTitle, marginTop: 10 }}>Dias em que o agendamento fica disponível</p>
+            <DiasAgendamentoSelector
+              dias={diasAgendamento}
+              onToggle={toggleDiaAgendamento}
+              hint="Marque os dias da semana (antes do atendimento) em que agentes e direção podem solicitar vaga — por exemplo, terça, quarta e quinta para atendimento na sexta."
+            />
+          </>
+        )}
         {!temCadastro && (
           <p style={S.profHintMuted}>Sem cadastro no Firestore — Cadastrar cria o registro.</p>
         )}
       </div>
       <div style={S.profActions}>
-        <button type="button" style={S.btnSave} onClick={() => onSave(specKey, val, gradeMap)}>
+        <button
+          type="button"
+          style={S.btnSave}
+          onClick={() =>
+            onSave(
+              specKey,
+              val,
+              isMedico
+                ? gradeMapFromMedicoSessoes(medicoSessoes)
+                : isEnfermeira
+                  ? gradeMapFromEnfermeiraSessoes(enfermeiraSessoes)
+                  : gradeMap,
+              {
+                agendaModo,
+                vagasPorTipo,
+                vagasBase,
+                diasAgendamento,
+                medicoSessoes: isMedico ? medicoSessoes : undefined,
+                enfermeiraSessoes: isEnfermeira ? enfermeiraSessoes : undefined,
+                role: isCustom ? doc?.role || meta.role : undefined,
+              }
+            )
+          }
+        >
           {temCadastro ? "Salvar" : "Cadastrar"}
         </button>
         <button
@@ -874,6 +1672,15 @@ const S = {
   },
   profBlockFirst: { paddingTop: 0 },
   profBlockLast: { borderBottom: "none", paddingBottom: 0 },
+  profRemovidoRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    flexWrap: "wrap",
+    padding: "12px 0",
+    borderBottom: "1px solid #E2E8F0",
+  },
   profRow: { display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 0 },
   profActions: { display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 },
   profHintMuted: { fontSize: 11, color: "#94A3B8", margin: "6px 0 0" },
@@ -917,4 +1724,62 @@ const S = {
   waLabel: { display: "block", fontSize: 11, fontWeight: 600, color: "#64748B", marginBottom: 6 },
   waHint: { fontSize: 11, color: "#94A3B8", margin: "0 0 8px", lineHeight: 1.35 },
   waInputs: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
+  novoProfPanel: {
+    padding: "12px 14px",
+    background: "#F8FAFC",
+    borderRadius: 10,
+    border: "1px solid #E2E8F0",
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+  },
+  vagasAgendaCol: { display: "flex", flexDirection: "column", gap: 8, marginBottom: 8 },
+  vagasAgendaRow: { marginBottom: 8 },
+  vagasAgendaLbl: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    fontSize: 12,
+    color: "#475569",
+    flexWrap: "wrap",
+  },
+  vagasAgendaLblFull: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+    fontSize: 12,
+    color: "#475569",
+    marginTop: 4,
+  },
+  inputNum: {
+    padding: "5px 8px",
+    fontSize: 13,
+    border: "1px solid #E2E8F0",
+    borderRadius: 6,
+    width: 72,
+    background: "#fff",
+  },
+  diasAgendamentoBox: { marginTop: 4, marginBottom: 4 },
+  medicoSessoesWrap: { marginBottom: 8 },
+  medicoSessoesList: { listStyle: "none", padding: 0, margin: "0 0 10px", display: "flex", flexDirection: "column", gap: 6 },
+  medicoSessaoItem: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    flexWrap: "wrap",
+    padding: "8px 10px",
+    background: "#fff",
+    borderRadius: 8,
+    border: "0.5px solid #E2E8F0",
+    fontSize: 12,
+  },
+  medicoSessaoTxt: { color: "#334155", flex: 1, minWidth: 0 },
+  medicoSessaoForm: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))",
+    gap: 8,
+    alignItems: "center",
+  },
 };
