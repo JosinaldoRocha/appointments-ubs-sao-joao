@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect } from "react";
 import {
   SPEC_META,
+  DAY_LABEL,
   DEFAULT_PROF_NAMES,
   toDateStr,
   specTemSessaoNoTurno,
@@ -17,6 +18,11 @@ import {
   MSG_FORA_EXPEDIENTE_UBS,
   agenteOcultarCardPorEncerrado,
   specAtendimentoHojeOcultoAposTurnos,
+  specKeyEstaDesativado,
+  ORDEM_DIA_SEMANA_GRADE,
+  diasAtendimentoDefaultParaSpec,
+  turnosDefaultParaSpecNoDia,
+  normalizeAtendimentoDiasTurnosParaSpec,
 } from "../services/scheduleConfig";
 
 function dataHojeIso() {
@@ -41,6 +47,12 @@ function nomeProfissional(specKey, profissionaisMap) {
   const n = typeof p?.nome === "string" ? p.nome.trim() : "";
   if (n) return n;
   return DEFAULT_PROF_NAMES[specKey] || specKey;
+}
+
+function profissionalDocPorSpecKey(profissionaisMap, specKey) {
+  return (
+    Object.values(profissionaisMap || {}).find((p) => p.specKey === specKey || p.id === specKey) || null
+  );
 }
 
 function labelEscopoSuspensaoPontual(escopo) {
@@ -118,13 +130,56 @@ export default function TabAvisos({
   atendimentoSuspensoPorSpec = {},
   atendimentoSuspensoSlots = {},
   atendimentoDiasAtivosPorSpec = {},
+  specKeysDesativados = [],
+  onRemoverSuspensaoPontual,
+  onReativarAtendimentoSpec,
 }) {
   const hoje = dataHojeIso();
   const [agoraRef, setAgoraRef] = useState(() => new Date());
+  const [modalReativarSpecKey, setModalReativarSpecKey] = useState(null);
+  const [reativarDiasSel, setReativarDiasSel] = useState(() => new Set());
+  const [reativarTurnosPorDia, setReativarTurnosPorDia] = useState({});
   useEffect(() => {
     const t = setInterval(() => setAgoraRef(new Date()), 30_000);
     return () => clearInterval(t);
   }, []);
+
+  useEffect(() => {
+    if (!modalReativarSpecKey) return;
+    const sk = modalReativarSpecKey;
+    const def = diasAtendimentoDefaultParaSpec(sk);
+    const cfg = atendimentoDiasAtivosPorSpec?.[sk];
+    const fromCfg = Array.isArray(cfg) ? cfg.filter((d) => ORDEM_DIA_SEMANA_GRADE.includes(d)) : [];
+    const initialDias = fromCfg.length > 0 ? fromCfg : [...def];
+    setReativarDiasSel(new Set(initialDias));
+
+    const prof = profissionalDocPorSpecKey(profissionaisMap, sk);
+    const norm = normalizeAtendimentoDiasTurnosParaSpec(sk, prof?.atendimentoDiasTurnos);
+    const turnos = {};
+    for (const dia of initialDias) {
+      const t = norm?.[dia] || turnosDefaultParaSpecNoDia(sk, dia);
+      const hasT = t.length > 0;
+      turnos[dia] = {
+        manha: hasT ? t.includes("manha") : true,
+        tarde: hasT ? t.includes("tarde") : true,
+      };
+    }
+    setReativarTurnosPorDia(turnos);
+  }, [modalReativarSpecKey, atendimentoDiasAtivosPorSpec, profissionaisMap]);
+
+  useEffect(() => {
+    if (!modalReativarSpecKey) return;
+    setReativarTurnosPorDia((prev) => {
+      const next = { ...prev };
+      for (const d of reativarDiasSel) {
+        if (next[d] == null) next[d] = { manha: true, tarde: true };
+      }
+      for (const k of Object.keys(next)) {
+        if (!reativarDiasSel.has(k)) delete next[k];
+      }
+      return next;
+    });
+  }, [reativarDiasSel, modalReativarSpecKey]);
 
   const specsListaAvisos = useMemo(() => {
     const base = (() => {
@@ -194,7 +249,8 @@ export default function TabAvisos({
   const suspensaoPeriodo = useMemo(() => {
     const m = atendimentoSuspensoPorSpec || {};
     const entries = Object.entries(m).filter(
-      ([, v]) =>
+      ([specKey, v]) =>
+        !specKeyEstaDesativado(specKey, specKeysDesativados) &&
         v &&
         typeof v.desde === "string" &&
         /^\d{4}-\d{2}-\d{2}$/.test(v.desde.trim()) &&
@@ -204,7 +260,7 @@ export default function TabAvisos({
     return entries
       .filter(([specKey]) => specSuspensaoAfetaAgenda(specKey, m, hoje, atendimentoDiasAtivosPorSpec || {}))
       .sort((a, b) => a[1].desde.localeCompare(b[1].desde));
-  }, [atendimentoSuspensoPorSpec, atendimentoDiasAtivosPorSpec, hoje, isRecepcao]);
+  }, [atendimentoSuspensoPorSpec, atendimentoDiasAtivosPorSpec, hoje, isRecepcao, specKeysDesativados]);
 
   const suspensaoPontual = useMemo(() => {
     const slots = atendimentoSuspensoSlots || {};
@@ -213,6 +269,7 @@ export default function TabAvisos({
     for (const key of Object.keys(slots)) {
       const p = parseAtendimentoSuspensoSlotKey(key);
       if (!p) continue;
+      if (specKeyEstaDesativado(p.specKey, specKeysDesativados)) continue;
       if (!isRecepcao && !suspensaoPontualSlotVisivelParaAgente(p.specKey, p.data, hoje, diasCfg)) continue;
       if (isRecepcao && p.data < hoje) continue;
       const motivo = typeof slots[key]?.motivo === "string" ? slots[key].motivo.trim() : "";
@@ -220,12 +277,12 @@ export default function TabAvisos({
     }
     out.sort((a, b) => (a.data !== b.data ? a.data.localeCompare(b.data) : a.specKey.localeCompare(b.specKey)));
     return out;
-  }, [atendimentoSuspensoSlots, atendimentoDiasAtivosPorSpec, hoje, isRecepcao]);
+  }, [atendimentoSuspensoSlots, atendimentoDiasAtivosPorSpec, hoje, isRecepcao, specKeysDesativados]);
 
-  const encerrados = useMemo(() => {
-    if (isRecepcao) return [];
-    return listaAvisosEncerrado(specs, atendimentoEncerradoMap);
-  }, [specs, atendimentoEncerradoMap, isRecepcao]);
+  const encerrados = useMemo(
+    () => listaAvisosEncerrado(specs, atendimentoEncerradoMap),
+    [specs, atendimentoEncerradoMap]
+  );
 
   const temAmanha =
     !!avisoVisitaDomiciliarAmanha ||
@@ -248,8 +305,9 @@ export default function TabAvisos({
       <header style={S.header}>
         <h1 style={S.title}>Avisos</h1>
         <p style={S.lead}>
-          Informativos da unidade: calendário, suspensões, encerramentos, horário de expediente e situações que
-          afetam o agendamento.
+          {isRecepcao
+            ? "Calendário, suspensões, encerramentos de turno e demais situações que afetam a agenda — gerencie reativações e remoções aqui."
+            : "Informativos da unidade: calendário, suspensões, encerramentos, horário de expediente e situações que afetam o agendamento."}
         </p>
       </header>
 
@@ -384,7 +442,14 @@ export default function TabAvisos({
       ) : null}
 
       {temSuspensao ? (
-        <Section title="Suspensões de atendimento" hint="Profissionais ou turnos sem agendamento na agenda.">
+        <Section
+          title="Suspensões de atendimento"
+          hint={
+            isRecepcao
+              ? "Profissionais ou turnos sem agendamento na agenda. Use os botões para reativar ou remover suspensões pontuais."
+              : "Profissionais ou turnos sem agendamento na agenda."
+          }
+        >
           <div style={S.cardList}>
             {suspensaoPeriodo.map(([specKey, entry]) => {
               const nome = nomeProfissional(specKey, profissionaisMap);
@@ -414,6 +479,15 @@ export default function TabAvisos({
                     )}{" "}
                     {fim}
                   </p>
+                  {isRecepcao && typeof onReativarAtendimentoSpec === "function" ? (
+                    <button
+                      type="button"
+                      style={S.cardActionBtn}
+                      onClick={() => setModalReativarSpecKey(specKey)}
+                    >
+                      Reativar atendimento…
+                    </button>
+                  ) : null}
                 </Card>
               );
             })}
@@ -447,6 +521,15 @@ export default function TabAvisos({
                       </>
                     ) : null}
                   </p>
+                  {isRecepcao && typeof onRemoverSuspensaoPontual === "function" ? (
+                    <button
+                      type="button"
+                      style={S.cardActionBtnSecondary}
+                      onClick={() => onRemoverSuspensaoPontual(row.key)}
+                    >
+                      Remover suspensão
+                    </button>
+                  ) : null}
                 </Card>
               );
             })}
@@ -457,7 +540,11 @@ export default function TabAvisos({
       {temEncerrado ? (
         <Section
           title="Atendimentos encerrados"
-          hint="Marcados pela recepção no dia do atendimento; os cartões somem da aba Vagas."
+          hint={
+            isRecepcao
+              ? "Turnos marcados como encerrados no dia do atendimento; os cartões somem da aba Vagas."
+              : "Marcados pela recepção no dia do atendimento; os cartões somem da aba Vagas."
+          }
         >
           <div style={S.cardList}>
             {encerrados.map(({ spec, turno }) => {
@@ -490,6 +577,126 @@ export default function TabAvisos({
           </div>
         </Section>
       ) : null}
+
+      {modalReativarSpecKey && typeof onReativarAtendimentoSpec === "function" && (
+        <div
+          style={S.modalBackdrop}
+          role="presentation"
+          onClick={() => setModalReativarSpecKey(null)}
+        >
+          <div
+            style={S.modalBox}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="titulo-reativar-avisos"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="titulo-reativar-avisos" style={S.modalTitle}>
+              Reativar atendimento
+            </h2>
+            <p style={S.modalLead}>
+              {nomeProfissional(modalReativarSpecKey, profissionaisMap)}
+              {SPEC_META[modalReativarSpecKey]?.role
+                ? ` (${SPEC_META[modalReativarSpecKey].role})`
+                : ""}
+            </p>
+            <p style={S.modalHint}>
+              Marque livremente os dias de <strong>segunda a sexta-feira</strong> e, em cada dia, os{" "}
+              <strong>turnos</strong> (manhã e/ou tarde) com atendimento.
+            </p>
+            <div style={S.modalChecksCol}>
+              {ORDEM_DIA_SEMANA_GRADE.map((dia) => {
+                const marcado = reativarDiasSel.has(dia);
+                const t = reativarTurnosPorDia[dia] || { manha: true, tarde: true };
+                return (
+                  <div key={dia} style={S.modalDiaTurnoBlock}>
+                    <label style={S.modalCheck}>
+                      <input
+                        type="checkbox"
+                        checked={marcado}
+                        onChange={() => {
+                          setReativarDiasSel((prev) => {
+                            const n = new Set(prev);
+                            if (n.has(dia)) n.delete(dia);
+                            else n.add(dia);
+                            return n;
+                          });
+                        }}
+                      />
+                      <span style={{ fontWeight: 700 }}>{DAY_LABEL[dia] || dia}</span>
+                    </label>
+                    {marcado && (
+                      <div style={S.modalTurnosInline}>
+                        <label style={S.modalCheckTurno}>
+                          <input
+                            type="checkbox"
+                            checked={!!t.manha}
+                            onChange={() =>
+                              setReativarTurnosPorDia((prev) => {
+                                const cur = prev[dia] || { manha: true, tarde: true };
+                                return { ...prev, [dia]: { ...cur, manha: !cur.manha } };
+                              })
+                            }
+                          />
+                          <span>Manhã</span>
+                        </label>
+                        <label style={S.modalCheckTurno}>
+                          <input
+                            type="checkbox"
+                            checked={!!t.tarde}
+                            onChange={() =>
+                              setReativarTurnosPorDia((prev) => {
+                                const cur = prev[dia] || { manha: true, tarde: true };
+                                return { ...prev, [dia]: { ...cur, tarde: !cur.tarde } };
+                              })
+                            }
+                          />
+                          <span>Tarde</span>
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div style={S.modalFooter}>
+              <button type="button" style={S.modalBtnGhost} onClick={() => setModalReativarSpecKey(null)}>
+                Cancelar
+              </button>
+              <button
+                type="button"
+                style={S.modalBtnPrimary}
+                onClick={() => {
+                  const dias = [...reativarDiasSel].filter((d) => ORDEM_DIA_SEMANA_GRADE.includes(d)).sort();
+                  if (dias.length === 0) {
+                    window.alert("Selecione pelo menos um dia da semana (segunda a sexta-feira).");
+                    return;
+                  }
+                  const turnosFirestore = {};
+                  for (const d of dias) {
+                    const tu = reativarTurnosPorDia[d] || { manha: true, tarde: true };
+                    const arr = [];
+                    if (tu.manha) arr.push("manha");
+                    if (tu.tarde) arr.push("tarde");
+                    if (arr.length === 0) {
+                      window.alert(
+                        `Para ${DAY_LABEL[d] || d}, marque pelo menos um turno (manhã ou tarde).`
+                      );
+                      return;
+                    }
+                    turnosFirestore[d] = arr.sort();
+                  }
+                  void Promise.resolve(
+                    onReativarAtendimentoSpec(modalReativarSpecKey, dias, turnosFirestore)
+                  ).then(() => setModalReativarSpecKey(null));
+                }}
+              >
+                Reativar e salvar dias
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -515,6 +722,77 @@ const S = {
   cardList: { display: "flex", flexDirection: "column", gap: 8 },
   card: { padding: "10px 14px", borderRadius: 10, border: "1px solid #E2E8F0" },
   cardLine: { margin: 0, fontSize: 13, fontWeight: 600, lineHeight: 1.45 },
+  cardActionBtn: {
+    marginTop: 10,
+    padding: "8px 12px",
+    fontSize: 12,
+    fontWeight: 700,
+    borderRadius: 8,
+    border: "1px solid #F97316",
+    background: "#FFF7ED",
+    color: "#9A3412",
+    cursor: "pointer",
+  },
+  cardActionBtnSecondary: {
+    marginTop: 10,
+    padding: "8px 12px",
+    fontSize: 12,
+    fontWeight: 700,
+    borderRadius: 8,
+    border: "1px solid #CBD5E1",
+    background: "#fff",
+    color: "#475569",
+    cursor: "pointer",
+  },
+  modalBackdrop: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(15, 23, 42, 0.45)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+    zIndex: 1000,
+  },
+  modalBox: {
+    width: "100%",
+    maxWidth: 440,
+    maxHeight: "90vh",
+    overflow: "auto",
+    background: "#fff",
+    borderRadius: 12,
+    padding: "20px 22px",
+    boxShadow: "0 12px 40px rgba(15, 23, 42, 0.2)",
+  },
+  modalTitle: { margin: "0 0 8px", fontSize: 18, fontWeight: 700, color: "#0F172A" },
+  modalLead: { margin: "0 0 12px", fontSize: 14, color: "#475569" },
+  modalHint: { margin: "0 0 14px", fontSize: 13, color: "#64748B", lineHeight: 1.45 },
+  modalChecksCol: { display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 },
+  modalDiaTurnoBlock: { display: "flex", flexDirection: "column", gap: 6 },
+  modalCheck: { display: "flex", alignItems: "center", gap: 8, fontSize: 14, cursor: "pointer" },
+  modalTurnosInline: { display: "flex", gap: 16, paddingLeft: 26 },
+  modalCheckTurno: { display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" },
+  modalFooter: { display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8 },
+  modalBtnGhost: {
+    padding: "10px 16px",
+    fontSize: 14,
+    fontWeight: 600,
+    borderRadius: 8,
+    border: "1px solid #CBD5E1",
+    background: "#fff",
+    color: "#475569",
+    cursor: "pointer",
+  },
+  modalBtnPrimary: {
+    padding: "10px 16px",
+    fontSize: 14,
+    fontWeight: 700,
+    borderRadius: 8,
+    border: "none",
+    background: "#0C447C",
+    color: "#fff",
+    cursor: "pointer",
+  },
   cardTone: {
     info: { borderColor: "#93C5FD", background: "linear-gradient(180deg, #EFF6FF 0%, #DBEAFE 100%)", color: "#1E3A5F" },
     warn: { borderColor: "#FDBA74", background: "linear-gradient(180deg, #FFEDD5 0%, #FEF3C7 100%)", color: "#7C2D12" },
