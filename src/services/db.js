@@ -45,6 +45,8 @@ const EMPTY_SETTINGS = {
   dentQuartaVisitaDomiciliarDesde: "",
   recepcionistaAtivoWhatsapp: "",
   recepcionistaAtivoNome: "",
+  /** WhatsApp da direção — pedidos de encaixe feitos por agentes; cadastro em Config. */
+  whatsappDirecaoEncaixe: "",
   ultimoRecepcionistaWhatsapp: "",
   ultimoRecepcionistaNome: "",
   atendimentoEncerradoPorSpecData: {},
@@ -131,6 +133,8 @@ function normalizeSettingsData(raw = {}) {
     recepcionistaAtivoWhatsapp:
       typeof d.recepcionistaAtivoWhatsapp === "string" ? d.recepcionistaAtivoWhatsapp : "",
     recepcionistaAtivoNome: typeof d.recepcionistaAtivoNome === "string" ? d.recepcionistaAtivoNome : "",
+    whatsappDirecaoEncaixe:
+      typeof d.whatsappDirecaoEncaixe === "string" ? d.whatsappDirecaoEncaixe : "",
     ultimoRecepcionistaWhatsapp:
       typeof d.ultimoRecepcionistaWhatsapp === "string" ? d.ultimoRecepcionistaWhatsapp : "",
     ultimoRecepcionistaNome:
@@ -359,6 +363,26 @@ export function digitosWhatsappRecepcaoParaSolicitacao(settings) {
   const ultimo = String(settings.ultimoRecepcionistaWhatsapp || "").replace(/\D/g, "");
   if (ultimo.length >= 10) return ultimo;
   return "";
+}
+
+/** WhatsApp da direção para pedidos de encaixe enviados por agentes (`settings.whatsappDirecaoEncaixe`). */
+export function digitosWhatsappDirecaoEncaixeParaSolicitacao(settings) {
+  if (!settings) return "";
+  const d = String(settings.whatsappDirecaoEncaixe || "").replace(/\D/g, "");
+  return d.length >= 10 ? d : "";
+}
+
+/**
+ * Encaixe: agente → direção; direção → recepção. Demais solicitações → recepção.
+ * @returns {{ digits: string, destino: "direcao" | "recepcao" }}
+ */
+export function resolveWhatsappDestinoSolicitacao(settings, { somenteEncaixe, isDiretor }) {
+  const pedidoEncaixe = somenteEncaixe === true;
+  const paraDirecao = pedidoEncaixe && !isDiretor;
+  if (paraDirecao) {
+    return { digits: digitosWhatsappDirecaoEncaixeParaSolicitacao(settings), destino: "direcao" };
+  }
+  return { digits: digitosWhatsappRecepcaoParaSolicitacao(settings), destino: "recepcao" };
 }
 
 export async function updateSettings(partial) {

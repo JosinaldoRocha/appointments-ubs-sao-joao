@@ -32,6 +32,7 @@ const SETTINGS_DEFAULT = {
   dentQuartaVisitaDomiciliarDesde: "",
   recepcionistaAtivoWhatsapp: "",
   recepcionistaAtivoNome: "",
+  whatsappDirecaoEncaixe: "",
   ultimoRecepcionistaWhatsapp: "",
   ultimoRecepcionistaNome: "",
   atendimentoEncerradoPorSpecData: {},
