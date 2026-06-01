@@ -459,12 +459,6 @@ export const BASE_SCHEDULE = {
         key: "dentFernando",
         sessions: [{ label: "Tarde – Odontologia", total: 10 }],
       },
-      {
-        key: "nutricionista",
-        /** Atendimento às segundas; agendamento liberado em qualquer dia útil (ver buildVisibleSegments). */
-        agendaQualquerDiaUtil: true,
-        sessions: [{ label: "Tarde – Nutrição", total: 8 }],
-      },
     ],
   },
   terca: {
@@ -500,11 +494,6 @@ export const BASE_SCHEDULE = {
             total: 15,
           },
         ],
-      },
-      {
-        key: "psicologa",
-        /** Atendimento às quartas; agendamento só no dia útil anterior (terça-feira, salvo feriados). */
-        sessions: [{ label: "Tarde – Psicologia", total: 8, waitlistEnabled: true }],
       },
       {
         key: "tecnicoEnfermagem",
@@ -561,6 +550,16 @@ export const BASE_SCHEDULE = {
         key: "enfermeira",
         sessions: [{ label: "Tarde – Enfermagem", total: 15 }],
       },
+      {
+        key: "nutricionista",
+        /** Atendimento às sextas; cartão visível todos os dias; agendamento na véspera ou no dia (7h–14h). */
+        sessions: [{ label: "Tarde – Nutrição", total: 8 }],
+      },
+      {
+        key: "psicologa",
+        /** Atendimento às sextas; cartão visível todos os dias; agendamento na véspera ou no dia (7h–14h). */
+        sessions: [{ label: "Tarde – Psicologia", total: 8, waitlistEnabled: true }],
+      },
     ],
   },
 };
@@ -574,6 +573,53 @@ export function diasAtendimentoDefaultParaSpec(specKey) {
     if (dayData.specs?.some((s) => s.key === specKey)) out.push(dia);
   }
   return out;
+}
+
+const SPEC_KEYS_CARTAO_PREV_SOMENTE_VESPERA = new Set([
+  "medico",
+  "dentFernando",
+  "dentPatrick",
+  "enfermeira",
+]);
+
+/** Nutrição e psicologia: cartão visível todos os dias; agendamento na véspera (13h30–18h) ou no dia (7h–14h). */
+const SPEC_KEYS_AGENDA_VESPERA_OU_MESMO_DIA_ATE_14 = new Set(["psicologa", "nutricionista"]);
+
+export function specAgendaVesperaOuMesmoDiaAte14(specKey) {
+  return SPEC_KEYS_AGENDA_VESPERA_OU_MESMO_DIA_ATE_14.has(specKey);
+}
+
+/**
+ * Cartão `prev` só no dia útil anterior ao atendimento (médico, dentistas, enfermagem).
+ * Demais especialidades (ex.: nutrição, psicologia, fisioterapia) permanecem visíveis antes.
+ */
+export function cartaoPrevApenasDiaUtilAnterior(spec, profissionalConfigPorSpec = {}) {
+  if (!spec?.key) return true;
+  if (specAgendaVesperaOuMesmoDiaAte14(spec.key)) return false;
+  if (spec.agendaQualquerDiaUtil === true) return false;
+  const modo = normalizarAgendaModo(profissionalConfigPorSpec[spec.key]?.agendaModo);
+  if (modo === AGENDA_MODO.QUALQUER_DIA_UTIL) return false;
+  if (modo === AGENDA_MODO.DIAS_AGENDAMENTO) return false;
+  if (SPEC_KEYS_CARTAO_PREV_SOMENTE_VESPERA.has(spec.key)) return true;
+  if (isSpecKeyCustom(spec.key)) {
+    return modo !== AGENDA_MODO.QUALQUER_DIA_UTIL && modo !== AGENDA_MODO.DIAS_AGENDAMENTO;
+  }
+  return false;
+}
+
+/** Se o cartão de agendamento antecipado (`prev`) deve aparecer na lista. */
+export function deveExibirCartaoPrev({
+  spec,
+  todayStr,
+  atendimentoDateStr,
+  prevStr,
+  profissionalConfigPorSpec = {},
+}) {
+  if (!todayStr || !atendimentoDateStr || todayStr >= atendimentoDateStr) return false;
+  if (cartaoPrevApenasDiaUtilAnterior(spec, profissionalConfigPorSpec)) {
+    return prevStr === todayStr;
+  }
+  return todayStr < atendimentoDateStr;
 }
 
 /** Turnos (`manha` / `tarde`) que existem na grade base para `specKey` naquele dia. */
@@ -739,18 +785,22 @@ export function getSpecMetaForKey(specKey, { profissionalConfigPorSpec = {}, rol
 function enrichSpecAgendaFromConfig(spec, profissionalConfigPorSpec = {}) {
   const cfg = profissionalConfigPorSpec[spec.key];
   const modo = cfg?.agendaModo;
-  if (!modo || modo === AGENDA_MODO.PADRAO) return spec;
-  const sessions = (spec.sessions || []).map((s) => ({ ...s }));
-  if (modo === AGENDA_MODO.QUALQUER_DIA_UTIL) {
-    return { ...spec, sessions, agendaQualquerDiaUtil: true };
+  let out = spec;
+  if (modo && modo !== AGENDA_MODO.PADRAO) {
+    const sessions = (spec.sessions || []).map((s) => ({ ...s }));
+    if (modo === AGENDA_MODO.QUALQUER_DIA_UTIL) {
+      out = { ...spec, sessions, agendaQualquerDiaUtil: true };
+    } else if (modo === AGENDA_MODO.DIA_UTIL_ANTERIOR) {
+      out = { ...spec, sessions, agendaQualquerDiaUtil: false };
+    } else if (isModoDiasAgendamento(modo)) {
+      out = { ...spec, sessions, agendaQualquerDiaUtil: false };
+    }
   }
-  if (modo === AGENDA_MODO.DIA_UTIL_ANTERIOR) {
-    return { ...spec, sessions, agendaQualquerDiaUtil: false };
+  if (specAgendaVesperaOuMesmoDiaAte14(spec.key)) {
+    const { agendaQualquerDiaUtil, ...rest } = out;
+    out = rest;
   }
-  if (isModoDiasAgendamento(modo)) {
-    return { ...spec, sessions, agendaQualquerDiaUtil: false };
-  }
-  return spec;
+  return out;
 }
 
 function applyVagasOverrideToSessions(sessions, specKey, profissionalConfigPorSpec = {}) {
@@ -1042,7 +1092,7 @@ export function toDateStr(date) {
 /** Minutos desde meia-noite até o fim do turno da manhã (início da tarde). 12:00. */
 const TURNO_MANHA_FIM_MINUTOS = 12 * 60;
 
-/** Fim do turno da tarde no dia do atendimento (cartões “hoje” somem após este horário). 18:00 (reforma). */
+/** Fim do turno da tarde (recepção: “atendimento finalizado”). 18:00 (reforma). */
 const TURNO_TARDE_FIM_MINUTOS = 18 * 60;
 
 /** `"manha"` ou `"tarde"` conforme o relógio local. */
@@ -1071,53 +1121,22 @@ export function specTemSessaoNoTurno(spec, turno) {
 }
 
 /**
- * Cartão `same` na data de hoje: índices das sessões a exibir — turno atual e o seguinte
- * (antes de 12h: manhã + tarde quando existirem; a partir de 12h: só tarde). Turno da manhã
- * deixa de aparecer após 12h. Sessões sem rótulo Manhã/Tarde permanecem visíveis (agenda “dia inteiro”).
- * Demais cartões: retorna `null` → usar todas as sessões.
+ * Índices de sessões no cartão. Retorna `null` → exibir todas as sessões (turnos não são ocultados pelo relógio).
  */
 export function indicesSessoesAtendimentoHojeVisiveis(spec, agora = new Date()) {
-  if (spec?.windowType !== "same") return null;
-  const hoje = toDateStr(agora);
-  if (spec.atendimentoDate !== hoje) return null;
-  const sessions = spec.sessions || [];
-  if (sessions.length === 0) return [];
-  const d = agora instanceof Date ? agora : new Date(agora);
-  const min = d.getHours() * 60 + d.getMinutes();
-  const manhaJaPassou = min >= TURNO_MANHA_FIM_MINUTOS;
-  const out = [];
-  sessions.forEach((sess, idx) => {
-    const t = sessaoLabelParaTurno(sess.label);
-    if (t == null) {
-      out.push(idx);
-      return;
-    }
-    if (manhaJaPassou) {
-      if (t === "tarde") out.push(idx);
-    } else if (t === "manha" || t === "tarde") {
-      out.push(idx);
-    }
-  });
-  return out;
+  void spec;
+  void agora;
+  return null;
 }
 
 /**
- * Cartão de atendimento no dia atual (`same`): deve ficar oculto para todos os usuários
- * após o horário de encerramento do(s) turno(s) daquele profissional (manhã 12h; tarde 18h na reforma;
- * quem tem manhã e tarde some após 18h). Sessões sem rótulo manhã/tarde contam como “dia inteiro” até 18h.
+ * @deprecated Cartões permanecem visíveis após o turno; use `estaDentroJanelaSolicitacaoAgendamento` para bloquear solicitações.
+ * Mantido para compatibilidade — sempre retorna `false`.
  */
 export function specAtendimentoHojeOcultoAposTurnos(spec, agora = new Date()) {
-  if (spec.windowType !== "same") return false;
-  const hoje = toDateStr(agora);
-  if (spec.atendimentoDate !== hoje) return false;
-  const d = agora instanceof Date ? agora : new Date(agora);
-  const min = d.getHours() * 60 + d.getMinutes();
-  const hasManha = specTemSessaoNoTurno(spec, "manha");
-  const hasTarde = specTemSessaoNoTurno(spec, "tarde");
-  if (hasManha && hasTarde) return min >= TURNO_TARDE_FIM_MINUTOS;
-  if (hasManha && !hasTarde) return min >= TURNO_MANHA_FIM_MINUTOS;
-  if (!hasManha && hasTarde) return min >= TURNO_TARDE_FIM_MINUTOS;
-  return min >= TURNO_TARDE_FIM_MINUTOS;
+  void spec;
+  void agora;
+  return false;
 }
 
 /**
@@ -1409,6 +1428,29 @@ export function podeAgendarNosDiasConfigurados(todayStr, atendimentoDateStr, dia
   return diasPermitidos.includes(todayKey);
 }
 
+/** Dia útil anterior (`prev`) em que o agente pode solicitar vaga. */
+function calcPodeAgendarPrevPadrao({
+  spec,
+  today,
+  todayStr,
+  attStr,
+  prevStr,
+  holidaySet,
+  profissionalConfigPorSpec = {},
+}) {
+  if (specAgendaVesperaOuMesmoDiaAte14(spec.key)) {
+    return prevStr === todayStr;
+  }
+  if (spec.agendaQualquerDiaUtil === true) {
+    return isBusinessDay(today, holidaySet) && todayStr < attStr;
+  }
+  const modo = normalizarAgendaModo(profissionalConfigPorSpec[spec.key]?.agendaModo);
+  if (modo === AGENDA_MODO.QUALQUER_DIA_UTIL) {
+    return isBusinessDay(today, holidaySet) && todayStr < attStr;
+  }
+  return prevStr === todayStr;
+}
+
 function filtrarSessoesPrevPorJanela({
   sessions,
   specKey,
@@ -1443,48 +1485,39 @@ function chaveAgendaQualquerDiaUtil(seg) {
 }
 
 /**
- * Um cartão por combinação (chave + dia de atendimento) com `agendaQualquerDiaUtil`:
- * prioriza atendimento hoje (same); senão a data de atendimento mais próxima (prev).
+ * Um cartão por profissional + dia da semana de atendimento:
+ * prioriza `same` (hoje); senão o `prev` com a data de atendimento mais próxima.
  */
-function dedupeAgendaQualquerDiaUtil(segments) {
+function dedupePorProximoAtendimento(segments) {
   const groups = new Map();
+  const passThrough = [];
   for (const seg of segments) {
-    if (!seg.agendaQualquerDiaUtil) continue;
-    const ck = chaveAgendaQualquerDiaUtil(seg);
-    const g = groups.get(ck) || { same: null, prevs: [] };
-    if (seg.windowType === "same") g.same = seg;
-    else g.prevs.push(seg);
-    groups.set(ck, g);
-  }
-
-  function pickOne(ck) {
-    const g = groups.get(ck);
-    if (!g) return null;
-    if (g.same) return g.same;
-    if (g.prevs.length === 0) return null;
-    g.prevs.sort((a, b) => a.atendimentoDate.localeCompare(b.atendimentoDate));
-    return g.prevs[0];
-  }
-
-  const emitted = new Set();
-  const out = [];
-  for (const seg of segments) {
-    if (!seg.agendaQualquerDiaUtil) {
-      out.push(seg);
+    if (!seg?.key || !seg.atendimentoDia || !seg.atendimentoDate) {
+      passThrough.push(seg);
       continue;
     }
     const ck = chaveAgendaQualquerDiaUtil(seg);
-    if (emitted.has(ck)) continue;
-    emitted.add(ck);
-    const one = pickOne(ck);
-    if (one) out.push(one);
+    const g = groups.get(ck) || { same: null, prevs: [] };
+    if (seg.windowType === "same") g.same = seg;
+    else if (seg.windowType === "prev") g.prevs.push(seg);
+    groups.set(ck, g);
+  }
+  const out = [...passThrough];
+  for (const g of groups.values()) {
+    if (g.same) {
+      out.push(g.same);
+      continue;
+    }
+    if (g.prevs.length === 0) continue;
+    g.prevs.sort((a, b) => a.atendimentoDate.localeCompare(b.atendimentoDate));
+    out.push(g.prevs[0]);
   }
   return out;
 }
 
 /**
- * Monta cartões visíveis: janela "prev" (dia útil de agendamento) e "same" (sobras no dia do atendimento).
- * @param {boolean} [recepcao] — Se true, mantém cartões de atendimento no dia atual mesmo com agenda cheia (recepção precisa liberar vagas).
+ * Monta cartões visíveis: janela "prev" (dia útil de agendamento) e "same" (atendimento no dia atual).
+ * Cartões permanecem visíveis fora do expediente; solicitações são bloqueadas por `estaDentroJanelaSolicitacaoAgendamento`.
  */
 export function buildVisibleSegments({
   today,
@@ -1610,12 +1643,17 @@ export function buildVisibleSegments({
         const prevBus = previousBusinessDay(cand, holidaySet);
         const prevStr = toDateStr(prevBus);
 
-        const podeAgendarPrev =
-          spec.agendaQualquerDiaUtil === true
-            ? isBusinessDay(today, holidaySet) && todayStr < attStr
-            : prevStr === todayStr;
+        const podeAgendarPrev = calcPodeAgendarPrevPadrao({
+          spec,
+          today,
+          todayStr,
+          attStr,
+          prevStr,
+          holidaySet,
+          profissionalConfigPorSpec: profCfgMap,
+        });
 
-        const sessionsPrev = filtrarSessoesPrevPorJanela({
+        const sessionsAgendaveisPrev = filtrarSessoesPrevPorJanela({
           sessions,
           specKey: spec.key,
           todayStr,
@@ -1625,16 +1663,26 @@ export function buildVisibleSegments({
           holidaySet,
         });
 
-        if (sessionsPrev.length > 0) {
+        if (
+          deveExibirCartaoPrev({
+            spec,
+            todayStr,
+            atendimentoDateStr: attStr,
+            prevStr,
+            profissionalConfigPorSpec: profCfgMap,
+          }) &&
+          sessions.length > 0
+        ) {
           const k = `prev-${spec.key}-${atendimentoDia}-${attStr}`;
           if (!dedupe.has(k)) {
             dedupe.add(k);
             result.push({
               ...spec,
-              sessions: sessionsPrev,
+              sessions,
               atendimentoDia,
               windowType: "prev",
               atendimentoDate: attStr,
+              podeAgendarPrev: sessionsAgendaveisPrev.length > 0,
             });
           }
         }
@@ -1656,18 +1704,12 @@ export function buildVisibleSegments({
           specKey: spec.key,
           profissionalConfigPorSpec: profCfgMap,
         });
-        const temVagaMesmoDia = sessionsSame.some((s) => s.used + s.reserved < s.total);
-
         const podeMostrarMesmoDia =
           sessionsSame.length > 0 ||
           visitaDomicHojeSemVaga ||
           patrickSextaVisitaTardeInformativoHoje;
 
-        if (
-          attStr === todayStr &&
-          podeMostrarMesmoDia &&
-          (temVagaMesmoDia || recepcao || visitaDomicHojeSemVaga || patrickSextaVisitaTardeInformativoHoje)
-        ) {
+        if (attStr === todayStr && podeMostrarMesmoDia) {
           const k = `same-${spec.key}-${atendimentoDia}-${attStr}`;
           if (!dedupe.has(k)) {
             dedupe.add(k);
@@ -1732,7 +1774,7 @@ export function buildVisibleSegments({
     }
   }
 
-  return dedupeAgendaQualquerDiaUtil(result);
+  return dedupePorProximoAtendimento(result);
 }
 
 /** @deprecated use buildVisibleSegments */
@@ -1759,9 +1801,11 @@ export function getSpecsVisiveis(vagasMap, profNames, options = {}) {
 //  agendamento “véspera” (dia útil anterior ao atendimento) só a partir das 13h30.
 // ─────────────────────────────────────────────────────────────────
 
-/** Mesmo dia (`windowType: "same"`): das 7h até 18h (ou até encerramento informado na recepção — ver UI). */
+/** Mesmo dia (`windowType: "same"`): das 7h até 18h (demais profissionais). */
 const JANELA_SOLICIT_MESMO_DIA_INICIO_MIN = 7 * 60;
 const JANELA_SOLICIT_MESMO_DIA_FIM_MIN = 18 * 60;
+/** Nutrição e psicologia no dia do atendimento: das 7h até 14h. */
+const JANELA_SOLICIT_MESMO_DIA_FIM_ATE_14_MIN = 14 * 60;
 
 /** Outro dia / véspera (`windowType: "prev"`): das 13h30 às 18h. */
 const JANELA_SOLICIT_PREV_INICIO_MIN = 13 * 60 + 30;
@@ -1772,9 +1816,16 @@ function minutosRelogioLocal(data) {
   return d.getHours() * 60 + d.getMinutes();
 }
 
-export function estaDentroJanelaAgendamentoMesmoDia(data = new Date()) {
+export function janelaMesmoDiaFimMinutos(specKey) {
+  return specAgendaVesperaOuMesmoDiaAte14(specKey)
+    ? JANELA_SOLICIT_MESMO_DIA_FIM_ATE_14_MIN
+    : JANELA_SOLICIT_MESMO_DIA_FIM_MIN;
+}
+
+export function estaDentroJanelaAgendamentoMesmoDia(data = new Date(), specKey) {
   const m = minutosRelogioLocal(data);
-  return m >= JANELA_SOLICIT_MESMO_DIA_INICIO_MIN && m < JANELA_SOLICIT_MESMO_DIA_FIM_MIN;
+  const fim = janelaMesmoDiaFimMinutos(specKey);
+  return m >= JANELA_SOLICIT_MESMO_DIA_INICIO_MIN && m < fim;
 }
 
 export function estaDentroJanelaAgendamentoPrev(data = new Date()) {
@@ -1790,14 +1841,17 @@ export function estaDentroAlgumaJanelaSolicitacaoAgendamento(data = new Date()) 
 /**
  * @param {"prev"|"same"|null|undefined} windowType — cartão de `buildVisibleSegments`
  */
-export function estaDentroJanelaSolicitacaoAgendamento(windowType, data = new Date()) {
-  if (windowType === "same") return estaDentroJanelaAgendamentoMesmoDia(data);
+export function estaDentroJanelaSolicitacaoAgendamento(windowType, data = new Date(), specKey) {
+  if (windowType === "same") return estaDentroJanelaAgendamentoMesmoDia(data, specKey);
   if (windowType === "prev") return estaDentroJanelaAgendamentoPrev(data);
   return estaDentroAlgumaJanelaSolicitacaoAgendamento(data);
 }
 
 export const MSG_FORA_JANELA_AGENDAMENTO_MESMO_DIA =
   "Solicitações para atendimento hoje (quando houver vagas) ficam disponíveis das 7h às 18h, ou até a recepção informar que o atendimento deste profissional foi encerrado.";
+
+export const MSG_FORA_JANELA_AGENDAMENTO_MESMO_DIA_ATE_14 =
+  "Solicitações para atendimento hoje (quando houver vagas) ficam disponíveis das 7h às 14h.";
 
 export const MSG_FORA_JANELA_AGENDAMENTO_PREV =
   "Solicitações para agendar atendimento em outro dia (véspera / dia útil anterior) ficam disponíveis das 13h30 às 18h.";
@@ -1813,8 +1867,33 @@ export function estaDentroExpedienteUbs(data = new Date()) {
 /**
  * @param {"prev"|"same"|null|undefined} windowType
  */
-export function msgForaJanelaSolicitacaoAgendamento(windowType) {
-  if (windowType === "same") return MSG_FORA_JANELA_AGENDAMENTO_MESMO_DIA;
+export function msgForaJanelaSolicitacaoAgendamento(windowType, specKey) {
+  if (windowType === "same") {
+    return specAgendaVesperaOuMesmoDiaAte14(specKey)
+      ? MSG_FORA_JANELA_AGENDAMENTO_MESMO_DIA_ATE_14
+      : MSG_FORA_JANELA_AGENDAMENTO_MESMO_DIA;
+  }
   if (windowType === "prev") return MSG_FORA_JANELA_AGENDAMENTO_PREV;
   return MSG_FORA_EXPEDIENTE_UBS;
+}
+
+/**
+ * Cartão `prev` visível, mas hoje não é dia de abertura da agenda para este atendimento.
+ * @param {object} spec — cartão de `buildVisibleSegments`
+ * @param {object} [profissionalConfigPorSpec]
+ */
+export function msgForaDiaAgendamentoPrev(spec, profissionalConfigPorSpec = {}) {
+  const cfg = profissionalConfigPorSpec[spec?.key];
+  const dias = resolveDiasAgendamento(spec?.key, cfg);
+  if (dias?.length) {
+    const nomes = dias.map((d) => (DAY_LABEL[d] || d).split("-")[0].trim()).join(", ");
+    return `Agendamento liberado às ${nomes} (antes do atendimento, das 13h30 às 18h). Hoje não é dia de abertura para este atendimento.`;
+  }
+  if (spec?.agendaQualquerDiaUtil) {
+    return "Agendamento liberado em dias úteis antes do atendimento (das 13h30 às 18h). Hoje não é dia de abertura da agenda para este atendimento.";
+  }
+  if (specAgendaVesperaOuMesmoDiaAte14(spec?.key)) {
+    return "Agendamento disponível no dia útil anterior ao atendimento (13h30 às 18h) ou no dia do atendimento (7h às 14h, com vagas). Hoje não é dia de abertura da agenda.";
+  }
+  return "Agendamento disponível no dia útil anterior ao atendimento (das 13h30 às 18h).";
 }
