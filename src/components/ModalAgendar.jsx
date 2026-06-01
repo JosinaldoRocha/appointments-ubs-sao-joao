@@ -5,6 +5,7 @@ import {
   toDateStr,
   estaDentroJanelaSolicitacaoAgendamento,
   msgForaJanelaSolicitacaoAgendamento,
+  msgForaDiaAgendamentoPrev,
 } from "../services/scheduleConfig";
 import {
   fraseVagasEsgotadasEncaixe,
@@ -26,6 +27,9 @@ export default function ModalAgendar({
   onSubmit,
   onClose,
   recepcaoWhatsappOk,
+  direcaoEncaixeWhatsappOk = false,
+  isDiretor = false,
+  profissionalConfigPorSpec = {},
 }) {
   const nascimentoPickerRef = useRef(null);
   const [paciente, setPaciente] = useState("");
@@ -42,7 +46,20 @@ export default function ModalAgendar({
   const [erro, setErro] = useState("");
   const [enviando, setEnviando] = useState(false);
   const [agoraExpediente, setAgoraExpediente] = useState(() => new Date());
-  const foraJanelaSolicitacao = !estaDentroJanelaSolicitacaoAgendamento(ctx.windowType, agoraExpediente);
+  const foraJanelaSolicitacao = !estaDentroJanelaSolicitacaoAgendamento(
+    ctx.windowType,
+    agoraExpediente,
+    ctx.specKey
+  );
+  const foraDiaAgendamento =
+    ctx.windowType === "prev" && ctx.podeAgendarPrev === false;
+  const msgForaDia =
+    foraDiaAgendamento
+      ? msgForaDiaAgendamentoPrev(
+          { key: ctx.specKey, agendaQualquerDiaUtil: ctx.agendaQualquerDiaUtil },
+          profissionalConfigPorSpec
+        )
+      : "";
 
   useEffect(() => {
     const t = setInterval(() => setAgoraExpediente(new Date()), 30_000);
@@ -59,6 +76,8 @@ export default function ModalAgendar({
   const isEncaminhamentoObrigatorio =
     ctx.solicitacaoEncaminhamentoObrigatorio === true || isFisioSolicitacao;
   const isSomenteEncaixe = ctx.somenteEncaixe === true;
+  const encaixeParaDirecao = isSomenteEncaixe && !isDiretor;
+  const textoDestinoWa = encaixeParaDirecao ? "direção" : "recepção";
   const rotuloModalEncaixe = rotuloEncaixeModal({
     medicoTipo: ctx.medicoTipo,
     pccuOnly: ctx.pccuOnly,
@@ -236,11 +255,27 @@ export default function ModalAgendar({
 
   async function submit() {
     setErro("");
-    if (!estaDentroJanelaSolicitacaoAgendamento(ctx.windowType, new Date())) {
-      setErro(msgForaJanelaSolicitacaoAgendamento(ctx.windowType));
+    if (!estaDentroJanelaSolicitacaoAgendamento(ctx.windowType, new Date(), ctx.specKey)) {
+      setErro(msgForaJanelaSolicitacaoAgendamento(ctx.windowType, ctx.specKey));
       return;
     }
-    if (!recepcaoWhatsappOk) {
+    if (ctx.windowType === "prev" && ctx.podeAgendarPrev === false) {
+      setErro(
+        msgForaDiaAgendamentoPrev(
+          { key: ctx.specKey, agendaQualquerDiaUtil: ctx.agendaQualquerDiaUtil },
+          profissionalConfigPorSpec
+        )
+      );
+      return;
+    }
+    if (encaixeParaDirecao) {
+      if (!direcaoEncaixeWhatsappOk) {
+        setErro(
+          "Nenhum WhatsApp da direção cadastrado para encaixes. Peça à recepção para cadastrar em Config. → Usuários."
+        );
+        return;
+      }
+    } else if (!recepcaoWhatsappOk) {
       setErro(
         "Nenhum WhatsApp da recepção disponível. Peça para cadastrar o número em Config. → Usuários (um recepcionista precisa ter feito login ao menos uma vez com WhatsApp cadastrado)."
       );
@@ -481,9 +516,9 @@ export default function ModalAgendar({
           </p>
           <p style={S.resumoHint}>
             {isEncaminhamentoObrigatorio
-              ? "Preencha os dados do paciente e anexe a foto do encaminhamento. O nome do agente de saúde (seu cadastro) entra na mensagem do WhatsApp. Ao enviar, abre o WhatsApp da recepção com o texto pronto."
+              ? `Preencha os dados do paciente e anexe a foto do encaminhamento. O nome do agente de saúde (seu cadastro) entra na mensagem do WhatsApp. Ao enviar, abre o WhatsApp da ${textoDestinoWa} com o texto pronto.`
               : isColetaExamesRotina
-                ? "Preencha todos os campos obrigatórios e anexe a foto do pedido de exame. Ao enviar, abre o WhatsApp da recepção com a mensagem pronta."
+                ? `Preencha todos os campos obrigatórios e anexe a foto do pedido de exame. Ao enviar, abre o WhatsApp da ${textoDestinoWa} com a mensagem pronta.`
               : isSomenteEncaixe
                 ? `${fraseVagasEsgotadasEncaixe({
                     livres: ctx.livresEncaixe ?? 0,
@@ -491,8 +526,8 @@ export default function ModalAgendar({
                     pccuOnly: ctx.pccuOnly,
                     specKey: ctx.specKey,
                     sessLabel: ctx.sessLabel,
-                  })} Os dados abaixo são do paciente. Ao enviar, abre o WhatsApp da recepção com a mensagem pronta.`
-                : "Os dados abaixo são do paciente. Ao enviar, abre o WhatsApp da recepção com a mensagem pronta para você revisar e enviar."}
+                  })} Os dados abaixo são do paciente. Ao enviar, abre o WhatsApp da ${textoDestinoWa} com a mensagem pronta.`
+                : `Os dados abaixo são do paciente. Ao enviar, abre o WhatsApp da ${textoDestinoWa} com a mensagem pronta para você revisar e enviar.`}
           </p>
         </div>
 
@@ -733,15 +768,21 @@ export default function ModalAgendar({
           </Field>
         </div>
 
-        {(erro || foraJanelaSolicitacao) && (
-          <p style={S.erro}>{erro || msgForaJanelaSolicitacaoAgendamento(ctx.windowType)}</p>
+        {(erro || foraJanelaSolicitacao || foraDiaAgendamento) && (
+          <p style={S.erro}>
+            {erro || msgForaDia || msgForaJanelaSolicitacaoAgendamento(ctx.windowType, ctx.specKey)}
+          </p>
         )}
 
         <div style={S.actions}>
           <button style={S.btnCancel} onClick={onClose} disabled={enviando}>
             Cancelar
           </button>
-          <button style={S.btnOk} onClick={submit} disabled={enviando || foraJanelaSolicitacao}>
+          <button
+            style={S.btnOk}
+            onClick={submit}
+            disabled={enviando || foraJanelaSolicitacao || foraDiaAgendamento}
+          >
             {enviando ? "Enviando…" : "Enviar solicitação"}
           </button>
         </div>

@@ -19,6 +19,8 @@ import {
   limparSuspensoesExpiradasSeNecessario,
   updateProfissional,
   digitosWhatsappRecepcaoParaSolicitacao,
+  digitosWhatsappDirecaoEncaixeParaSolicitacao,
+  resolveWhatsappDestinoSolicitacao,
   tryReservaSolicitacaoAgente,
   liberarReservaSolicitacaoAgente,
 } from "../services/db";
@@ -32,6 +34,7 @@ import {
   sessionTotalEffective,
   estaDentroJanelaSolicitacaoAgendamento,
   msgForaJanelaSolicitacaoAgendamento,
+  msgForaDiaAgendamentoPrev,
   normalizeAtendimentoDiasTurnosParaSpec,
   listaSpecKeysCustom,
 } from "../services/scheduleConfig";
@@ -47,7 +50,12 @@ import TabCronograma from "../components/TabCronograma";
 import TabConfig from "../components/TabConfig";
 import ModalAgendar from "../components/ModalAgendar";
 import Toast from "../components/Toast";
-import { isRecepcaoPerfil, isAgenteOuDiretorPerfil, podeEditarCronogramaUbs } from "../utils/perfilRole";
+import {
+  isRecepcaoPerfil,
+  isAgenteOuDiretorPerfil,
+  isDiretorPerfil,
+  podeEditarCronogramaUbs,
+} from "../utils/perfilRole";
 import { cronogramaUbsIguais, cronogramaUbsVazio } from "../services/cronogramaUbs";
 
 function vagasNum(v) {
@@ -152,6 +160,7 @@ function settingsIguaisParaDashboard(prev, next) {
   if ((prev.recepcionistaAtivoNome || "") !== (next.recepcionistaAtivoNome || "")) return false;
   if ((prev.ultimoRecepcionistaWhatsapp || "") !== (next.ultimoRecepcionistaWhatsapp || "")) return false;
   if ((prev.ultimoRecepcionistaNome || "") !== (next.ultimoRecepcionistaNome || "")) return false;
+  if ((prev.whatsappDirecaoEncaixe || "") !== (next.whatsappDirecaoEncaixe || "")) return false;
   if (!mapEncerradoIgual(prev, next)) return false;
   if (!mapaSuspensaoIgual(prev.atendimentoSuspensoPorSpec, next.atendimentoSuspensoPorSpec)) return false;
   if (!mapaDiasAtivosPorSpecIgual(prev.atendimentoDiasAtivosPorSpec, next.atendimentoDiasAtivosPorSpec)) {
@@ -237,6 +246,7 @@ const TABS_BASE = [
 export default function Dashboard() {
   const { perfil, user } = useAuth();
   const isRecepcao = isRecepcaoPerfil(perfil);
+  const isDiretor = isDiretorPerfil(perfil);
 
   const [tab, setTab] = useState("vagas");
   const [vagasMap, setVagasMap] = useState({});
@@ -258,6 +268,7 @@ export default function Dashboard() {
     dentQuartaVisitaDomiciliarDesde: "",
     recepcionistaAtivoWhatsapp: "",
     recepcionistaAtivoNome: "",
+    whatsappDirecaoEncaixe: "",
     ultimoRecepcionistaWhatsapp: "",
     ultimoRecepcionistaNome: "",
     atendimentoEncerradoPorSpecData: {},
@@ -408,8 +419,25 @@ export default function Dashboard() {
 
   const abrirModalSolicitacao = useCallback(
     async (ctx) => {
-      if (!isRecepcao && !estaDentroJanelaSolicitacaoAgendamento(ctx.windowType, new Date())) {
-        showToast(msgForaJanelaSolicitacaoAgendamento(ctx.windowType), "danger");
+      if (!isRecepcao && !estaDentroJanelaSolicitacaoAgendamento(ctx.windowType, new Date(), ctx.specKey)) {
+        showToast(msgForaJanelaSolicitacaoAgendamento(ctx.windowType, ctx.specKey), "danger");
+        return;
+      }
+      if (
+        !isRecepcao &&
+        ctx.windowType === "prev" &&
+        ctx.podeAgendarPrev === false
+      ) {
+        showToast(
+          msgForaDiaAgendamentoPrev(
+            {
+              key: ctx.specKey,
+              agendaQualquerDiaUtil: ctx.agendaQualquerDiaUtil,
+            },
+            settings.profissionalConfigPorSpec || {}
+          ),
+          "danger"
+        );
         return;
       }
       const id = vagaDocId(ctx.atendimentoDate, ctx.specKey, ctx.sessIdx);
@@ -661,6 +689,8 @@ export default function Dashboard() {
       coletaExamesRotina,
       docFile,
       whatsappBlankWindow,
+      podeAgendarPrev,
+      agendaQualquerDiaUtil,
     }) => {
       const fecharPreAbaWa = () => {
         try {
@@ -676,20 +706,40 @@ export default function Dashboard() {
         showToast("O fluxo de solicitar vaga é para agentes de saúde. Use os botões de ocupação e reserva nas vagas.", "danger");
         return;
       }
-      if (!isRecepcao && !estaDentroJanelaSolicitacaoAgendamento(windowType, new Date())) {
+      if (!isRecepcao && !estaDentroJanelaSolicitacaoAgendamento(windowType, new Date(), specKey)) {
         fecharPreAbaWa();
-        showToast(msgForaJanelaSolicitacaoAgendamento(windowType), "danger");
+        showToast(msgForaJanelaSolicitacaoAgendamento(windowType, specKey), "danger");
         return;
       }
-      const waDigits = digitosWhatsappRecepcaoParaSolicitacao(settings);
-      if (waDigits.length < 10) {
+      if (!isRecepcao && windowType === "prev" && podeAgendarPrev === false) {
         fecharPreAbaWa();
         showToast(
-          "Cadastre o WhatsApp do recepcionista em Config. → Usuários. O pedido será enviado para o recepcionista que estiver logado ou para o último que entrou no sistema.",
+          msgForaDiaAgendamentoPrev(
+            { key: specKey, agendaQualquerDiaUtil },
+            settings.profissionalConfigPorSpec || {}
+          ),
           "danger"
         );
         return;
       }
+      const { digits: waDigits, destino: waDestino } = resolveWhatsappDestinoSolicitacao(settings, {
+        somenteEncaixe,
+        isDiretor,
+      });
+      if (waDigits.length < 10) {
+        fecharPreAbaWa();
+        showToast(
+          waDestino === "direcao"
+            ? "Cadastre o WhatsApp da direção para pedidos de encaixe em Config. → Usuários."
+            : "Cadastre o WhatsApp do recepcionista em Config. → Usuários. O pedido será enviado para o recepcionista que estiver logado ou para o último que entrou no sistema.",
+          "danger"
+        );
+        return;
+      }
+      const toastWaEnviado =
+        waDestino === "direcao"
+          ? "WhatsApp aberto — envie a mensagem para a direção."
+          : "WhatsApp aberto — envie a mensagem para a recepção.";
 
       const meta = SPEC_META[specKey] || {};
       const nomeProf = profNames[specKey] || specKey;
@@ -741,7 +791,7 @@ export default function Dashboard() {
         } else {
           abrirWhatsAppComTexto(waDigits, msg);
         }
-        showToast("WhatsApp aberto — envie a mensagem para a recepção.", "success");
+        showToast(toastWaEnviado, "success");
         manterReservaAoFecharModalRef.current = true;
         setModal(null);
         return;
@@ -791,11 +841,11 @@ export default function Dashboard() {
       } else {
         abrirWhatsAppComTexto(waDigits, msg);
       }
-      showToast("WhatsApp aberto — envie a mensagem para a recepção.", "success");
+      showToast(toastWaEnviado, "success");
       manterReservaAoFecharModalRef.current = true;
       setModal(null);
     },
-    [isRecepcao, profNames, settings, user]
+    [isRecepcao, isDiretor, profNames, settings, user]
   );
 
   const allTabs = isRecepcao ? [...TABS_BASE, { key: "config", label: "Config." }] : TABS_BASE;
@@ -893,7 +943,9 @@ export default function Dashboard() {
             onSuspenderAtendimentoSpec={isRecepcao ? handleSuspenderAtendimentoSpec : undefined}
             onSolicitar={isRecepcao ? undefined : abrirModalSolicitacao}
             dentQuartaVisitaDomiciliarDesde={settings.dentQuartaVisitaDomiciliarDesde}
+            profissionalConfigPorSpec={settings.profissionalConfigPorSpec || {}}
             usuarioUid={user?.uid ?? ""}
+            isDiretor={isDiretor}
           />
         )}
         {tab === "avisos" && (
@@ -943,6 +995,9 @@ export default function Dashboard() {
           onSubmit={handleEnviarSolicit}
           onClose={() => setModal(null)}
           recepcaoWhatsappOk={digitosWhatsappRecepcaoParaSolicitacao(settings).length >= 10}
+          direcaoEncaixeWhatsappOk={digitosWhatsappDirecaoEncaixeParaSolicitacao(settings).length >= 10}
+          isDiretor={isDiretor}
+          profissionalConfigPorSpec={settings.profissionalConfigPorSpec || {}}
         />
       )}
 
