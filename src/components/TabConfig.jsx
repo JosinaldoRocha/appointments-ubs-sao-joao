@@ -191,6 +191,7 @@ export default function TabConfig({
   const [pccuTotal, setPccuTotal] = useState(DEFAULT_PCCU_TOTAL);
   /** Primeira quarta: a partir dela, visitas domiciliares em quinzena (Dr. Fernando). */
   const [dentQuartaVisitaDomiciliarDesde, setDentQuartaVisitaDomiciliarDesde] = useState("");
+  const [whatsappDirecaoEncaixe, setWhatsappDirecaoEncaixe] = useState("");
   const [savingRegras, setSavingRegras] = useState(false);
 
   useEffect(() => {
@@ -208,6 +209,7 @@ export default function TabConfig({
           ? s.dentQuartaVisitaDomiciliarDesde.trim()
           : ""
       );
+      setWhatsappDirecaoEncaixe(String(s.whatsappDirecaoEncaixe || "").replace(/\D/g, "").slice(0, 11));
     });
     return un;
   }, []);
@@ -852,6 +854,14 @@ export default function TabConfig({
             todos usam o botão <strong>Redefinir senha</strong> na tela de login. Isso é independente dos nomes
             nas vagas da aba Profissionais.
           </p>
+          <p style={S.sectionTitle}>WhatsApp da direção (pedidos de encaixe)</p>
+          <p style={S.hint}>
+            Quando um <strong>agente de saúde</strong> solicita encaixe, o pedido abre neste WhatsApp. A direção
+            avalia e alinha com o ACS e a recepção. Quando a <strong>direção</strong> solicita encaixe, o pedido vai
+            para o WhatsApp do recepcionista (cadastro abaixo, no usuário recepcionista).
+          </p>
+          <WaDirecaoEncaixeSettingRow digits={whatsappDirecaoEncaixe} showToast={showToast} />
+          <hr style={S.sectionDivider} />
           <p style={S.sectionTitle}>Novo usuário</p>
           <div style={S.formGrid}>
             <Field label="Nome completo">
@@ -964,6 +974,68 @@ export default function TabConfig({
   );
 }
 
+function WaDirecaoEncaixeSettingRow({ digits, showToast }) {
+  const [val, setVal] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const d = String(digits || "").replace(/\D/g, "").slice(0, 11);
+    if (!d) {
+      setVal("");
+      return;
+    }
+    const f =
+      d.length <= 10
+        ? d.replace(/(\d{2})(\d{4})(\d{0,4})/, "($1) $2-$3")
+        : d.replace(/(\d{2})(\d{5})(\d{0,4})/, "($1) $2-$3");
+    setVal(f);
+  }, [digits]);
+
+  function handleChange(v) {
+    const d = v.replace(/\D/g, "").slice(0, 11);
+    const f =
+      d.length <= 10
+        ? d.replace(/(\d{2})(\d{4})(\d{0,4})/, "($1) $2-$3")
+        : d.replace(/(\d{2})(\d{5})(\d{0,4})/, "($1) $2-$3");
+    setVal(f);
+  }
+
+  async function salvar() {
+    const d = val.replace(/\D/g, "");
+    if (d.length < 10) {
+      showToast("Informe um WhatsApp válido (DDD + número).", "danger");
+      return;
+    }
+    setSaving(true);
+    try {
+      await updateSettings({ whatsappDirecaoEncaixe: d });
+      showToast("WhatsApp da direção (encaixes) salvo.", "success");
+    } catch {
+      showToast("Erro ao salvar WhatsApp da direção.", "danger");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={S.waRow}>
+      <span style={S.waLabel}>Número que recebe pedidos de encaixe dos agentes</span>
+      <div style={S.waInputs}>
+        <input
+          style={{ ...S.input, flex: 1, minWidth: 140 }}
+          value={val}
+          onChange={(e) => handleChange(e.target.value)}
+          placeholder="(99) 99999-9999"
+          inputMode="numeric"
+        />
+        <button type="button" style={S.btnSave} disabled={saving} onClick={salvar}>
+          {saving ? "…" : "Salvar"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function isEmailLoginValido(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
@@ -1004,7 +1076,10 @@ function RecepcionistaWhatsappRow({ usuario, showToast, onSaved }) {
     try {
       await updateUser(usuario.id, { telefoneWhatsapp: digits });
       await onSaved();
-      showToast("WhatsApp da recepção salvo. Agentes e direção usam este número ao enviar pedidos pelo WhatsApp.", "success");
+      showToast(
+        "WhatsApp da recepção salvo. Agendamentos comuns e encaixes solicitados pela direção usam este número.",
+        "success"
+      );
     } catch {
       showToast("Erro ao salvar WhatsApp.", "danger");
     } finally {
@@ -1014,7 +1089,7 @@ function RecepcionistaWhatsappRow({ usuario, showToast, onSaved }) {
 
   return (
     <div style={S.waRow}>
-      <span style={S.waLabel}>WhatsApp da recepção (pedidos de agendamento)</span>
+      <span style={S.waLabel}>WhatsApp da recepção (agendamentos comuns e encaixes da direção)</span>
       <div style={S.waInputs}>
         <input
           style={{ ...S.input, flex: 1, minWidth: 140 }}
