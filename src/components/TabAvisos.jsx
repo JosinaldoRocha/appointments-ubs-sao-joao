@@ -17,7 +17,6 @@ import {
   estaDentroAlgumaJanelaSolicitacaoAgendamento,
   MSG_FORA_EXPEDIENTE_UBS,
   agenteOcultarCardPorEncerrado,
-  specAtendimentoHojeOcultoAposTurnos,
   specKeyEstaDesativado,
   ORDEM_DIA_SEMANA_GRADE,
   diasAtendimentoDefaultParaSpec,
@@ -182,12 +181,9 @@ export default function TabAvisos({
   }, [reativarDiasSel, modalReativarSpecKey]);
 
   const specsListaAvisos = useMemo(() => {
-    const base = (() => {
-      if (isRecepcao) return specs;
-      return specs.filter((s) => !agenteOcultarCardPorEncerrado(s, atendimentoEncerradoMap || {}));
-    })();
-    return base.filter((s) => !specAtendimentoHojeOcultoAposTurnos(s, agoraRef));
-  }, [specs, atendimentoEncerradoMap, isRecepcao, agoraRef]);
+    if (isRecepcao) return specs;
+    return specs.filter((s) => !agenteOcultarCardPorEncerrado(s, atendimentoEncerradoMap || {}));
+  }, [specs, atendimentoEncerradoMap, isRecepcao]);
 
   const semVagasLivresAgente = useMemo(
     () => !isRecepcao && specsListaAvisos.length > 0 && !hasAnyVacancy(specsListaAvisos),

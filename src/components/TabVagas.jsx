@@ -9,8 +9,8 @@ import {
   recepcaoPodeMarcarAtendimentoFinalizado,
   estaDentroJanelaSolicitacaoAgendamento,
   msgForaJanelaSolicitacaoAgendamento,
+  msgForaDiaAgendamentoPrev,
   varianteVisitaDomiciliarNoCard,
-  specAtendimentoHojeOcultoAposTurnos,
   specTemSessaoNoTurno,
   agenteOcultarCardPorEncerrado,
   indicesSessoesAtendimentoHojeVisiveis,
@@ -258,7 +258,9 @@ export default function TabVagas({
   atendimentoSuspensoPorSpec = {},
   onSuspenderAtendimentoSpec,
   dentQuartaVisitaDomiciliarDesde = "",
+  profissionalConfigPorSpec = {},
   usuarioUid = "",
+  isDiretor = false,
 }) {
   const [agoraRecepcao, setAgoraRecepcao] = useState(() => new Date());
   const [modalSuspenderSpecKey, setModalSuspenderSpecKey] = useState(null);
@@ -293,12 +295,9 @@ export default function TabVagas({
   }, [modalSuspenderSpecKey]);
 
   const specsLista = useMemo(() => {
-    const base = (() => {
-      if (isRecepcao) return specs;
-      return specs.filter((s) => !agenteOcultarCardPorEncerrado(s, atendimentoEncerradoMap || {}));
-    })();
-    return base.filter((s) => !specAtendimentoHojeOcultoAposTurnos(s, agoraRecepcao));
-  }, [specs, atendimentoEncerradoMap, isRecepcao, agoraRecepcao]);
+    if (isRecepcao) return specs;
+    return specs.filter((s) => !agenteOcultarCardPorEncerrado(s, atendimentoEncerradoMap || {}));
+  }, [specs, atendimentoEncerradoMap, isRecepcao]);
 
   const prev = specsLista.filter((s) => s.windowType === "prev");
   const same = specsLista.filter((s) => s.windowType === "same");
@@ -314,7 +313,7 @@ export default function TabVagas({
           </p>
           <p style={{ fontSize: 13, color: "#64748B" }}>
             Em geral, o agendamento abre no último dia útil anterior ao atendimento (feriados e pontos
-            facultativos são considerados). Nutrição e fisioterapia permitem agendar em qualquer dia útil (conforme o card).
+            facultativos são considerados). Nutrição e psicologia: cartão visível todos os dias; agendamento na véspera ou no dia do atendimento (conforme o card).
           </p>
         </div>
       </div>
@@ -328,9 +327,9 @@ export default function TabVagas({
           Nenhum cartão de atendimento visível
         </p>
           <p style={{ fontSize: 13, color: "#64748B", lineHeight: 1.5 }}>
-          No dia do atendimento, os cartões somem após o horário do turno (manhã às 12h, tarde às 18h) ou quando a
-          recepção marcar como encerrado. Suspensões, encerramentos e lembretes estão na aba{" "}
-          <strong>Avisos</strong>.
+          Os atendimentos do dia podem sumir da lista quando a recepção marcar o turno como encerrado. Fora do
+          horário de solicitações (7h–18h no dia do atendimento; 13h30–18h nos demais), os cartões continuam
+          visíveis, mas o agendamento fica bloqueado. Suspensões e lembretes estão na aba <strong>Avisos</strong>.
         </p>
       </div>
     );
@@ -344,7 +343,7 @@ export default function TabVagas({
           <LegendItem
             color="#ECFDF5"
             border="#6EE7B7"
-            label="Nutrição e fisioterapia: agendamento em qualquer dia útil (dia de atendimento no card)"
+            label="Nutrição e psicologia: cartão visível todos os dias; agendamento na véspera ou no dia do atendimento"
           />
           <LegendItem color="#DCFCE7" border="#86EFAC" label="Atendimento hoje — vagas sobrando" />
           <LegendItem
@@ -390,7 +389,9 @@ export default function TabVagas({
                 onToggleAtendimentoEncerrado
               )}
               dentQuartaVisitaDomiciliarDesde={dentQuartaVisitaDomiciliarDesde}
+              profissionalConfigPorSpec={profissionalConfigPorSpec}
               usuarioUid={usuarioUid}
+              isDiretor={isDiretor}
             />
           ))}
         </Section>
@@ -420,7 +421,9 @@ export default function TabVagas({
                 onToggleAtendimentoEncerrado
               )}
               dentQuartaVisitaDomiciliarDesde={dentQuartaVisitaDomiciliarDesde}
+              profissionalConfigPorSpec={profissionalConfigPorSpec}
               usuarioUid={usuarioUid}
+              isDiretor={isDiretor}
             />
           ))}
         </Section>
@@ -694,9 +697,11 @@ function AgenteTurnoRow({
   onSolicitar,
   solicitacaoEncaminhamentoObrigatorio,
   dentroJanelaSolicitacao = true,
-  msgForaJanelaAgente = "",
+  podeAgendarPrev = true,
+  agendaQualquerDiaUtil = false,
   ocultarResumoVagas = false,
   usuarioUid = "",
+  isDiretor = false,
 }) {
   if (sess.visitaDomiciliarSemUnidade) {
     const rowStyle = {
@@ -746,6 +751,7 @@ function AgenteTurnoRow({
   const podeSolicitar =
     typeof onSolicitar === "function" &&
     dentroJanelaSolicitacao &&
+    (windowType !== "prev" || podeAgendarPrev) &&
     (isFisio || wl || livres > 0) &&
     !reservadaPorOutro;
   /** Esconde o aviso “vagas esgotadas” quando ainda há fluxo de lista de espera (fisio ou psicologia). */
@@ -817,8 +823,10 @@ function AgenteTurnoRow({
       )}
       {reservadaPorVoce && (
         <p style={styles.agenteReservaVoce} role="status">
-          Você reservou esta vaga ao abrir a solicitação. Envie pelo WhatsApp ou feche o formulário
-          para liberar.
+          Você reservou esta vaga ao abrir a solicitação.{" "}
+          {somenteEncaixe && !isDiretor
+            ? "Envie pelo WhatsApp à direção ou feche o formulário para liberar."
+            : "Envie pelo WhatsApp ou feche o formulário para liberar."}
         </p>
       )}
       {podeSolicitar && (
@@ -839,15 +847,14 @@ function AgenteTurnoRow({
               somenteEncaixe,
               coletaExamesRotina: !!sess.coletaExamesRotina,
               windowType,
+              podeAgendarPrev,
+              agendaQualquerDiaUtil,
             })
           }
         >
           {somenteEncaixe ? "Solicitar encaixe" : "Solicitar agendamento"}
         </button>
       )}
-      {!dentroJanelaSolicitacao && (isFisio || wl || livres > 0) && msgForaJanelaAgente ? (
-        <p style={styles.agenteTurnoHint}>{msgForaJanelaAgente}</p>
-      ) : null}
     </div>
   );
 }
@@ -978,12 +985,21 @@ function SpecCard({
   mostrarBotaoEncerradoRecepcao = false,
   agoraRecepcao = new Date(),
   dentQuartaVisitaDomiciliarDesde = "",
+  profissionalConfigPorSpec = {},
   usuarioUid = "",
+  isDiretor = false,
 }) {
   const windowType = spec.windowType;
   const dentroJanelaSolicitacao =
-    isRecepcao || estaDentroJanelaSolicitacaoAgendamento(windowType, agoraRecepcao);
-  const msgForaJanelaAgente = isRecepcao ? "" : msgForaJanelaSolicitacaoAgendamento(windowType);
+    isRecepcao || estaDentroJanelaSolicitacaoAgendamento(windowType, agoraRecepcao, spec.key);
+  const msgForaJanelaAgente = isRecepcao
+    ? ""
+    : msgForaJanelaSolicitacaoAgendamento(windowType, spec.key);
+  const foraDiaAgendamento =
+    !isRecepcao && windowType === "prev" && spec.podeAgendarPrev === false;
+  const msgForaDiaAgente = foraDiaAgendamento
+    ? msgForaDiaAgendamentoPrev(spec, profissionalConfigPorSpec)
+    : "";
   const meta = SPEC_META[spec.key] || { role: "", av: "?", bg: "#F1F5F9", tc: "#475569" };
   const name = nomeProfissionalFirestore(spec.key, profissionaisMap);
   const indicesSessoesUi = useMemo(() => {
@@ -1054,6 +1070,17 @@ function SpecCard({
           </div>
         </div>
 
+        {!isRecepcao && !dentroJanelaSolicitacao && msgForaJanelaAgente ? (
+          <p style={styles.agenteCardForaJanela} role="status">
+            {msgForaJanelaAgente}
+          </p>
+        ) : null}
+        {!isRecepcao && foraDiaAgendamento && msgForaDiaAgente ? (
+          <p style={styles.agenteCardForaDia} role="status">
+            {msgForaDiaAgente}
+          </p>
+        ) : null}
+
         {!isRecepcao && (
           <div style={styles.cardResumoAgente}>
             {indicesSessoesUi.map((sessIdx, arrIdx) => (
@@ -1069,9 +1096,11 @@ function SpecCard({
                 onSolicitar={onSolicitar}
                 solicitacaoEncaminhamentoObrigatorio={spec.solicitacaoEncaminhamentoObrigatorio}
                 dentroJanelaSolicitacao={dentroJanelaSolicitacao}
-                msgForaJanelaAgente={msgForaJanelaAgente}
+                podeAgendarPrev={spec.podeAgendarPrev !== false}
+                agendaQualquerDiaUtil={!!spec.agendaQualquerDiaUtil}
                 ocultarResumoVagas={!!visitaVariant}
                 usuarioUid={usuarioUid}
+                isDiretor={isDiretor}
               />
             ))}
           </div>
@@ -1955,6 +1984,28 @@ const styles = {
     border: "1px solid #D97706",
     borderRadius: 8,
     boxShadow: "0 2px 8px rgba(217, 119, 6, 0.16), inset 0 1px 0 rgba(255,255,255,0.6)",
+  },
+  agenteCardForaJanela: {
+    margin: "0 16px 0",
+    padding: "10px 12px",
+    fontSize: 12,
+    fontWeight: 600,
+    lineHeight: 1.45,
+    color: "#B45309",
+    background: "#FFFBEB",
+    border: "1px solid #FCD34D",
+    borderRadius: 8,
+  },
+  agenteCardForaDia: {
+    margin: "8px 16px 0",
+    padding: "10px 12px",
+    fontSize: 12,
+    fontWeight: 600,
+    lineHeight: 1.45,
+    color: "#1D4ED8",
+    background: "#EFF6FF",
+    border: "1px solid #BFDBFE",
+    borderRadius: 8,
   },
   cardResumoAgente: {
     padding: "12px 16px 16px",
