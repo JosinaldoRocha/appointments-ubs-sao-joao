@@ -29,6 +29,8 @@ export default function ModalAgendar({
   profNames,
   onSubmit,
   onClose,
+  onConfirmarVaga = () => {},
+  onCancelarAposEnvio = () => {},
   recepcaoWhatsappOk,
   direcaoEncaixeWhatsappOk = false,
   isDiretor = false,
@@ -54,6 +56,8 @@ export default function ModalAgendar({
   const [observacao, setObservacao] = useState("");
   const [erro, setErro] = useState("");
   const [enviando, setEnviando] = useState(false);
+  const [fase, setFase] = useState("form");
+  const [confirmando, setConfirmando] = useState(false);
   const [agoraExpediente, setAgoraExpediente] = useState(() => new Date());
   const foraJanelaSolicitacao = !estaDentroJanelaSolicitacaoAgendamento(
     ctx.windowType,
@@ -121,6 +125,8 @@ export default function ModalAgendar({
     setObservacao("");
     setErro("");
     setEnviando(false);
+    setFase("form");
+    setConfirmando(false);
     setAgoraExpediente(new Date());
   }, [
     ctx.type,
@@ -348,6 +354,22 @@ export default function ModalAgendar({
     setEncaminhamentoFile(null);
   }
 
+  async function confirmar() {
+    setConfirmando(true);
+    try {
+      await onConfirmarVaga({
+        specKey: ctx.specKey,
+        dayKey: ctx.dayKey,
+        sessIdx: ctx.sessIdx,
+        atendimentoDate: ctx.atendimentoDate,
+      });
+    } catch {
+      /* errors shown via toast in Dashboard */
+    } finally {
+      setConfirmando(false);
+    }
+  }
+
   async function submit() {
     setErro("");
     if (!estaDentroJanelaSolicitacaoAgendamento(ctx.windowType, new Date(), ctx.specKey)) {
@@ -402,6 +424,7 @@ export default function ModalAgendar({
         return;
       }
       setEnviando(true);
+      let sucesso = false;
       try {
         await onSubmit({
           ...ctx,
@@ -415,6 +438,7 @@ export default function ModalAgendar({
           docFile: encaminhamentoFile,
           whatsappBlankWindow: waTabFisio,
         });
+        sucesso = true;
       } catch (err) {
         try {
           if (waTabFisio && !waTabFisio.closed) waTabFisio.close();
@@ -425,6 +449,7 @@ export default function ModalAgendar({
       } finally {
         setEnviando(false);
       }
+      if (sucesso) setFase("confirmacao");
       return;
     }
 
@@ -459,6 +484,7 @@ export default function ModalAgendar({
         return;
       }
       setEnviando(true);
+      let sucesso = false;
       try {
         await onSubmit({
           ...ctx,
@@ -472,6 +498,7 @@ export default function ModalAgendar({
           cartaoSusFile,
           whatsappBlankWindow: waTabColeta,
         });
+        sucesso = true;
       } catch (err) {
         try {
           if (waTabColeta && !waTabColeta.closed) waTabColeta.close();
@@ -482,6 +509,7 @@ export default function ModalAgendar({
       } finally {
         setEnviando(false);
       }
+      if (sucesso) setFase("confirmacao");
       return;
     }
 
@@ -498,6 +526,7 @@ export default function ModalAgendar({
         return;
       }
       setEnviando(true);
+      let sucesso = false;
       try {
         await onSubmit({
           ...ctx,
@@ -508,6 +537,7 @@ export default function ModalAgendar({
           docFile,
           whatsappBlankWindow: waTabDoc,
         });
+        sucesso = true;
       } catch (err) {
         try {
           if (waTabDoc && !waTabDoc.closed) waTabDoc.close();
@@ -518,6 +548,7 @@ export default function ModalAgendar({
       } finally {
         setEnviando(false);
       }
+      if (sucesso) setFase("confirmacao");
       return;
     }
 
@@ -539,6 +570,7 @@ export default function ModalAgendar({
     }
 
     setEnviando(true);
+    let sucesso = false;
     try {
       await onSubmit({
         ...ctx,
@@ -548,11 +580,66 @@ export default function ModalAgendar({
         observacaoExtra: observacao.trim(),
         docFile: null,
       });
+      sucesso = true;
     } catch (err) {
       setErro(err?.message || "Não foi possível enviar. Tente de novo.");
     } finally {
       setEnviando(false);
     }
+    if (sucesso) setFase("confirmacao");
+  }
+
+  if (fase === "confirmacao") {
+    return (
+      <div style={S.overlay}>
+        <div style={S.modal}>
+          <div style={S.header}>
+            {ctx.specKey && (
+              <div
+                style={{
+                  ...S.av,
+                  background: (SPEC_META[ctx.specKey] || {}).bg || "#F1F5F9",
+                  color: (SPEC_META[ctx.specKey] || {}).tc || "#475569",
+                }}
+              >
+                {(SPEC_META[ctx.specKey] || {}).av || "?"}
+              </div>
+            )}
+            <div>
+              <p style={S.title}>Confirmação de envio</p>
+              <p style={S.sub}>{profNames[ctx.specKey] || ctx.specKey}</p>
+            </div>
+          </div>
+
+          <div style={S.confirmacaoBox}>
+            <p style={S.confirmacaoTitulo}>
+              Você enviou a mensagem para a {textoDestinoWa}?
+            </p>
+            <p style={S.confirmacaoHint}>
+              Se sim, a vaga será preenchida automaticamente no sistema.
+              Se não enviou, a vaga ficará disponível.
+            </p>
+          </div>
+
+          <div style={S.actions}>
+            <button
+              style={S.btnCancel}
+              onClick={onCancelarAposEnvio}
+              disabled={confirmando}
+            >
+              Não enviei
+            </button>
+            <button
+              style={{ ...S.btnOk, opacity: confirmando ? 0.7 : 1 }}
+              onClick={confirmar}
+              disabled={confirmando}
+            >
+              {confirmando ? "Preenchendo…" : "Sim, enviei"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -1182,6 +1269,25 @@ const S = {
     padding: "6px 10px",
     borderRadius: 6,
     marginBottom: 12,
+  },
+  confirmacaoBox: {
+    background: "#F0FDF4",
+    border: "1px solid #BBF7D0",
+    borderRadius: 10,
+    padding: "16px 14px",
+    marginBottom: 20,
+  },
+  confirmacaoTitulo: {
+    fontSize: 15,
+    fontWeight: 600,
+    color: "#15803D",
+    margin: "0 0 8px",
+  },
+  confirmacaoHint: {
+    fontSize: 13,
+    color: "#166534",
+    margin: 0,
+    lineHeight: 1.5,
   },
   actions: { display: "flex", gap: 10 },
   btnCancel: {

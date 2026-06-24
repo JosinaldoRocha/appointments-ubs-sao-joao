@@ -797,8 +797,6 @@ export default function Dashboard() {
           abrirWhatsAppComTexto(waDigits, msg);
         }
         showToast(toastWaEnviado, "success");
-        manterReservaAoFecharModalRef.current = true;
-        setModal(null);
         return;
       }
 
@@ -855,8 +853,6 @@ export default function Dashboard() {
           abrirWhatsAppComTexto(waDigits, msg);
         }
         showToast(toastWaEnviado, "success");
-        manterReservaAoFecharModalRef.current = true;
-        setModal(null);
         return;
       }
 
@@ -905,10 +901,81 @@ export default function Dashboard() {
         abrirWhatsAppComTexto(waDigits, msg);
       }
       showToast(toastWaEnviado, "success");
+    },
+    [isRecepcao, isDiretor, profNames, settings, user]
+  );
+
+  const handleConfirmarVagaSolicitacao = useCallback(
+    async ({ specKey, dayKey, sessIdx, atendimentoDate }) => {
+      const {
+        pccuTotal,
+        dentQuartaVisitaDomiciliarDesde,
+        profissionalConfigPorSpec,
+        atendimentoDiasTurnosPorSpec: diasTurnosMap,
+      } = settingsSlotRef.current;
+      const total = sessionTotalEffective(dayKey, specKey, sessIdx, pccuTotal, {
+        atendimentoDateStr: atendimentoDate,
+        dentQuartaVisitaDomiciliarDesde,
+        profissionalConfigPorSpec,
+        atendimentoDiasTurnosPorSpec: diasTurnosMap,
+      });
+
+      const id = vagaDocId(atendimentoDate, specKey, sessIdx);
+      const vdb = vagasMapRef.current[id] || {};
+      let used = Number(vdb.used) || 0;
+      let reserved = Number(vdb.reserved) || 0;
+      const limparReservaSolicitacao = !!vdb.reservaSolicitacao;
+      const livre = total ? total - used - reserved : 0;
+
+      if (reserved > 0 && (!total || used < total)) {
+        reserved -= 1;
+        used += 1;
+      } else if (livre > 0) {
+        used += 1;
+      } else {
+        showToast("Não há vagas disponíveis para esta sessão.", "danger");
+        manterReservaAoFecharModalRef.current = true;
+        setModal(null);
+        return;
+      }
+
+      if (total) {
+        while (used + reserved > total) {
+          if (reserved > 0) reserved -= 1;
+          else used -= 1;
+        }
+      }
+
+      try {
+        await setVaga(id, {
+          atendimentoDate,
+          specKey,
+          sessIdx,
+          dayKey,
+          used,
+          reserved,
+          ...(total ? { total } : {}),
+          ...(limparReservaSolicitacao ? { reservaSolicitacao: deleteField() } : {}),
+        });
+
+        const nomeProf = profNamesRef.current[specKey] || specKey;
+
+        if (total && used + reserved >= total) {
+          await registrarNotificacaoVagasEsgotadas(specKey, nomeProf);
+          showToast(`Vagas esgotadas — ${nomeProf}. Agentes notificados.`, "danger");
+        } else {
+          showToast("Vaga preenchida.", "success");
+        }
+      } catch (e) {
+        console.error(e);
+        showToast("Não foi possível preencher a vaga. Tente de novo.", "danger");
+        throw e;
+      }
+
       manterReservaAoFecharModalRef.current = true;
       setModal(null);
     },
-    [isRecepcao, isDiretor, profNames, settings, user]
+    []
   );
 
   const allTabs = isRecepcao ? [...TABS_BASE, { key: "config", label: "Config." }] : TABS_BASE;
@@ -1057,6 +1124,8 @@ export default function Dashboard() {
           profNames={profNames}
           onSubmit={handleEnviarSolicit}
           onClose={() => setModal(null)}
+          onConfirmarVaga={handleConfirmarVagaSolicitacao}
+          onCancelarAposEnvio={() => setModal(null)}
           recepcaoWhatsappOk={digitosWhatsappRecepcaoParaSolicitacao(settings).length >= 10}
           direcaoEncaixeWhatsappOk={digitosWhatsappDirecaoEncaixeParaSolicitacao(settings).length >= 10}
           isDiretor={isDiretor}
