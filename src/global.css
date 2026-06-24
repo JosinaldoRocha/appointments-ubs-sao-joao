@@ -1,0 +1,59 @@
+/* ── Transições globais ────────────────────────────────── */
+button {
+  transition: filter 0.12s ease, transform 0.1s ease, box-shadow 0.12s ease;
+}
+button:not(:disabled):hover {
+  filter: brightness(0.93);
+}
+button:not(:disabled):active {
+  transform: scale(0.975);
+  filter: brightness(0.87);
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* ── Focus visível (inputs, selects, textareas) ─────────── */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #4F46E5;
+  outline-offset: 1px;
+  border-color: #4F46E5 !important;
+}
+
+/* ── Links sem outline feio ─────────────────────────────── */
+a:focus-visible {
+  outline: 2px solid #4F46E5;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ── Scrollbar fina e discreta ──────────────────────────── */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+/* ── Animações do Toast ─────────────────────────────────── */
+@keyframes toastSlideUp {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(14px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}

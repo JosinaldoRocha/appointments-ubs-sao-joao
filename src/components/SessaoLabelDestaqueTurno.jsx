@@ -29,11 +29,11 @@ const pillManha = {
 /** Tarde: mesma paleta do botão “Solicitar agendamento” (`btnSolicAgente`). */
 const pillTarde = {
   ...pillBase,
-  background: "linear-gradient(180deg, #13508F 0%, #0C447C 55%, #0A3868 100%)",
+  background: "linear-gradient(145deg, #818CF8 0%, #4F46E5 55%, #3730A3 100%)",
   color: "#fff",
-  border: "2px solid #082E55",
+  border: "2px solid #312E81",
   boxShadow:
-    "inset 0 1px 0 rgba(255,255,255,0.22), 0 1px 2px rgba(12, 68, 124, 0.25), 0 4px 14px rgba(12, 68, 124, 0.35)",
+    "inset 0 1px 0 rgba(255,255,255,0.22), 0 1px 2px rgba(67,56,202,0.25), 0 4px 14px rgba(67,56,202,0.4)",
 };
 
 const sufixoStyle = {

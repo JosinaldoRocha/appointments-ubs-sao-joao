@@ -1,6 +1,7 @@
 // src/index.js
 import React from "react";
 import ReactDOM from "react-dom/client";
+import "./global.css";
 import App from "./App";
 
 // Registra o Service Worker para notificações push e PWA

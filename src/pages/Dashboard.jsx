@@ -467,14 +467,14 @@ export default function Dashboard() {
             uid: user.uid,
           });
           if (!r.aplicouReserva) {
-            showToast("A última vaga não está mais disponível. Atualize a tela.", "warning");
+            showToast("Vaga indisponível. Atualize a tela.", "warning");
             return;
           }
           liberarId = id;
         } catch (e) {
           if (e?.code === "RESERVADA_OUTRO") {
             showToast(
-              `Última vaga reservada por ${e.outroNome || "outro profissional"}. Aguarde ou escolha outro horário.`,
+              `Vaga reservada por ${e.outroNome || "outro usuário"}. Aguarde ou escolha outro horário.`,
               "warning"
             );
             return;
@@ -708,7 +708,7 @@ export default function Dashboard() {
       const permiteRecepcaoFisio = specKey === "fisio";
       if (isRecepcao && !permiteRecepcaoFisio) {
         fecharPreAbaWa();
-        showToast("O fluxo de solicitar vaga é para agentes de saúde. Use os botões de ocupação e reserva nas vagas.", "danger");
+        showToast("Use os botões de ocupação e reserva nos cartões.", "danger");
         return;
       }
       if (!isRecepcao && !estaDentroJanelaSolicitacaoAgendamento(windowType, new Date(), specKey)) {
@@ -735,16 +735,16 @@ export default function Dashboard() {
         fecharPreAbaWa();
         showToast(
           waDestino === "direcao"
-            ? "Cadastre o WhatsApp da direção para pedidos de encaixe em Config. → Usuários."
-            : "Cadastre o WhatsApp do recepcionista em Config. → Usuários. O pedido será enviado para o recepcionista que estiver logado ou para o último que entrou no sistema.",
+            ? "WhatsApp da direção não cadastrado. Configure em Config. → Usuários."
+            : "WhatsApp da recepção não cadastrado. Configure em Config. → Usuários.",
           "danger"
         );
         return;
       }
       const toastWaEnviado =
         waDestino === "direcao"
-          ? "WhatsApp aberto — envie a mensagem para a direção."
-          : "WhatsApp aberto — envie a mensagem para a recepção.";
+          ? "WhatsApp aberto. Envie para a direção."
+          : "WhatsApp aberto. Envie para a recepção.";
 
       const meta = SPEC_META[specKey] || {};
       const nomeProf = profNames[specKey] || specKey;
@@ -1144,50 +1144,68 @@ const styles = {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    padding: "10px 16px",
+    padding: "12px 18px",
     background: "#fff",
-    borderBottom: "0.5px solid #E2E8F0",
+    borderBottom: "1px solid #E2E8F0",
+    boxShadow: "0 1px 6px rgba(15,23,42,0.07)",
     flexWrap: "wrap",
-    gap: 8,
+    gap: 10,
+    position: "sticky",
+    top: 0,
+    zIndex: 50,
   },
-  hdrLeft: { display: "flex", alignItems: "center", gap: 10 },
+  hdrLeft: { display: "flex", alignItems: "center", gap: 12 },
   hdrRight: { display: "flex", alignItems: "center", gap: 8 },
-  hdrTitle: { fontSize: 14, fontWeight: 600, color: "#0F172A", margin: 0 },
-  hdrSub: { fontSize: 11, color: "#64748B", margin: 0, textTransform: "capitalize" },
+  hdrTitle: { fontSize: 15, fontWeight: 700, color: "#0F172A", margin: 0, letterSpacing: "-0.01em" },
+  hdrSub: { fontSize: 12, color: "#64748B", margin: "2px 0 0", textTransform: "capitalize" },
   perfilBadge: {
-    fontSize: 12,
-    color: "#475569",
-    background: "#F1F5F9",
-    padding: "4px 10px",
-    borderRadius: 6,
+    fontSize: 13,
+    color: "#4338CA",
+    background: "#EEF2FF",
+    padding: "5px 12px",
+    borderRadius: 999,
+    fontWeight: 600,
+    border: "1px solid #C7D2FE",
   },
   logoutBtn: {
-    fontSize: 12,
+    fontSize: 13,
     color: "#DC2626",
-    background: "#FEF2F2",
+    background: "transparent",
     border: "1px solid #FECACA",
-    borderRadius: 6,
-    padding: "4px 10px",
+    borderRadius: 8,
+    padding: "6px 12px",
     cursor: "pointer",
+    fontWeight: 600,
   },
   nav: {
     display: "flex",
-    gap: 2,
-    padding: "6px 12px",
+    gap: 0,
+    padding: "0 12px",
     background: "#fff",
-    borderBottom: "0.5px solid #E2E8F0",
+    borderBottom: "1px solid #E2E8F0",
     overflowX: "auto",
+    position: "sticky",
+    top: 57,
+    zIndex: 40,
   },
   navBtn: {
-    padding: "6px 14px",
-    fontSize: 13,
+    padding: "11px 18px",
+    fontSize: 14,
+    fontWeight: 500,
     border: "none",
+    borderBottom: "2.5px solid transparent",
     cursor: "pointer",
     background: "transparent",
     color: "#64748B",
-    borderRadius: 6,
     whiteSpace: "nowrap",
+    borderRadius: 0,
+    marginBottom: -1,
   },
-  navBtnActive: { background: "#F1F5F9", color: "#0F172A", fontWeight: 600 },
-  main: { flex: 1, padding: 14, overflowY: "auto" },
+  navBtnActive: {
+    color: "#4338CA",
+    fontWeight: 700,
+    borderBottom: "2.5px solid #4F46E5",
+    background: "transparent",
+  },
+  main: { flex: 1, padding: "18px 16px", overflowY: "auto" },
 };

@@ -387,15 +387,11 @@ export default function ModalAgendar({
     }
     if (encaixeParaDirecao) {
       if (!direcaoEncaixeWhatsappOk) {
-        setErro(
-          "Nenhum WhatsApp da direção cadastrado para encaixes. Peça à recepção para cadastrar em Config. → Usuários."
-        );
+        setErro("WhatsApp da direção não cadastrado. Vá em Config. → Usuários.");
         return;
       }
     } else if (!recepcaoWhatsappOk) {
-      setErro(
-        "Nenhum WhatsApp da recepção disponível. Peça para cadastrar o número em Config. → Usuários (um recepcionista precisa ter feito login ao menos uma vez com WhatsApp cadastrado)."
-      );
+      setErro("WhatsApp da recepção não disponível. Peça à recepção para cadastrar em Config. → Usuários.");
       return;
     }
 
@@ -418,9 +414,7 @@ export default function ModalAgendar({
       }
       const waTabFisio = window.open("about:blank", "_blank");
       if (!waTabFisio) {
-        setErro(
-          "Permita pop-ups para este site para abrir o WhatsApp após enviar a imagem (o navegador bloqueia após o upload)."
-        );
+        setErro("Permita pop-ups neste site para abrir o WhatsApp após o envio.");
         return;
       }
       setEnviando(true);
@@ -478,9 +472,7 @@ export default function ModalAgendar({
       }
       const waTabColeta = window.open("about:blank", "_blank");
       if (!waTabColeta) {
-        setErro(
-          "Permita pop-ups para este site para abrir o WhatsApp após enviar as imagens (o navegador bloqueia após o upload)."
-        );
+        setErro("Permita pop-ups neste site para abrir o WhatsApp após o envio.");
         return;
       }
       setEnviando(true);
@@ -1065,66 +1057,73 @@ const S = {
   overlay: {
     position: "fixed",
     inset: 0,
-    background: "rgba(0,0,0,0.4)",
+    background: "rgba(15,23,42,0.45)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     zIndex: 100,
     padding: 16,
+    backdropFilter: "blur(2px)",
   },
   modal: {
     background: "#fff",
-    borderRadius: 16,
-    padding: 20,
+    borderRadius: 18,
+    padding: 22,
     width: "100%",
     maxWidth: 400,
-    boxShadow: "0 8px 32px rgba(0,0,0,0.16)",
+    boxShadow: "0 20px 60px rgba(15,23,42,0.2), 0 4px 16px rgba(15,23,42,0.1)",
     maxHeight: "90vh",
     overflowY: "auto",
+    border: "1px solid #E2E8F0",
   },
-  header: { display: "flex", alignItems: "center", gap: 12, marginBottom: 16 },
+  header: {
+    display: "flex", alignItems: "center", gap: 12,
+    marginBottom: 18, paddingBottom: 14,
+    borderBottom: "1px solid #F1F5F9",
+  },
   resumo: {
     background: "#F8FAFC",
     border: "1px solid #E2E8F0",
-    borderRadius: 10,
-    padding: "12px 14px",
-    marginBottom: 16,
+    borderRadius: 12,
+    padding: "13px 15px",
+    marginBottom: 18,
   },
   resumoTitle: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: 700,
-    color: "#475569",
+    color: "#94A3B8",
     textTransform: "uppercase",
-    letterSpacing: "0.05em",
+    letterSpacing: "0.07em",
     margin: "0 0 8px",
   },
   resumoLine: {
     fontSize: 13,
     color: "#334155",
-    margin: "0 0 6px",
-    lineHeight: 1.45,
+    margin: "0 0 5px",
+    lineHeight: 1.5,
   },
   resumoHint: {
     fontSize: 11,
     color: "#64748B",
     margin: "10px 0 0",
-    lineHeight: 1.4,
+    lineHeight: 1.45,
     borderTop: "1px solid #E2E8F0",
     paddingTop: 10,
   },
   av: {
-    width: 38,
-    height: 38,
+    width: 40,
+    height: 40,
     borderRadius: "50%",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    fontSize: 13,
-    fontWeight: 600,
+    fontSize: 14,
+    fontWeight: 700,
     flexShrink: 0,
+    boxShadow: "0 1px 3px rgba(15,23,42,0.1)",
   },
-  title: { fontSize: 15, fontWeight: 600, color: "#0F172A", margin: 0 },
-  sub: { fontSize: 12, color: "#64748B", margin: 0 },
+  title: { fontSize: 15, fontWeight: 700, color: "#0F172A", margin: 0, letterSpacing: "-0.01em" },
+  sub: { fontSize: 12, color: "#64748B", margin: "2px 0 0" },
   /** Alinha pill de turno com o subtítulo do cabeçalho. */
   subSessaoWrap: {
     display: "inline-flex",
@@ -1150,10 +1149,10 @@ const S = {
     borderBottom: "1px solid #E2E8F0",
   },
   input: {
-    padding: "9px 11px",
+    padding: "10px 12px",
     fontSize: 14,
-    border: "1px solid #E2E8F0",
-    borderRadius: 8,
+    border: "1.5px solid #E2E8F0",
+    borderRadius: 9,
     background: "#fff",
     color: "#0F172A",
     outline: "none",
@@ -1183,10 +1182,10 @@ const S = {
     height: 1,
   },
   textarea: {
-    padding: "9px 11px",
+    padding: "10px 12px",
     fontSize: 14,
-    border: "1px solid #E2E8F0",
-    borderRadius: 8,
+    border: "1.5px solid #E2E8F0",
+    borderRadius: 9,
     background: "#fff",
     color: "#0F172A",
     outline: "none",
@@ -1266,49 +1265,59 @@ const S = {
     fontSize: 12,
     color: "#DC2626",
     background: "#FEF2F2",
-    padding: "6px 10px",
-    borderRadius: 6,
+    border: "1px solid #FECACA",
+    padding: "8px 11px",
+    borderRadius: 8,
     marginBottom: 12,
+    lineHeight: 1.45,
   },
   confirmacaoBox: {
     background: "#F0FDF4",
     border: "1px solid #BBF7D0",
-    borderRadius: 10,
-    padding: "16px 14px",
+    borderRadius: 12,
+    padding: "16px 15px",
     marginBottom: 20,
   },
   confirmacaoTitulo: {
     fontSize: 15,
-    fontWeight: 600,
+    fontWeight: 700,
     color: "#15803D",
     margin: "0 0 8px",
+    letterSpacing: "-0.01em",
   },
   confirmacaoHint: {
     fontSize: 13,
     color: "#166534",
     margin: 0,
-    lineHeight: 1.5,
+    lineHeight: 1.55,
   },
-  actions: { display: "flex", gap: 10 },
+  actions: {
+    display: "flex", gap: 10,
+    paddingTop: 16, marginTop: 6,
+    borderTop: "1px solid #F1F5F9",
+  },
   btnCancel: {
     flex: 1,
-    padding: 10,
+    padding: "11px 10px",
     fontSize: 13,
-    border: "1px solid #E2E8F0",
-    borderRadius: 8,
+    fontWeight: 600,
+    border: "1.5px solid #E2E8F0",
+    borderRadius: 9,
     cursor: "pointer",
     background: "transparent",
     color: "#64748B",
   },
   btnOk: {
-    flex: 1,
-    padding: 10,
+    flex: 2,
+    padding: "11px 10px",
     fontSize: 13,
-    fontWeight: 600,
+    fontWeight: 700,
     border: "none",
-    borderRadius: 8,
+    borderRadius: 9,
     cursor: "pointer",
-    background: "#0C447C",
+    background: "linear-gradient(135deg, #6366F1 0%, #4338CA 100%)",
     color: "#fff",
+    boxShadow: "0 2px 8px rgba(67,56,202,0.3)",
+    letterSpacing: "0.01em",
   },
 };

@@ -7,7 +7,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 export const SPEC_META = {
-  medico:         { role: "Clínico Geral",  av: "MC", bg: "#E6F1FB", tc: "#0C447C" },
+  medico:         { role: "Clínico Geral",  av: "MC", bg: "#EEF2FF", tc: "#4338CA" },
   dentFernando:   { role: "Odontologia",    av: "DF", bg: "#E1F5EE", tc: "#085041" },
   dentPatrick:    { role: "Odontologia",    av: "DP", bg: "#E1F5EE", tc: "#085041" },
   psicologa:      { role: "Psicologia",     av: "DK", bg: "#FBEAF0", tc: "#72243E" },
@@ -133,7 +133,7 @@ export function filtrarSpecKeysAtivos(keys, specKeysDesativados) {
 /** Tipos de sessão do médico (UI / filtros / configuração na recepção) */
 export const MEDICO_TIPO = {
   receitas:  { label: "Troca de receitas", short: "Receitas",  color: "#7C3AED", bg: "#EDE9FE" },
-  clinico:   { label: "Clínico geral",     short: "Clínico",   color: "#0C447C", bg: "#DBEAFE" },
+  clinico:   { label: "Clínico geral",     short: "Clínico",   color: "#4338CA", bg: "#E0E7FF" },
   gestantes: { label: "Gestantes",         short: "Gestantes", color: "#BE185D", bg: "#FCE7F3" },
   visitas_domiciliares: {
     label: "Visitas domiciliares",

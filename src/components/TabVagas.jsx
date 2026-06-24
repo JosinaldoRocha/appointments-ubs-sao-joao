@@ -54,7 +54,7 @@ function nomeDiaSemanaLongo(isoDateStr) {
   return raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 
-const STYLE_TITULO_DESTAQUE = { color: "#0C447C", fontWeight: 700 };
+const STYLE_TITULO_DESTAQUE = { color: "#4338CA", fontWeight: 700 };
 
 /**
  * Título da seção conforme a data do agendamento:
@@ -312,9 +312,8 @@ export default function TabVagas({
           <p style={{ fontSize: 15, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>
             Nenhum agendamento disponível hoje
           </p>
-          <p style={{ fontSize: 13, color: "#64748B" }}>
-            Em geral, o agendamento abre no último dia útil anterior ao atendimento (feriados e pontos
-            facultativos são considerados). Nutrição e psicologia: cartão visível todos os dias; agendamento na véspera ou no dia do atendimento (conforme o card).
+          <p style={{ fontSize: 13, color: "#64748B", lineHeight: 1.55 }}>
+            O agendamento abre no último dia útil anterior ao atendimento. Nutrição e psicologia: agendamento na véspera ou no dia (conforme o cartão).
           </p>
         </div>
       </div>
@@ -327,11 +326,9 @@ export default function TabVagas({
         <p style={{ fontSize: 15, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>
           Nenhum cartão de atendimento visível
         </p>
-          <p style={{ fontSize: 13, color: "#64748B", lineHeight: 1.5 }}>
-          Os atendimentos do dia podem sumir da lista quando a recepção marcar o turno como encerrado. Fora do
-          horário de solicitações (7h–18h no dia do atendimento; 13h30–18h nos demais), os cartões continuam
-          visíveis, mas o agendamento fica bloqueado. Suspensões e lembretes estão na aba <strong>Avisos</strong>.
-        </p>
+          <p style={{ fontSize: 13, color: "#64748B", lineHeight: 1.55 }}>
+            Cartões somem quando a recepção encerra o turno. Suspensões e lembretes na aba <strong>Avisos</strong>.
+          </p>
       </div>
     );
   }
@@ -340,7 +337,7 @@ export default function TabVagas({
     <div style={styles.wrap}>
       {isRecepcao && (
         <div style={styles.legend}>
-          <LegendItem color="#DBEAFE" border="#93C5FD" label="Agenda: dia útil anterior ao atendimento" />
+          <LegendItem color="#E0E7FF" border="#A5B4FC" label="Agenda: dia útil anterior ao atendimento" />
           <LegendItem
             color="#ECFDF5"
             border="#6EE7B7"
@@ -1057,9 +1054,9 @@ function SpecCard({
             <span
               style={{
                 ...styles.winTag,
-                background: isSame ? "#DCFCE7" : "#EFF6FF",
-                color: isSame ? "#166534" : "#1D4ED8",
-                border: `1px solid ${isSame ? "#86EFAC" : "#BFDBFE"}`,
+                background: isSame ? "#DCFCE7" : "#EEF2FF",
+                color: isSame ? "#166534" : "#4338CA",
+                border: `1px solid ${isSame ? "#86EFAC" : "#C7D2FE"}`,
               }}
             >
               {isSame ? "Atend. hoje" : DAY_LABEL[spec.atendimentoDia]?.split("-")[0] || "Agenda"}
@@ -1289,7 +1286,7 @@ const SessionRow = memo(function SessionRow({
       ? "#22C55E"
       : faseEncaixe
         ? "#EA580C"
-        : "#3B82F6";
+        : "#6366F1";
 
   const podeConfirmarReserva = reserved > 0 && used < total && livres <= 0;
   const podeAdd =
@@ -1329,7 +1326,7 @@ const SessionRow = memo(function SessionRow({
                 style={{
                   ...styles.barFill,
                   width: `${pctComuns}%`,
-                  background: pctComuns >= 100 ? "#22C55E" : "#3B82F6",
+                  background: pctComuns >= 100 ? "#22C55E" : "#6366F1",
                 }}
               />
             </div>
@@ -1594,10 +1591,10 @@ const styles = {
     fontWeight: 700,
     borderRadius: 8,
     border: "none",
-    background: "#0C447C",
+    background: "linear-gradient(135deg, #6366F1 0%, #4338CA 100%)",
     color: "#fff",
     cursor: "pointer",
-    boxShadow: "0 2px 6px rgba(12, 68, 124, 0.25)",
+    boxShadow: "0 2px 6px rgba(67,56,202,0.28)",
   },
   painelSuspenderAcesso: {
     marginTop: 22,
@@ -1715,7 +1712,7 @@ const styles = {
     color: "#fff",
     cursor: "pointer",
   },
-  empty: { textAlign: "center", padding: "48px 20px" },
+  empty: { textAlign: "center", padding: "52px 24px" },
   legend: {
     display: "flex",
     gap: 16,
@@ -1728,21 +1725,23 @@ const styles = {
   },
   section: { marginBottom: 28 },
   sectionTitle: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: 700,
     textTransform: "uppercase",
-    letterSpacing: "0.06em",
+    letterSpacing: "0.07em",
+    color: "#94A3B8",
     margin: "0 0 14px",
-    paddingBottom: 8,
-    borderBottom: "2px solid #E2E8F0",
+    paddingBottom: 10,
+    borderBottom: "1px solid #E2E8F0",
   },
   /** Título em frase (agendamento disponível); sem caixa alta forçada. */
   sectionTitleSentence: {
     textTransform: "none",
     letterSpacing: "normal",
     fontSize: 14,
-    fontWeight: 500,
-    lineHeight: 1.45,
+    fontWeight: 600,
+    color: "#334155",
+    lineHeight: 1.4,
   },
   grid: {
     display: "grid",
@@ -1756,6 +1755,8 @@ const styles = {
     overflow: "hidden",
     display: "flex",
     flexDirection: "column",
+    boxShadow: "0 1px 3px rgba(15,23,42,0.07), 0 1px 2px rgba(15,23,42,0.04)",
+    border: "1px solid #F1F5F9",
   },
   cardAccent: { height: 4, width: "100%", flexShrink: 0 },
   cardBody: { padding: "14px 16px 16px", display: "flex", flexDirection: "column", gap: 0, flex: 1 },
@@ -1769,12 +1770,12 @@ const styles = {
     padding: "11px 14px",
     fontSize: 13,
     fontWeight: 700,
-    border: "1px solid #0C447C",
+    border: "1px solid #4338CA",
     borderRadius: 8,
     cursor: "pointer",
-    background: "linear-gradient(180deg, #0C447C 0%, #082F56 100%)",
+    background: "linear-gradient(135deg, #6366F1 0%, #4338CA 100%)",
     color: "#fff",
-    boxShadow: "0 2px 8px rgba(12, 68, 124, 0.35)",
+    boxShadow: "0 2px 8px rgba(67,56,202,0.35)",
     lineHeight: 1.3,
   },
   btnAtendimentoEncerradoAtivo: {
@@ -1820,7 +1821,7 @@ const styles = {
   cardName: { fontSize: 15, fontWeight: 700, color: "#0F172A", margin: "0 0 2px", lineHeight: 1.25 },
   cardRole: { fontSize: 12, color: "#64748B", margin: 0, fontWeight: 500 },
   cardAgendaLivre: { fontSize: 11, color: "#047857", margin: "4px 0 0", fontWeight: 600 },
-  cardDate: { fontSize: 12, color: "#0369A1", margin: "6px 0 0", fontWeight: 500 },
+  cardDate: { fontSize: 12, color: "#4338CA", margin: "6px 0 0", fontWeight: 500 },
   winTag: { fontSize: 11, padding: "4px 10px", borderRadius: 999, fontWeight: 600, whiteSpace: "nowrap" },
   fullBadge: {
     fontSize: 10,
@@ -2003,9 +2004,9 @@ const styles = {
     fontSize: 12,
     fontWeight: 600,
     lineHeight: 1.45,
-    color: "#1D4ED8",
-    background: "#EFF6FF",
-    border: "1px solid #BFDBFE",
+    color: "#4338CA",
+    background: "#EEF2FF",
+    border: "1px solid #C7D2FE",
     borderRadius: 8,
   },
   cardResumoAgente: {
@@ -2046,9 +2047,9 @@ const styles = {
     fontSize: 13,
     fontWeight: 600,
     lineHeight: 1.4,
-    color: "#1E40AF",
-    background: "#EFF6FF",
-    border: "1px solid #93C5FD",
+    color: "#3730A3",
+    background: "#EEF2FF",
+    border: "1px solid #A5B4FC",
     borderRadius: 8,
   },
   statsRow: {
@@ -2160,26 +2161,26 @@ const styles = {
   btnSolic: {
     padding: "8px 14px",
     fontSize: 12,
-    fontWeight: 600,
+    fontWeight: 700,
     border: "none",
     borderRadius: 8,
     cursor: "pointer",
-    background: "#0C447C",
+    background: "linear-gradient(135deg, #6366F1 0%, #4338CA 100%)",
     color: "#fff",
-    boxShadow: "0 1px 2px rgba(12, 68, 124, 0.25)",
+    boxShadow: "0 1px 4px rgba(67,56,202,0.28)",
   },
   btnSolicAgente: {
     marginTop: 10,
     width: "100%",
     padding: "10px 14px",
     fontSize: 12,
-    fontWeight: 600,
+    fontWeight: 700,
     border: "none",
     borderRadius: 8,
     cursor: "pointer",
-    background: "#0C447C",
+    background: "linear-gradient(135deg, #6366F1 0%, #4338CA 100%)",
     color: "#fff",
-    boxShadow: "0 1px 2px rgba(12, 68, 124, 0.25)",
+    boxShadow: "0 1px 4px rgba(67,56,202,0.28)",
   },
   btnSolicEncaixe: {
     marginTop: 10,
