@@ -133,6 +133,28 @@ export function fraseIncluiEncaixeRecepcao({ encaixeExtra, medicoTipo, pccuOnly,
   return `Inclui ${n} ${enc} para ${alvo} da zona rural ou casos agudos (além da agenda fixa).`;
 }
 
+/** URLs de fotos anexadas (array ou campo legado com uma URL). */
+function urlsFotosDocumento(p) {
+  if (Array.isArray(p.fotoDocumentoUrls) && p.fotoDocumentoUrls.length) {
+    return p.fotoDocumentoUrls.map((u) => String(u || "").trim()).filter(Boolean);
+  }
+  const one = (p.fotoDocumentoUrl || "").trim();
+  return one ? [one] : [];
+}
+
+function textoBlocoPedidoExameFotos(urls) {
+  if (!urls.length) {
+    return "Pedido de exame (foto) — abra o link para ver a imagem:\n—";
+  }
+  if (urls.length === 1) {
+    return `Pedido de exame (foto) — abra o link para ver a imagem:\n${urls[0]}`;
+  }
+  return (
+    `Pedidos de exame (fotos) — abra os links para ver as imagens:\n` +
+    urls.map((u, i) => `${i + 1}. ${u}`).join("\n")
+  );
+}
+
 function blocoRodapeAgenda(profLinha, atendimentoDate, sessLabel, observacaoExtra, medicoTipo) {
   const { turno } = splitTurnoObservacao(sessLabel);
   const dataCap = dataAtendimentoComTitulo(atendimentoDate);
@@ -156,6 +178,7 @@ function blocoRodapeAgenda(profLinha, atendimentoDate, sessLabel, observacaoExtr
  * @param {string} [p.dataNascimentoIso]
  * @param {string} [p.documentoPaciente]
  * @param {string} [p.fotoDocumentoUrl]
+ * @param {string[]} [p.fotoDocumentoUrls] — várias fotos (ex.: pedidos de exame)
  * @param {boolean} [p.solicitacaoFisioEncaminhamento] — fisioterapia com lista de espera + encaminhamento obrigatório
  * @param {boolean} [p.solicitacaoColetaExames] — coleta de exames com pedido (foto) + dados do paciente
  * @param {string} [p.telefonePaciente]
@@ -166,6 +189,7 @@ function blocoRodapeAgenda(profLinha, atendimentoDate, sessLabel, observacaoExtr
  * @param {number} [p.livresEncaixe] — quantidade de encaixes ainda livres (para texto do encaixe)
  * @param {boolean} [p.pccuOnly] — sessão PCCU
  * @param {boolean} [p.coletaExamesRotina] — solicitação de coleta de exames com pedido anexado
+ * @param {string} [p.cartaoSusUrl] — URL da foto do cartão do SUS (coleta de exames, opcional)
  */
 export function montarMensagemSolicitacaoWhatsApp(p) {
   const saud = saudacaoBomDiaOuTarde();
@@ -204,35 +228,33 @@ export function montarMensagemSolicitacaoWhatsApp(p) {
   }
 
   if (p.solicitacaoColetaExames) {
-    const nome = (p.paciente || "").trim() || "—";
+    const nome = (p.paciente || "").trim();
     const docLinha = linhaCpfOuCartaoSus(p.documentoPaciente);
-    const dn = p.dataNascimentoIso ? formatDataNascimentoBR(p.dataNascimentoIso) : "—";
-    const url = (p.fotoDocumentoUrl || "").trim() || "—";
-    let corpo =
-      `${saud}!\n\n` +
-      `Agenda um atendimento para:\n` +
-      `Paciente: ${nome}\n`;
-    if (docLinha) {
-      corpo += `${docLinha}\n`;
+    const dn = p.dataNascimentoIso ? formatDataNascimentoBR(p.dataNascimentoIso) : "";
+    const cartaoSusUrl = (p.cartaoSusUrl || "").trim();
+    const urls = urlsFotosDocumento(p);
+
+    const linhasIdentidade = [];
+    if (nome) linhasIdentidade.push(`Paciente: ${nome}`);
+    if (docLinha) linhasIdentidade.push(docLinha);
+    if (dn) linhasIdentidade.push(`Data de nascimento: ${dn}`);
+    const identidade = linhasIdentidade.join("\n");
+
+    let corpo = `${saud}!\n\nAgenda um atendimento para:`;
+    if (identidade) corpo += `\n${identidade}`;
+    if (cartaoSusUrl) {
+      corpo += `\n\nCartão do SUS (foto) — abra o link para ver a imagem:\n${cartaoSusUrl}`;
     }
-    corpo +=
-      `Data de nascimento: ${dn}\n\n` +
-      `Pedido de exame (foto) — abra o link para ver a imagem:\n${url}\n\n` +
-      rodape;
+    corpo += `\n\n${textoBlocoPedidoExameFotos(urls)}\n\n` + rodape;
     return corpo;
   }
 
-  if (p.fotoDocumentoUrl) {
-    const url = (p.fotoDocumentoUrl || "").trim();
-    const linhaAnexo = p.coletaExamesRotina
-      ? "Pedido de exame anexado (foto):\n"
-      : "";
-    return (
-      `${saud}!\n\n` +
-      linhaPedido +
-      `${linhaAnexo}${url}\n\n` +
-      rodape
-    );
+  const urlsDoc = urlsFotosDocumento(p);
+  if (urlsDoc.length) {
+    const blocoAnexo = p.coletaExamesRotina
+      ? `${textoBlocoPedidoExameFotos(urlsDoc)}\n\n`
+      : `${urlsDoc.join("\n")}\n\n`;
+    return `${saud}!\n\n` + linhaPedido + blocoAnexo + rodape;
   }
 
   const nome = (p.paciente || "").trim() || "—";
@@ -271,21 +293,34 @@ export function buildWhatsAppUrl(telefoneDigitos, texto) {
   return `https://wa.me/${phone}?text=${encodeURIComponent(texto)}`;
 }
 
-/** Deep link para abrir o app do WhatsApp diretamente quando disponível. */
-function buildWhatsAppDeepLink(telefoneDigitos, texto) {
+/**
+ * Deep link para abrir o app do WhatsApp diretamente quando disponível.
+ * Android usa intent:// (tratado pelo Chrome como intent do sistema).
+ * iOS usa whatsapp:// (tratado pelo Safari via custom URL scheme).
+ */
+function buildWhatsAppDeepLink(telefoneDigitos, texto, fallbackUrl) {
   const phone = normalizarTelefoneParaWaMe(telefoneDigitos);
   if (!phone) return null;
+  if (/android/i.test(navigator.userAgent)) {
+    const fb = fallbackUrl || `https://wa.me/${phone}?text=${encodeURIComponent(texto)}`;
+    return (
+      `intent://send?phone=${phone}&text=${encodeURIComponent(texto)}` +
+      `#Intent;scheme=whatsapp;package=com.whatsapp;` +
+      `S.browser_fallback_url=${encodeURIComponent(fb)};end`
+    );
+  }
   return `whatsapp://send?phone=${phone}&text=${encodeURIComponent(texto)}`;
 }
 
 export function abrirWhatsAppComTexto(telefoneDigitos, texto) {
   const fallbackUrl = buildWhatsAppUrl(telefoneDigitos, texto);
   if (!fallbackUrl) return false;
-  const deepLink = buildWhatsAppDeepLink(telefoneDigitos, texto);
+  const isAndroid = /android/i.test(navigator.userAgent);
+  const deepLink = buildWhatsAppDeepLink(telefoneDigitos, texto, fallbackUrl);
   const win = window.open(deepLink || fallbackUrl, "_blank");
   if (!win) return false;
-  if (deepLink) {
-    // Se o protocolo não estiver disponível no navegador/dispositivo, mantém fallback web.
+  // No Android o intent:// já embute o fallback; no iOS é necessário redirecionar manualmente.
+  if (deepLink && !isAndroid) {
     setTimeout(() => {
       try {
         if (!win.closed) win.location.replace(fallbackUrl);
@@ -299,18 +334,58 @@ export function abrirWhatsAppComTexto(telefoneDigitos, texto) {
 
 /**
  * Após upload assíncrono, o navegador pode bloquear `window.open`.
- * Abra `about:blank` no clique e passe a janela aqui para navegar ao wa.me depois.
+ * Abra `about:blank` no clique e passe a janela aqui para navegar ao WhatsApp depois.
+ *
+ * No Android, qualquer navegação programática (location.href / window.open após async) não
+ * aciona o sistema de intents de forma confiável. A única abordagem garantida é um toque real
+ * do usuário num <a href>. Por isso, no Android escrevemos um botão de link na aba em branco;
+ * quando o usuário toca, o Chrome trata como navegação iniciada pelo usuário e abre o WhatsApp.
  */
 export function abrirWhatsAppNavegandoJanela(janela, telefoneDigitos, texto) {
   const fallbackUrl = buildWhatsAppUrl(telefoneDigitos, texto);
   if (!fallbackUrl) return false;
-  const deepLink = buildWhatsAppDeepLink(telefoneDigitos, texto);
+  const isAndroid = /android/i.test(navigator.userAgent);
+  const deepLink = buildWhatsAppDeepLink(telefoneDigitos, texto, fallbackUrl);
   const targetUrl = deepLink || fallbackUrl;
+
+  if (isAndroid && janela && !janela.closed) {
+    try {
+      const href = targetUrl.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+      janela.document.open();
+      janela.document.write(
+        "<!DOCTYPE html><html><head>" +
+          '<meta charset="utf-8">' +
+          '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+          "<title>Abrindo WhatsApp…</title>" +
+          "</head><body style=\"margin:0;display:flex;align-items:center;justify-content:center;" +
+          "min-height:100vh;background:#f0fdf4;font-family:sans-serif\">" +
+          "<div style=\"text-align:center;padding:32px 24px\">" +
+          "<p style=\"font-size:16px;color:#166534;margin:0 0 24px;line-height:1.5\">" +
+          "Mensagem pronta!<br>Toque no botão para abrir o WhatsApp.</p>" +
+          "<a href=\"" + href + "\" " +
+          "onclick=\"setTimeout(function(){try{window.close()}catch(e){}},800)\" " +
+          "style=\"display:inline-block;padding:16px 28px;background:#25D366;color:#fff;" +
+          "text-decoration:none;border-radius:12px;font-size:17px;font-weight:700\">" +
+          "Abrir WhatsApp</a>" +
+          "</div></body></html>"
+      );
+      janela.document.close();
+      return true;
+    } catch {
+      /* noop — fallback abaixo */
+    }
+  }
+
+  if (isAndroid) {
+    try { if (janela && !janela.closed) janela.close(); } catch { /* noop */ }
+    window.open(targetUrl, "_blank");
+    return true;
+  }
+
   if (janela && !janela.closed) {
     try {
       janela.location.href = targetUrl;
       if (deepLink) {
-        // Em navegadores sem handler do protocolo, evita aba em branco e vai para o fluxo web.
         setTimeout(() => {
           try {
             if (!janela.closed) janela.location.replace(fallbackUrl);
