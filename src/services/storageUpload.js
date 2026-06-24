@@ -57,3 +57,10 @@ export async function uploadDocumentoPacienteSolicitacao(file) {
     ),
   ]);
 }
+
+/** Envia várias imagens da mesma solicitação (em paralelo). */
+export async function uploadDocumentosPacienteSolicitacao(files) {
+  const lista = Array.from(files || []).filter(Boolean);
+  if (!lista.length) return [];
+  return Promise.all(lista.map((file) => uploadDocumentoPacienteSolicitacao(file)));
+}

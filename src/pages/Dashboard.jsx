@@ -38,7 +38,10 @@ import {
   normalizeAtendimentoDiasTurnosParaSpec,
   listaSpecKeysCustom,
 } from "../services/scheduleConfig";
-import { uploadDocumentoPacienteSolicitacao } from "../services/storageUpload";
+import {
+  uploadDocumentoPacienteSolicitacao,
+  uploadDocumentosPacienteSolicitacao,
+} from "../services/storageUpload";
 import {
   montarMensagemSolicitacaoWhatsApp,
   abrirWhatsAppComTexto,
@@ -688,6 +691,8 @@ export default function Dashboard() {
       medicoTipo,
       coletaExamesRotina,
       docFile,
+      docFiles,
+      cartaoSusFile,
       whatsappBlankWindow,
       podeAgendarPrev,
       agendaQualquerDiaUtil,
@@ -785,6 +790,64 @@ export default function Dashboard() {
           nomeAgenteSaude: nomeAgenteSaude?.trim() || "",
           observacaoExtra: observacaoExtra?.trim() || "",
           fotoDocumentoUrl,
+        });
+        if (whatsappBlankWindow) {
+          abrirWhatsAppNavegandoJanela(whatsappBlankWindow, waDigits, msg);
+        } else {
+          abrirWhatsAppComTexto(waDigits, msg);
+        }
+        showToast(toastWaEnviado, "success");
+        manterReservaAoFecharModalRef.current = true;
+        setModal(null);
+        return;
+      }
+
+      if (solicitacaoColetaExames) {
+        const arquivos =
+          Array.isArray(docFiles) && docFiles.length
+            ? docFiles
+            : docFile
+              ? [docFile]
+              : [];
+        if (!arquivos.length) {
+          fecharPreAbaWa();
+          showToast("Anexe ao menos uma foto do pedido de exame.", "danger");
+          return;
+        }
+        let cartaoSusUrl = "";
+        let fotoDocumentoUrls = [];
+        try {
+          [cartaoSusUrl, fotoDocumentoUrls] = await Promise.all([
+            cartaoSusFile
+              ? uploadDocumentoPacienteSolicitacao(cartaoSusFile)
+              : Promise.resolve(""),
+            uploadDocumentosPacienteSolicitacao(arquivos),
+          ]);
+        } catch (e) {
+          console.error(e);
+          const msgErro = String(e?.message || "");
+          if (/failed to fetch/i.test(msgErro)) {
+            throw new Error(
+              "Não foi possível enviar as imagens (falha de conexão com o Firebase Storage). Verifique internet, configuração do Firebase e regras do bucket."
+            );
+          }
+          throw new Error(
+            msgErro ||
+              "Não foi possível enviar as imagens. Verifique o Firebase Storage, as regras e a conexão."
+          );
+        }
+        const msg = montarMensagemSolicitacaoWhatsApp({
+          solicitacaoColetaExames: true,
+          profissionalLinha,
+          sessLabel,
+          atendimentoDate,
+          medicoTipo,
+          paciente: paciente?.trim() || "",
+          dataNascimentoIso: dataNascimentoPaciente || "",
+          documentoPaciente: documentoPaciente || "",
+          cartaoSusUrl,
+          observacaoExtra: observacaoExtra?.trim() || "",
+          fotoDocumentoUrls,
         });
         if (whatsappBlankWindow) {
           abrirWhatsAppNavegandoJanela(whatsappBlankWindow, waDigits, msg);
