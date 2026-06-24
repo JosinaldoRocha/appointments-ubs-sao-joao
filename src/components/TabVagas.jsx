@@ -16,6 +16,7 @@ import {
   indicesSessoesAtendimentoHojeVisiveis,
   reservaSolicitacaoAtiva,
   diasAtendimentoDefaultParaSpec,
+  turnosDefaultParaSpecNoDia,
   suspensaoRegistroNaoExpirado,
   filtrarSpecKeysAtivos,
 } from "../services/scheduleConfig";

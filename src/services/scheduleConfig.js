@@ -803,6 +803,21 @@ function enrichSpecAgendaFromConfig(spec, profissionalConfigPorSpec = {}) {
   return out;
 }
 
+/** Chave em `vagasPorTipo` — alinhada a `getSessionDefsForSpecKey` e `montarPatchProfissionalConfig`. */
+export function chaveVagasPorTipoParaSessao(sess) {
+  return sess?.medicoTipo || sess?.label || "sessao";
+}
+
+function vagasPorTipoParaSessao(porTipo, sess) {
+  if (!porTipo || typeof porTipo !== "object") return null;
+  const chave = chaveVagasPorTipoParaSessao(sess);
+  let raw = porTipo[chave];
+  if (raw == null && sess?.medicoTipo) raw = porTipo[sess.medicoTipo];
+  if (raw == null) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 function applyVagasOverrideToSessions(sessions, specKey, profissionalConfigPorSpec = {}) {
   if (
     (specKey === "medico" && medicoTemSessoesConfiguradasNoFirestore(profissionalConfigPorSpec.medico)) ||
@@ -818,8 +833,9 @@ function applyVagasOverrideToSessions(sessions, specKey, profissionalConfigPorSp
   return sessions.map((sess, idx) => {
     if (sess.visitaDomiciliarSemUnidade) return sess;
     let base = null;
-    if (porTipo && sess.medicoTipo != null && porTipo[sess.medicoTipo] != null) {
-      base = Number(porTipo[sess.medicoTipo]);
+    const doTipo = vagasPorTipoParaSessao(porTipo, sess);
+    if (doTipo != null) {
+      base = doTipo;
     } else if (Array.isArray(porIdx) && porIdx[idx] != null) {
       base = Number(porIdx[idx]);
     } else if (cfg.vagasBase != null && (sessions.length === 1 || idx === 0)) {
@@ -1312,6 +1328,35 @@ export function previousBusinessDay(attendanceDate, holidaySet) {
   return d;
 }
 
+/**
+ * Data (ISO) em que a agenda abre para um atendimento futuro: último dia útil anterior,
+ * recuando automaticamente quando feriados ou pontos facultativos caem nesse intervalo
+ * (ex.: atendimento na segunda → abertura na sexta; se a sexta for feriado, na quinta).
+ */
+export function diaUtilAberturaAgendaParaAtendimento(atendimentoDateStr, holidaySet) {
+  return toDateStr(previousBusinessDay(atendimentoDateStr, holidaySet));
+}
+
+/** Última ocorrência de `diaKey` (segunda…sexta) estritamente antes de `atendimentoDateStr`. */
+function ultimaDataDoDiaSemanaAntesDe(atendimentoDateStr, diaKey) {
+  for (let i = 1; i <= 7; i++) {
+    const iso = addDaysLocal(atendimentoDateStr, -i);
+    if (JS_DAY_TO_KEY[parseDateStr(iso).getDay()] === diaKey) return iso;
+  }
+  return null;
+}
+
+/**
+ * Data efetiva de abertura quando o dia da semana configurado cai em feriado/ponto facultativo:
+ * recua para o último dia útil anterior (ex.: sexta feriado → quinta).
+ */
+function dataEfetivaAberturaNoDiaSemana(atendimentoDateStr, diaKey, holidaySet) {
+  const nominal = ultimaDataDoDiaSemanaAntesDe(atendimentoDateStr, diaKey);
+  if (!nominal) return null;
+  if (isBusinessDay(parseDateStr(nominal), holidaySet)) return nominal;
+  return toDateStr(previousBusinessDay(addDaysLocal(nominal, 1), holidaySet));
+}
+
 /** Próximo dia útil estritamente posterior a `fromDate` (meia-noite local). */
 export function nextBusinessDay(fromDate, holidaySet) {
   const d = fromDate instanceof Date ? new Date(fromDate) : parseDateStr(fromDate);
@@ -1416,16 +1461,19 @@ function specUsaDiasAgendamentoConfiguraveis(specKey, sess, profissionalConfigPo
 }
 
 /**
- * Hoje é um dos dias permitidos, dia útil, e anterior à data de atendimento.
+ * Hoje é dia de abertura da agenda para atendimento futuro, conforme dias da semana configurados.
+ * Se o dia configurado for feriado ou ponto facultativo, a abertura recua para o último dia útil anterior.
  * @param {string[]} diasPermitidos — chaves `segunda` … `sexta`
  */
 export function podeAgendarNosDiasConfigurados(todayStr, atendimentoDateStr, diasPermitidos, holidaySet) {
   if (!Array.isArray(diasPermitidos) || !diasPermitidos.length) return false;
   if (!todayStr || !atendimentoDateStr || todayStr >= atendimentoDateStr) return false;
-  const today = parseDateStr(todayStr);
-  if (!isBusinessDay(today, holidaySet)) return false;
-  const todayKey = JS_DAY_TO_KEY[today.getDay()];
-  return diasPermitidos.includes(todayKey);
+  if (!isBusinessDay(parseDateStr(todayStr), holidaySet)) return false;
+  for (const diaKey of diasPermitidos) {
+    const eff = dataEfetivaAberturaNoDiaSemana(atendimentoDateStr, diaKey, holidaySet);
+    if (eff === todayStr) return true;
+  }
+  return false;
 }
 
 /** Dia útil anterior (`prev`) em que o agente pode solicitar vaga. */
@@ -1448,6 +1496,7 @@ function calcPodeAgendarPrevPadrao({
   if (modo === AGENDA_MODO.QUALQUER_DIA_UTIL) {
     return isBusinessDay(today, holidaySet) && todayStr < attStr;
   }
+  // padrao, dia_util_anterior, nutrição/psicologia (véspera): dia útil anterior ao atendimento
   return prevStr === todayStr;
 }
 
@@ -1640,8 +1689,7 @@ export function buildVisibleSegments({
 
         const sessions = mergeSessionCounts(baseSessions, spec.key, attStr, vagasMap);
 
-        const prevBus = previousBusinessDay(cand, holidaySet);
-        const prevStr = toDateStr(prevBus);
+        const prevStr = diaUtilAberturaAgendaParaAtendimento(attStr, holidaySet);
 
         const podeAgendarPrev = calcPodeAgendarPrevPadrao({
           spec,
