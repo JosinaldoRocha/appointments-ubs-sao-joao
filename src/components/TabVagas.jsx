@@ -6,6 +6,7 @@ import {
   MEDICO_TIPO,
   DEFAULT_PROF_NAMES,
   toDateStr,
+  JS_DAY_TO_KEY,
   recepcaoPodeMarcarAtendimentoFinalizado,
   estaDentroJanelaSolicitacaoAgendamento,
   msgForaJanelaSolicitacaoAgendamento,
@@ -154,6 +155,30 @@ function formatDataCardAtendimento(isoDateStr) {
   return raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 
+/** Cabeçalho do dia na vista mobile: nome do dia e data por extenso. */
+function formatDataMobileDia(isoDateStr) {
+  const d = new Date(isoDateStr + "T12:00:00");
+  const rawNome = d.toLocaleDateString("pt-BR", { weekday: "long" });
+  const rawData = d.toLocaleDateString("pt-BR", { day: "numeric", month: "long" });
+  return {
+    diaNome: rawNome.charAt(0).toUpperCase() + rawNome.slice(1),
+    dataFormatada: rawData.charAt(0).toUpperCase() + rawData.slice(1),
+  };
+}
+
+function useIsMobile() {
+  const [mobile, setMobile] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(max-width: 639px)").matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 639px)");
+    const h = (e) => setMobile(e.matches);
+    mq.addEventListener("change", h);
+    return () => mq.removeEventListener("change", h);
+  }, []);
+  return mobile;
+}
+
 /** Recepção: há vaga livre para agendar ou reserva pendente. */
 function podePreencherVaga(reserved, used, total, livres) {
   return livres > 0 || (reserved > 0 && used < total);
@@ -295,6 +320,9 @@ export default function TabVagas({
     setSuspendFormAte("");
   }, [modalSuspenderSpecKey]);
 
+  const isMobile = useIsMobile();
+  const [diaAberto, setDiaAberto] = useState(null);
+
   const specsLista = useMemo(() => {
     if (isRecepcao) return specs;
     return specs.filter((s) => !agenteOcultarCardPorEncerrado(s, atendimentoEncerradoMap || {}));
@@ -305,7 +333,90 @@ export default function TabVagas({
   const prevPorDia = agruparPrevPorDia(prev);
   const prevSecoes = secoesPrevOrdenadasPorData(prevPorDia);
 
-  if (specs.length === 0 && !isRecepcao) {
+  // Mobile: agrupa todos os specs (sem filtro encerrado) por data de atendimento.
+  const mobilePorData = useMemo(() => {
+    if (!isMobile) return [];
+    const grupoMap = {};
+    for (const spec of specs) {
+      const d = spec.atendimentoDate;
+      if (!d) continue;
+      if (!grupoMap[d]) grupoMap[d] = [];
+      grupoMap[d].push(spec);
+    }
+    return Object.entries(grupoMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, lista]) => ({ date, lista }));
+  }, [isMobile, specs]);
+
+  // Profissionais cujo card só abre na véspera — mapa data → [specKeys] para todos
+  // os dias que eles trabalham sem spec gerado. Usado em mobile e desktop.
+  const placeholdersPorData = useMemo(() => {
+    const vesperaKeys = ["medico", "dentFernando", "dentPatrick"].filter((k) =>
+      specKeysAtivosAgenda.includes(k)
+    );
+    if (vesperaKeys.length === 0) return {};
+    const jaNoSpecs = new Set(specs.map((s) => `${s.key}_${s.atendimentoDate}`));
+    const hojeRef = new Date(dataHojeIso() + "T12:00:00");
+    const result = {};
+    for (const specKey of vesperaKeys) {
+      const diasTrabalho = diasAtendimentoDefaultParaSpec(specKey);
+      for (let add = 0; add < 14; add++) {
+        const cand = new Date(hojeRef);
+        cand.setDate(cand.getDate() + add);
+        const diaSemana = JS_DAY_TO_KEY[cand.getDay()];
+        if (!diaSemana || !diasTrabalho.includes(diaSemana)) continue;
+        const dateStr = toDateStr(cand);
+        if (jaNoSpecs.has(`${specKey}_${dateStr}`)) continue;
+        if (!result[dateStr]) result[dateStr] = [];
+        if (!result[dateStr].includes(specKey)) result[dateStr].push(specKey);
+      }
+    }
+    return result;
+  }, [specs, specKeysAtivosAgenda]);
+
+  const mobilePorDataComPlaceholders = useMemo(() => {
+    if (!isMobile) return [];
+    const grupoMap = {};
+    for (const { date, lista } of mobilePorData) {
+      grupoMap[date] = { date, lista, placeholderKeys: placeholdersPorData[date] || [] };
+    }
+    for (const [date, keys] of Object.entries(placeholdersPorData)) {
+      if (!grupoMap[date]) grupoMap[date] = { date, lista: [], placeholderKeys: keys };
+    }
+    return Object.values(grupoMap).sort((a, b) => a.date.localeCompare(b.date));
+  }, [isMobile, mobilePorData, placeholdersPorData]);
+
+  useEffect(() => {
+    if (!isMobile || mobilePorDataComPlaceholders.length === 0) return;
+    setDiaAberto((prev) => {
+      if (prev != null && mobilePorDataComPlaceholders.some(({ date }) => date === prev)) return prev;
+      const hoje = dataHojeIso();
+      const temHoje = mobilePorDataComPlaceholders.some(({ date }) => date === hoje);
+      return temHoje ? hoje : mobilePorDataComPlaceholders[0].date;
+    });
+  }, [isMobile, mobilePorDataComPlaceholders]);
+
+  // Desktop: seções ordenadas por data mesclando specs reais e placeholders.
+  const secoesDesktopComPlaceholders = (() => {
+    const datesComSecao = new Set(prevSecoes.map((s) => s.dataMin).filter(Boolean));
+    const merged = prevSecoes.map(({ dia, lista, dataMin }) => ({
+      key: `prev-sec-${dia}-${dataMin || "x"}`,
+      date: dataMin,
+      lista,
+      placeholderKeys: dataMin ? (placeholdersPorData[dataMin] || []) : [],
+    }));
+    for (const [date, keys] of Object.entries(placeholdersPorData)) {
+      if (!datesComSecao.has(date)) {
+        merged.push({ key: `placeholder-sec-${date}`, date, lista: [], placeholderKeys: keys });
+      }
+    }
+    return merged.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+  })();
+
+  const temConteudoDesktop =
+    same.length > 0 || secoesDesktopComPlaceholders.length > 0;
+
+  if (specs.length === 0 && Object.keys(placeholdersPorData).length === 0 && !isRecepcao) {
     return (
       <div style={styles.wrap}>
         <div style={styles.empty}>
@@ -320,7 +431,7 @@ export default function TabVagas({
     );
   }
 
-  if (specsLista.length === 0 && !isRecepcao) {
+  if (specsLista.length === 0 && Object.keys(placeholdersPorData).length === 0 && !isRecepcao) {
     return (
       <div style={styles.empty}>
         <p style={{ fontSize: 15, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>
@@ -364,68 +475,167 @@ export default function TabVagas({
         </div>
       )}
 
-      {same.length > 0 && (
-        <Section
-          sentenceTitle
-          title={<TituloAgendamentoDisponivel isoDateStr={same[0]?.atendimentoDate} />}
-        >
-          {same.map((spec) => (
-            <SpecCard
-              key={`same-${spec.atendimentoDate}_${spec.key}`}
-              spec={spec}
-              profissionaisMap={profissionaisMap}
-              isRecepcao={isRecepcao}
-              onSlotAction={onSlotAction}
-              onSolicitar={onSolicitar}
-              agoraRecepcao={agoraRecepcao}
-              atendimentoEncerradoMap={atendimentoEncerradoMap}
-              onToggleAtendimentoEncerrado={onToggleAtendimentoEncerrado}
-              mostrarBotaoEncerradoRecepcao={recepcaoPrecisaFooterEncerrado(
-                spec,
-                atendimentoEncerradoMap,
-                agoraRecepcao,
-                onToggleAtendimentoEncerrado
-              )}
-              dentQuartaVisitaDomiciliarDesde={dentQuartaVisitaDomiciliarDesde}
-              profissionalConfigPorSpec={profissionalConfigPorSpec}
-              usuarioUid={usuarioUid}
-              isDiretor={isDiretor}
-            />
-          ))}
-        </Section>
-      )}
+      {isMobile ? (
+        <div style={styles.mobileDiaLista}>
+          {mobilePorDataComPlaceholders.map(({ date, lista, placeholderKeys }) => {
+            const isAberto = diaAberto === date;
+            const isHoje = date === dataHojeIso();
+            const { diaNome, dataFormatada } = formatDataMobileDia(date);
+            const totalProfissionais = lista.length + (placeholderKeys?.length ?? 0);
+            return (
+              <div
+                key={date}
+                style={{
+                  ...styles.mobileDiaContainer,
+                  borderColor: isAberto ? "#C7D2FE" : "#E2E8F0",
+                }}
+              >
+                <button
+                  type="button"
+                  style={{
+                    ...styles.mobileDiaHeader,
+                    background: isAberto
+                      ? "linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%)"
+                      : "#F8FAFC",
+                    borderBottom: isAberto ? "1px solid #C7D2FE" : "1px solid transparent",
+                  }}
+                  onClick={() => setDiaAberto(isAberto ? null : date)}
+                  aria-expanded={isAberto}
+                >
+                  <div style={styles.mobileDiaHeaderInfo}>
+                    <p style={{ ...styles.mobileDiaNome, color: isAberto ? "#3730A3" : "#0F172A" }}>
+                      {diaNome}
+                    </p>
+                    <p style={styles.mobileDiaData}>{dataFormatada}</p>
+                  </div>
+                  <div style={styles.mobileDiaHeaderRight}>
+                    {isHoje && <span style={styles.mobileDiaHojeBadge}>Hoje</span>}
+                    <span style={styles.mobileDiaCount}>
+                      {totalProfissionais}{" "}
+                      {totalProfissionais === 1 ? "profissional" : "profissionais"}
+                    </span>
+                    <span
+                      style={{
+                        ...styles.mobileDiaChevron,
+                        transform: isAberto ? "rotate(180deg)" : "rotate(0deg)",
+                        color: isAberto ? "#4338CA" : "#94A3B8",
+                      }}
+                    >
+                      ▾
+                    </span>
+                  </div>
+                </button>
+                {isAberto && (
+                  <div style={styles.mobileDiaCards}>
+                    {lista.map((spec) => (
+                      <SpecCard
+                        key={`mobile-${spec.windowType}-${spec.atendimentoDate}_${spec.key}`}
+                        spec={spec}
+                        profissionaisMap={profissionaisMap}
+                        isRecepcao={isRecepcao}
+                        onSlotAction={onSlotAction}
+                        onSolicitar={onSolicitar}
+                        agoraRecepcao={agoraRecepcao}
+                        atendimentoEncerradoMap={atendimentoEncerradoMap}
+                        onToggleAtendimentoEncerrado={onToggleAtendimentoEncerrado}
+                        mostrarBotaoEncerradoRecepcao={recepcaoPrecisaFooterEncerrado(
+                          spec,
+                          atendimentoEncerradoMap,
+                          agoraRecepcao,
+                          onToggleAtendimentoEncerrado
+                        )}
+                        dentQuartaVisitaDomiciliarDesde={dentQuartaVisitaDomiciliarDesde}
+                        profissionalConfigPorSpec={profissionalConfigPorSpec}
+                        usuarioUid={usuarioUid}
+                        isDiretor={isDiretor}
+                      />
+                    ))}
+                    {placeholderKeys?.map((specKey) => (
+                      <PlaceholderCard
+                        key={`placeholder-${date}_${specKey}`}
+                        specKey={specKey}
+                        profissionaisMap={profissionaisMap}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <>
+          {same.length > 0 && (
+            <Section
+              sentenceTitle
+              title={<TituloAgendamentoDisponivel isoDateStr={same[0]?.atendimentoDate} />}
+            >
+              {same.map((spec) => (
+                <SpecCard
+                  key={`same-${spec.atendimentoDate}_${spec.key}`}
+                  spec={spec}
+                  profissionaisMap={profissionaisMap}
+                  isRecepcao={isRecepcao}
+                  onSlotAction={onSlotAction}
+                  onSolicitar={onSolicitar}
+                  agoraRecepcao={agoraRecepcao}
+                  atendimentoEncerradoMap={atendimentoEncerradoMap}
+                  onToggleAtendimentoEncerrado={onToggleAtendimentoEncerrado}
+                  mostrarBotaoEncerradoRecepcao={recepcaoPrecisaFooterEncerrado(
+                    spec,
+                    atendimentoEncerradoMap,
+                    agoraRecepcao,
+                    onToggleAtendimentoEncerrado
+                  )}
+                  dentQuartaVisitaDomiciliarDesde={dentQuartaVisitaDomiciliarDesde}
+                  profissionalConfigPorSpec={profissionalConfigPorSpec}
+                  usuarioUid={usuarioUid}
+                  isDiretor={isDiretor}
+                />
+              ))}
+            </Section>
+          )}
 
-      {prevSecoes.map(({ dia, lista, dataMin }) => (
-        <Section
-          key={`prev-sec-${dia}-${dataMin || "x"}`}
-          sentenceTitle
-          title={<TituloAgendamentoDisponivel isoDateStr={dataMin} />}
-        >
-          {lista.map((spec) => (
-            <SpecCard
-              key={`prev-${spec.atendimentoDate}_${spec.key}`}
-              spec={spec}
-              profissionaisMap={profissionaisMap}
-              isRecepcao={isRecepcao}
-              onSlotAction={onSlotAction}
-              onSolicitar={onSolicitar}
-              agoraRecepcao={agoraRecepcao}
-              atendimentoEncerradoMap={atendimentoEncerradoMap}
-              onToggleAtendimentoEncerrado={onToggleAtendimentoEncerrado}
-              mostrarBotaoEncerradoRecepcao={recepcaoPrecisaFooterEncerrado(
-                spec,
-                atendimentoEncerradoMap,
-                agoraRecepcao,
-                onToggleAtendimentoEncerrado
-              )}
-              dentQuartaVisitaDomiciliarDesde={dentQuartaVisitaDomiciliarDesde}
-              profissionalConfigPorSpec={profissionalConfigPorSpec}
-              usuarioUid={usuarioUid}
-              isDiretor={isDiretor}
-            />
+          {secoesDesktopComPlaceholders.map(({ key, date, lista, placeholderKeys }) => (
+            <Section
+              key={key}
+              sentenceTitle
+              title={<TituloAgendamentoDisponivel isoDateStr={date} />}
+            >
+              {lista.map((spec) => (
+                <SpecCard
+                  key={`prev-${spec.atendimentoDate}_${spec.key}`}
+                  spec={spec}
+                  profissionaisMap={profissionaisMap}
+                  isRecepcao={isRecepcao}
+                  onSlotAction={onSlotAction}
+                  onSolicitar={onSolicitar}
+                  agoraRecepcao={agoraRecepcao}
+                  atendimentoEncerradoMap={atendimentoEncerradoMap}
+                  onToggleAtendimentoEncerrado={onToggleAtendimentoEncerrado}
+                  mostrarBotaoEncerradoRecepcao={recepcaoPrecisaFooterEncerrado(
+                    spec,
+                    atendimentoEncerradoMap,
+                    agoraRecepcao,
+                    onToggleAtendimentoEncerrado
+                  )}
+                  dentQuartaVisitaDomiciliarDesde={dentQuartaVisitaDomiciliarDesde}
+                  profissionalConfigPorSpec={profissionalConfigPorSpec}
+                  usuarioUid={usuarioUid}
+                  isDiretor={isDiretor}
+                />
+              ))}
+              {placeholderKeys.map((specKey) => (
+                <PlaceholderCard
+                  key={`placeholder-${date}_${specKey}`}
+                  specKey={specKey}
+                  profissionaisMap={profissionaisMap}
+                />
+              ))}
+            </Section>
           ))}
-        </Section>
-      ))}
+        </>
+      )}
 
       {isRecepcao && typeof onSuspenderAtendimentoSpec === "function" && (
         <div style={styles.painelSuspenderAcesso}>
@@ -972,6 +1182,49 @@ function RecepcaoBotoesAtendimentoEncerrado({
   return <div style={styles.cardFooterRecepcao}>{el}</div>;
 }
 
+/** Card informativo para profissionais cujo agendamento só abre na véspera.
+ *  Não possui botões de ação — aparece apenas na vista mobile por dia. */
+function PlaceholderCard({ specKey, profissionaisMap }) {
+  const meta = SPEC_META[specKey] || { role: "", av: "?", bg: "#F1F5F9", tc: "#475569" };
+  const name = nomeProfissionalFirestore(specKey, profissionaisMap);
+  return (
+    <div
+      style={{
+        ...styles.card,
+        border: "1px solid #E2E8F0",
+        boxShadow: "0 1px 4px rgba(15,23,42,0.04)",
+        opacity: 0.8,
+      }}
+    >
+      <div style={{ ...styles.cardAccent, background: meta.bg }} aria-hidden />
+      <div style={{ ...styles.cardBody }}>
+        <div style={{ ...styles.cardHeader, marginBottom: 0 }}>
+          <div style={{ ...styles.av, background: meta.bg, color: meta.tc }}>{meta.av}</div>
+          <div style={styles.cardHeaderMain}>
+            <p style={styles.cardName}>{name}</p>
+            <p style={styles.cardRole}>{meta.role}</p>
+            <p style={{ fontSize: 12, color: "#94A3B8", margin: "6px 0 0", fontWeight: 500 }}>
+              Agendamento abre na véspera
+            </p>
+          </div>
+          <div style={styles.cardHeaderTags}>
+            <span
+              style={{
+                ...styles.winTag,
+                background: "#F8FAFC",
+                color: "#94A3B8",
+                border: "1px solid #E2E8F0",
+              }}
+            >
+              Agenda
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SpecCard({
   spec,
   profissionaisMap,
@@ -995,9 +1248,11 @@ function SpecCard({
     : msgForaJanelaSolicitacaoAgendamento(windowType, spec.key);
   const foraDiaAgendamento =
     !isRecepcao && windowType === "prev" && spec.podeAgendarPrev === false;
-  const msgForaDiaAgente = foraDiaAgendamento
+  const msgForaDiaObj = foraDiaAgendamento
     ? msgForaDiaAgendamentoPrev(spec, profissionalConfigPorSpec)
-    : "";
+    : null;
+  const msgForaDiaAgente = msgForaDiaObj?.main ?? "";
+  const notaForaDiaAgente = msgForaDiaObj?.nota ?? "";
   const meta = SPEC_META[spec.key] || { role: "", av: "?", bg: "#F1F5F9", tc: "#475569" };
   const name = nomeProfissionalFirestore(spec.key, profissionaisMap);
   const indicesSessoesUi = useMemo(() => {
@@ -1005,6 +1260,8 @@ function SpecCard({
     if (v == null) return spec.sessions.map((_, i) => i);
     return v;
   }, [spec, agoraRecepcao]);
+  const isMobile = useIsMobile();
+  const [collapsed, setCollapsed] = useState(true);
   const hasSome = useMemo(() => {
     const sessions = indicesSessoesUi.map((i) => spec.sessions[i]);
     if (sessions.some((s) => s.visitaDomiciliarSemUnidade)) return true;
@@ -1014,6 +1271,27 @@ function SpecCard({
       return (s.used ?? 0) + (s.reserved ?? 0) < tot;
     });
   }, [spec.sessions, indicesSessoesUi]);
+  const mobileSessions = useMemo(() => {
+    return indicesSessoesUi.map((sessIdx) => {
+      const sess = spec.sessions[sessIdx];
+      if (sess.visitaDomiciliarSemUnidade) {
+        return { label: sess.label, text: "Visitas domiciliares", livres: 0 };
+      }
+      const used = sess.used ?? 0;
+      const reserved = sess.reserved ?? 0;
+      const total = sess.total ?? 0;
+      const encaixeExtra = sess.encaixeExtra ?? 0;
+      const baseAgenda = Math.max(0, total - encaixeExtra);
+      const ocupadas = used + reserved;
+      const livreBruto = Math.max(0, total - used - reserved);
+      const livresComuns = encaixeExtra > 0 ? Math.max(0, baseAgenda - ocupadas) : livreBruto;
+      const text =
+        livresComuns > 0
+          ? `${livresComuns} ${livresComuns === 1 ? "vaga disponível" : "vagas disponíveis"}`
+          : "Esgotado";
+      return { label: sess.label, text, livres: livresComuns };
+    });
+  }, [indicesSessoesUi, spec.sessions]);
   const visitaVariant = varianteVisitaDomiciliarNoCard({
     spec,
     todayStr: dataHojeIso(),
@@ -1038,19 +1316,59 @@ function SpecCard({
     >
       <div style={{ ...styles.cardAccent, background: meta.bg }} aria-hidden />
       <div style={styles.cardBody}>
-        <div style={styles.cardHeader}>
+        <div
+          style={{
+            ...styles.cardHeader,
+            cursor: isMobile ? "pointer" : "default",
+            userSelect: isMobile ? "none" : "auto",
+          }}
+          onClick={isMobile ? () => setCollapsed((c) => !c) : undefined}
+          role={isMobile ? "button" : undefined}
+          tabIndex={isMobile ? 0 : undefined}
+          aria-expanded={isMobile ? !collapsed : undefined}
+          onKeyDown={
+            isMobile
+              ? (e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setCollapsed((c) => !c);
+                  }
+                }
+              : undefined
+          }
+        >
           <div style={{ ...styles.av, background: meta.bg, color: meta.tc }}>{meta.av}</div>
           <div style={styles.cardHeaderMain}>
             <p style={styles.cardName}>{name}</p>
-            <p style={styles.cardRole}>{meta.role}</p>
-            {!isSame && spec.agendaQualquerDiaUtil && (
+            {(!isMobile || !collapsed) && <p style={styles.cardRole}>{meta.role}</p>}
+            {(!isMobile || !collapsed) && !isSame && spec.agendaQualquerDiaUtil && (
               <p style={styles.cardAgendaLivre}>Agendamento em qualquer dia útil</p>
             )}
-            <p style={styles.cardDate}>
-              {spec.atendimentoDate ? formatDataCardAtendimento(spec.atendimentoDate) : "—"}
-            </p>
+            {(!isMobile || !collapsed) && (
+              <p style={styles.cardDate}>
+                {spec.atendimentoDate ? formatDataCardAtendimento(spec.atendimentoDate) : "—"}
+              </p>
+            )}
+            {isMobile && collapsed &&
+              mobileSessions.map((s, i) => (
+                <p
+                  key={i}
+                  style={{
+                    fontSize: 12,
+                    margin: i === 0 ? "4px 0 0" : "2px 0 0",
+                    fontWeight: 500,
+                    color: "#475569",
+                    lineHeight: 1.4,
+                  }}
+                >
+                  <span style={{ fontWeight: 600, color: "#64748B" }}>{s.label}:</span>{" "}
+                  <span style={{ color: s.livres > 0 ? "#065F46" : "#B91C1C", fontWeight: 700 }}>
+                    {s.text}
+                  </span>
+                </p>
+              ))}
           </div>
-          <div style={styles.cardHeaderTags}>
+          <div style={{ ...styles.cardHeaderTags, alignItems: "flex-end" }}>
             <span
               style={{
                 ...styles.winTag,
@@ -1065,76 +1383,102 @@ function SpecCard({
               <span style={styles.fullBadgeVisita}>Visitas domiciliares</span>
             )}
             {!hasSome && !visitaVariant && <span style={styles.fullBadge}>Esgotado</span>}
+            {isMobile && (
+              <span
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 20,
+                  height: 20,
+                  color: "#94A3B8",
+                  fontSize: 14,
+                  lineHeight: 1,
+                  transition: "transform 0.2s",
+                  transform: collapsed ? "rotate(0deg)" : "rotate(180deg)",
+                }}
+                aria-hidden
+              >
+                ▾
+              </span>
+            )}
           </div>
         </div>
 
-        {!isRecepcao && !dentroJanelaSolicitacao && msgForaJanelaAgente ? (
-          <p style={styles.agenteCardForaJanela} role="status">
-            {msgForaJanelaAgente}
-          </p>
-        ) : null}
-        {!isRecepcao && foraDiaAgendamento && msgForaDiaAgente ? (
-          <p style={styles.agenteCardForaDia} role="status">
-            {msgForaDiaAgente}
-          </p>
-        ) : null}
+        {(!isMobile || !collapsed) && (
+          <>
+            {!isRecepcao && !dentroJanelaSolicitacao && msgForaJanelaAgente ? (
+              <p style={styles.agenteCardForaJanela} role="status">
+                {msgForaJanelaAgente}
+              </p>
+            ) : null}
+            {!isRecepcao && foraDiaAgendamento && msgForaDiaAgente ? (
+              <div style={styles.agenteCardForaDia} role="status">
+                <p style={{ margin: 0 }}>{msgForaDiaAgente}</p>
+                {notaForaDiaAgente && (
+                  <p style={styles.agenteCardForaDiaNota}>{notaForaDiaAgente}</p>
+                )}
+              </div>
+            ) : null}
 
-        {!isRecepcao && (
-          <div style={styles.cardResumoAgente}>
-            {indicesSessoesUi.map((sessIdx, arrIdx) => (
-              <AgenteTurnoRow
-                key={sessIdx}
-                sess={spec.sessions[sessIdx]}
-                isLast={arrIdx === indicesSessoesUi.length - 1}
-                specKey={spec.key}
-                dayKey={spec.atendimentoDia}
-                sessIdx={sessIdx}
-                atendimentoDate={spec.atendimentoDate}
-                windowType={windowType}
-                onSolicitar={onSolicitar}
-                solicitacaoEncaminhamentoObrigatorio={spec.solicitacaoEncaminhamentoObrigatorio}
-                dentroJanelaSolicitacao={dentroJanelaSolicitacao}
-                podeAgendarPrev={spec.podeAgendarPrev !== false}
-                agendaQualquerDiaUtil={!!spec.agendaQualquerDiaUtil}
-                ocultarResumoVagas={!!visitaVariant}
-                usuarioUid={usuarioUid}
-                isDiretor={isDiretor}
-              />
-            ))}
-          </div>
+            {!isRecepcao && (
+              <div style={styles.cardResumoAgente}>
+                {indicesSessoesUi.map((sessIdx, arrIdx) => (
+                  <AgenteTurnoRow
+                    key={sessIdx}
+                    sess={spec.sessions[sessIdx]}
+                    isLast={arrIdx === indicesSessoesUi.length - 1}
+                    specKey={spec.key}
+                    dayKey={spec.atendimentoDia}
+                    sessIdx={sessIdx}
+                    atendimentoDate={spec.atendimentoDate}
+                    windowType={windowType}
+                    onSolicitar={onSolicitar}
+                    solicitacaoEncaminhamentoObrigatorio={spec.solicitacaoEncaminhamentoObrigatorio}
+                    dentroJanelaSolicitacao={dentroJanelaSolicitacao}
+                    podeAgendarPrev={spec.podeAgendarPrev !== false}
+                    agendaQualquerDiaUtil={!!spec.agendaQualquerDiaUtil}
+                    ocultarResumoVagas={!!visitaVariant}
+                    usuarioUid={usuarioUid}
+                    isDiretor={isDiretor}
+                  />
+                ))}
+              </div>
+            )}
+
+            {isRecepcao &&
+              indicesSessoesUi.map((sessIdx) => {
+                const sess = spec.sessions[sessIdx];
+                return (
+                  <SessionRow
+                    key={sess.vagaId ?? `${spec.key}_${spec.atendimentoDate}_${sessIdx}`}
+                    sess={sess}
+                    sessIdx={sessIdx}
+                    specKey={spec.key}
+                    dayKey={spec.atendimentoDia}
+                    atendimentoDate={spec.atendimentoDate}
+                    isRecepcao
+                    onSlotAction={onSlotAction}
+                    somenteRotuloTurno={!!visitaVariant}
+                  />
+                );
+              })}
+
+            {isRecepcao &&
+              !visitaVariant &&
+              mostrarBotaoEncerradoRecepcao &&
+              dataEncerrado &&
+              typeof onToggleAtendimentoEncerrado === "function" && (
+                <RecepcaoBotoesAtendimentoEncerrado
+                  spec={spec}
+                  dataEncerrado={dataEncerrado}
+                  atendimentoEncerradoMap={atendimentoEncerradoMap}
+                  agoraRecepcao={agoraRecepcao}
+                  onToggleAtendimentoEncerrado={onToggleAtendimentoEncerrado}
+                />
+              )}
+          </>
         )}
-
-        {isRecepcao &&
-          indicesSessoesUi.map((sessIdx) => {
-            const sess = spec.sessions[sessIdx];
-            return (
-              <SessionRow
-                key={sess.vagaId ?? `${spec.key}_${spec.atendimentoDate}_${sessIdx}`}
-                sess={sess}
-                sessIdx={sessIdx}
-                specKey={spec.key}
-                dayKey={spec.atendimentoDia}
-                atendimentoDate={spec.atendimentoDate}
-                isRecepcao
-                onSlotAction={onSlotAction}
-                somenteRotuloTurno={!!visitaVariant}
-              />
-            );
-          })}
-
-        {isRecepcao &&
-          !visitaVariant &&
-          mostrarBotaoEncerradoRecepcao &&
-          dataEncerrado &&
-          typeof onToggleAtendimentoEncerrado === "function" && (
-            <RecepcaoBotoesAtendimentoEncerrado
-              spec={spec}
-              dataEncerrado={dataEncerrado}
-              atendimentoEncerradoMap={atendimentoEncerradoMap}
-              agoraRecepcao={agoraRecepcao}
-              onToggleAtendimentoEncerrado={onToggleAtendimentoEncerrado}
-            />
-          )}
       </div>
     </div>
   );
@@ -1749,6 +2093,77 @@ const styles = {
     gap: 16,
     alignItems: "stretch",
   },
+  mobileDiaLista: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+  },
+  mobileDiaContainer: {
+    borderRadius: 14,
+    border: "1px solid #E2E8F0",
+    overflow: "hidden",
+    background: "#fff",
+    boxShadow: "0 1px 3px rgba(15,23,42,0.05)",
+  },
+  mobileDiaHeader: {
+    width: "100%",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "14px 16px",
+    border: "none",
+    cursor: "pointer",
+    textAlign: "left",
+    gap: 12,
+  },
+  mobileDiaHeaderInfo: { flex: 1, minWidth: 0 },
+  mobileDiaNome: {
+    margin: 0,
+    fontSize: 15,
+    fontWeight: 700,
+    lineHeight: 1.25,
+  },
+  mobileDiaData: {
+    margin: "3px 0 0",
+    fontSize: 12,
+    color: "#64748B",
+    lineHeight: 1.3,
+  },
+  mobileDiaHeaderRight: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    flexShrink: 0,
+  },
+  mobileDiaHojeBadge: {
+    fontSize: 10,
+    background: "#DCFCE7",
+    color: "#166534",
+    padding: "3px 8px",
+    borderRadius: 999,
+    fontWeight: 700,
+    border: "1px solid #86EFAC",
+    whiteSpace: "nowrap",
+  },
+  mobileDiaCount: {
+    fontSize: 11,
+    color: "#64748B",
+    fontWeight: 500,
+    whiteSpace: "nowrap",
+  },
+  mobileDiaChevron: {
+    fontSize: 15,
+    lineHeight: 1,
+    transition: "transform 0.2s",
+    display: "inline-block",
+  },
+  mobileDiaCards: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+    padding: "12px 12px 14px",
+    background: "#F8FAFC",
+  },
   card: {
     background: "#fff",
     borderRadius: 14,
@@ -2008,6 +2423,14 @@ const styles = {
     background: "#EEF2FF",
     border: "1px solid #C7D2FE",
     borderRadius: 8,
+  },
+  agenteCardForaDiaNota: {
+    margin: "8px 0 0",
+    fontSize: 11,
+    fontWeight: 500,
+    color: "#5B21B6",
+    fontStyle: "italic",
+    lineHeight: 1.45,
   },
   cardResumoAgente: {
     padding: "12px 16px 16px",
