@@ -37,6 +37,7 @@ import {
   AGENDA_MODO_OPCOES,
   defaultAgendaModoParaSpec,
   defaultDiasAgendamentoParaSpec,
+  defaultDiasAgendamentoPresencialParaSpec,
   getSessionDefsForSpecKey,
   getSpecMetaForKey,
   isModoDiasAgendamento,
@@ -114,6 +115,7 @@ function montarPatchProfissionalConfig(
     role,
     isCustom,
     diasAgendamento,
+    diasAgendamentoPresencial,
     medicoSessoes,
     enfermeiraSessoes,
   }
@@ -130,9 +132,13 @@ function montarPatchProfissionalConfig(
     entry.agendaModo = AGENDA_MODO.DIAS_AGENDAMENTO;
     const dias = normalizeDiasAgendamentoLista(diasAgendamento);
     if (dias.length) entry.diasAgendamento = dias;
+    const diasPres = normalizeDiasAgendamentoLista(diasAgendamentoPresencial);
+    if (diasPres.length) entry.diasAgendamentoPresencial = diasPres;
+    else entry.diasAgendamentoPresencial = deleteField();
   } else if (modo !== AGENDA_MODO.PADRAO && modo !== defModo) {
     entry.agendaModo = modo;
     entry.diasAgendamento = deleteField();
+    entry.diasAgendamentoPresencial = deleteField();
   }
 
   if (specKey === "medico" && Array.isArray(medicoSessoes)) {
@@ -288,6 +294,7 @@ export default function TabConfig({
       role,
       isCustom: isSpecKeyCustom(specKey),
       diasAgendamento: extras.diasAgendamento,
+      diasAgendamentoPresencial: extras.diasAgendamentoPresencial,
       medicoSessoes: extras.medicoSessoes,
       enfermeiraSessoes: extras.enfermeiraSessoes,
     });
@@ -1478,6 +1485,13 @@ function ProfRow({
         : defaultDiasAgendamentoParaSpec(specKey)
     )
   );
+  const [diasAgendamentoPresencial, setDiasAgendamentoPresencial] = useState(() =>
+    normalizeDiasAgendamentoLista(
+      profCfg?.diasAgendamentoPresencial?.length
+        ? profCfg.diasAgendamentoPresencial
+        : defaultDiasAgendamentoPresencialParaSpec(specKey) || []
+    )
+  );
   const meta = getSpecMetaForKey(specKey, {
     profissionalConfigPorSpec: { [specKey]: profCfg },
     roleFallback: doc?.role,
@@ -1498,6 +1512,13 @@ function ProfRow({
         profCfg?.diasAgendamento?.length
           ? profCfg.diasAgendamento
           : defaultDiasAgendamentoParaSpec(specKey)
+      )
+    );
+    setDiasAgendamentoPresencial(
+      normalizeDiasAgendamentoLista(
+        profCfg?.diasAgendamentoPresencial?.length
+          ? profCfg.diasAgendamentoPresencial
+          : defaultDiasAgendamentoPresencialParaSpec(specKey) || []
       )
     );
     if (isMedico) {
@@ -1529,6 +1550,15 @@ function ProfRow({
 
   function toggleDiaAgendamento(dia) {
     setDiasAgendamento((prev) => {
+      const s = new Set(prev);
+      if (s.has(dia)) s.delete(dia);
+      else s.add(dia);
+      return normalizeDiasAgendamentoLista([...s]);
+    });
+  }
+
+  function toggleDiaAgendamentoPresencial(dia) {
+    setDiasAgendamentoPresencial((prev) => {
       const s = new Set(prev);
       if (s.has(dia)) s.delete(dia);
       else s.add(dia);
@@ -1650,11 +1680,17 @@ function ProfRow({
         </label>
         {isModoDiasAgendamento(agendaModo) && (
           <>
-            <p style={{ ...S.gradeTitle, marginTop: 10 }}>Dias em que o agendamento fica disponível</p>
+            <p style={{ ...S.gradeTitle, marginTop: 10 }}>Dias de agendamento pelo aplicativo</p>
             <DiasAgendamentoSelector
               dias={diasAgendamento}
               onToggle={toggleDiaAgendamento}
-              hint="Marque os dias da semana (antes do atendimento) em que agentes e direção podem solicitar vaga — por exemplo, terça, quarta e quinta para atendimento na sexta."
+              hint="Dias em que agentes e direção podem solicitar vaga pelo aplicativo (das 13h30 às 18h), antes do dia do atendimento."
+            />
+            <p style={{ ...S.gradeTitle, marginTop: 12 }}>Dias de agendamento presencial (paciente na UBS)</p>
+            <DiasAgendamentoSelector
+              dias={diasAgendamentoPresencial}
+              onToggle={toggleDiaAgendamentoPresencial}
+              hint="Dias em que o paciente pode ir à UBS para agendar pessoalmente. Esta informação aparece na mensagem do card para orientar o paciente."
             />
           </>
         )}
@@ -1680,6 +1716,7 @@ function ProfRow({
                 vagasPorTipo,
                 vagasBase,
                 diasAgendamento,
+                diasAgendamentoPresencial,
                 medicoSessoes: isMedico ? medicoSessoes : undefined,
                 enfermeiraSessoes: isEnfermeira ? enfermeiraSessoes : undefined,
                 role: isCustom ? doc?.role || meta.role : undefined,
