@@ -82,19 +82,34 @@ export function normalizeDiasAgendamentoLista(raw) {
   ].sort((a, b) => ordem.get(a) - ordem.get(b));
 }
 
-/** Padrão em código (ex.: coleta de exames: sexta, segunda e terça antes da quarta). */
+/** Padrão em código dos dias de agendamento pelo app (ex.: coleta: segunda e terça antes da quarta). */
 export function defaultDiasAgendamentoParaSpec(specKey) {
-  if (specKey === "tecnicoEnfermagem") return ["sexta", "segunda", "terca"];
+  if (specKey === "tecnicoEnfermagem") return ["segunda", "terca"];
   return [];
 }
 
-/** Dias efetivos para liberar cartão `prev` no modo dias específicos. */
+/** Padrão em código dos dias em que o paciente pode agendar presencialmente na UBS. */
+export function defaultDiasAgendamentoPresencialParaSpec(specKey) {
+  if (specKey === "tecnicoEnfermagem") return ["sexta", "segunda", "terca"];
+  return null;
+}
+
+/** Dias efetivos para liberar cartão `prev` no modo dias específicos (agendamento pelo app). */
 export function resolveDiasAgendamento(specKey, profCfg) {
-  const modo = normalizarAgendaModo(profCfg?.agendaModo);
+  const modo = normalizarAgendaModo(profCfg?.agendaModo ?? defaultAgendaModoParaSpec(specKey));
   if (modo !== AGENDA_MODO.DIAS_AGENDAMENTO) return null;
   const dias = normalizeDiasAgendamentoLista(profCfg?.diasAgendamento);
   if (dias.length) return dias;
   return defaultDiasAgendamentoParaSpec(specKey);
+}
+
+/** Dias em que o paciente pode agendar presencialmente (modo `dias_agendamento`). */
+export function resolveDiasAgendamentoPresencial(specKey, profCfg) {
+  const modo = normalizarAgendaModo(profCfg?.agendaModo ?? defaultAgendaModoParaSpec(specKey));
+  if (modo !== AGENDA_MODO.DIAS_AGENDAMENTO) return null;
+  const dias = normalizeDiasAgendamentoLista(profCfg?.diasAgendamentoPresencial);
+  if (dias.length) return dias;
+  return defaultDiasAgendamentoPresencialParaSpec(specKey);
 }
 
 export function isSpecKeyCustom(specKey) {
@@ -579,7 +594,6 @@ const SPEC_KEYS_CARTAO_PREV_SOMENTE_VESPERA = new Set([
   "medico",
   "dentFernando",
   "dentPatrick",
-  "enfermeira",
 ]);
 
 /** Nutrição e psicologia: cartão visível todos os dias; agendamento na véspera (13h30–18h) ou no dia (7h–14h). */
@@ -597,7 +611,8 @@ export function cartaoPrevApenasDiaUtilAnterior(spec, profissionalConfigPorSpec 
   if (!spec?.key) return true;
   if (specAgendaVesperaOuMesmoDiaAte14(spec.key)) return false;
   if (spec.agendaQualquerDiaUtil === true) return false;
-  const modo = normalizarAgendaModo(profissionalConfigPorSpec[spec.key]?.agendaModo);
+  const rawModo = profissionalConfigPorSpec[spec.key]?.agendaModo;
+  const modo = normalizarAgendaModo(rawModo ?? defaultAgendaModoParaSpec(spec.key));
   if (modo === AGENDA_MODO.QUALQUER_DIA_UTIL) return false;
   if (modo === AGENDA_MODO.DIAS_AGENDAMENTO) return false;
   if (SPEC_KEYS_CARTAO_PREV_SOMENTE_VESPERA.has(spec.key)) return true;
@@ -697,6 +712,8 @@ export function normalizeProfissionalConfigPorSpec(raw) {
     }
     const diasAg = normalizeDiasAgendamentoLista(v.diasAgendamento);
     if (diasAg.length) entry.diasAgendamento = diasAg;
+    const diasPres = normalizeDiasAgendamentoLista(v.diasAgendamentoPresencial);
+    if (diasPres.length) entry.diasAgendamentoPresencial = diasPres;
     if (typeof v.role === "string" && v.role.trim()) entry.role = v.role.trim().slice(0, 80);
     const vb = Number(v.vagasBase);
     if (Number.isFinite(vb) && vb >= 0 && vb <= 99) entry.vagasBase = Math.round(vb);
@@ -731,6 +748,7 @@ export function normalizeProfissionalConfigPorSpec(raw) {
 
 /** Modo de agenda padrão conforme a grade em código (sem override no Firestore). */
 export function defaultAgendaModoParaSpec(specKey) {
+  if (specKey === "enfermeira") return AGENDA_MODO.QUALQUER_DIA_UTIL;
   const tmpl = findSpecTemplateInBaseSchedule(specKey);
   if (!tmpl) return AGENDA_MODO.DIA_UTIL_ANTERIOR;
   if (tmpl.agendaQualquerDiaUtil) return AGENDA_MODO.QUALQUER_DIA_UTIL;
@@ -1492,11 +1510,12 @@ function calcPodeAgendarPrevPadrao({
   if (spec.agendaQualquerDiaUtil === true) {
     return isBusinessDay(today, holidaySet) && todayStr < attStr;
   }
-  const modo = normalizarAgendaModo(profissionalConfigPorSpec[spec.key]?.agendaModo);
+  const rawModo = profissionalConfigPorSpec[spec.key]?.agendaModo;
+  const modo = normalizarAgendaModo(rawModo ?? defaultAgendaModoParaSpec(spec.key));
   if (modo === AGENDA_MODO.QUALQUER_DIA_UTIL) {
     return isBusinessDay(today, holidaySet) && todayStr < attStr;
   }
-  // padrao, dia_util_anterior, nutrição/psicologia (véspera): dia útil anterior ao atendimento
+  // padrao, dia_util_anterior: dia útil anterior ao atendimento
   return prevStr === todayStr;
 }
 
@@ -1730,6 +1749,7 @@ export function buildVisibleSegments({
               atendimentoDia,
               windowType: "prev",
               atendimentoDate: attStr,
+              agendamentoDate: prevStr,
               podeAgendarPrev: sessionsAgendaveisPrev.length > 0,
             });
           }
@@ -1855,6 +1875,16 @@ const JANELA_SOLICIT_MESMO_DIA_FIM_MIN = 18 * 60;
 /** Nutrição e psicologia no dia do atendimento: das 7h até 14h. */
 const JANELA_SOLICIT_MESMO_DIA_FIM_ATE_14_MIN = 14 * 60;
 
+/** Fim da janela de solicitação no mesmo dia por spec (em minutos). */
+const JANELA_MESMO_DIA_FIM_POR_SPEC = {
+  medico:         13 * 60 + 30,   // 13h30
+  dentFernando:   14 * 60,        // 14h
+  dentPatrick:    14 * 60,        // 14h
+  enfermeira:     15 * 60,        // 15h
+  psicologa:      14 * 60,        // 14h
+  nutricionista:  14 * 60,        // 14h
+};
+
 /** Outro dia / véspera (`windowType: "prev"`): das 13h30 às 18h. */
 const JANELA_SOLICIT_PREV_INICIO_MIN = 13 * 60 + 30;
 const JANELA_SOLICIT_PREV_FIM_MIN = 18 * 60;
@@ -1865,9 +1895,7 @@ function minutosRelogioLocal(data) {
 }
 
 export function janelaMesmoDiaFimMinutos(specKey) {
-  return specAgendaVesperaOuMesmoDiaAte14(specKey)
-    ? JANELA_SOLICIT_MESMO_DIA_FIM_ATE_14_MIN
-    : JANELA_SOLICIT_MESMO_DIA_FIM_MIN;
+  return JANELA_MESMO_DIA_FIM_POR_SPEC[specKey] ?? JANELA_SOLICIT_MESMO_DIA_FIM_MIN;
 }
 
 export function estaDentroJanelaAgendamentoMesmoDia(data = new Date(), specKey) {
@@ -1917,31 +1945,84 @@ export function estaDentroExpedienteUbs(data = new Date()) {
  */
 export function msgForaJanelaSolicitacaoAgendamento(windowType, specKey) {
   if (windowType === "same") {
-    return specAgendaVesperaOuMesmoDiaAte14(specKey)
-      ? MSG_FORA_JANELA_AGENDAMENTO_MESMO_DIA_ATE_14
-      : MSG_FORA_JANELA_AGENDAMENTO_MESMO_DIA;
+    const fimMin = janelaMesmoDiaFimMinutos(specKey);
+    if (fimMin < JANELA_SOLICIT_MESMO_DIA_FIM_MIN) {
+      return `Solicitações para atendimento hoje (quando houver vagas) ficam disponíveis das 7h às ${labelHorarioFimMesmoDia(specKey)}.`;
+    }
+    return MSG_FORA_JANELA_AGENDAMENTO_MESMO_DIA;
   }
   if (windowType === "prev") return MSG_FORA_JANELA_AGENDAMENTO_PREV;
   return MSG_FORA_EXPEDIENTE_UBS;
+}
+
+/** Retorna o horário de fim da janela de mesmo dia em formato legível (ex.: "13h30", "14h"). */
+function labelHorarioFimMesmoDia(specKey) {
+  const m = janelaMesmoDiaFimMinutos(specKey);
+  const h = Math.floor(m / 60);
+  const min = m % 60;
+  return min === 0 ? `${h}h` : `${h}h${String(min).padStart(2, "0")}`;
+}
+
+/** "Segunda, Terça e Quarta" → junta lista com vírgulas e "e" antes do último. */
+function juntarDiasNomesPortugues(nomes) {
+  if (!nomes.length) return "";
+  if (nomes.length === 1) return nomes[0];
+  return nomes.slice(0, -1).join(", ") + " e " + nomes[nomes.length - 1];
+}
+
+/** Retorna o nome longo do dia da semana de uma data ISO (ex.: "Terça-feira"). */
+function nomeDiaSemanaDeData(isoDateStr) {
+  if (!isoDateStr || !/^\d{4}-\d{2}-\d{2}$/.test(isoDateStr)) return null;
+  const d = parseDateStr(isoDateStr);
+  const raw = d.toLocaleDateString("pt-BR", { weekday: "long" });
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 
 /**
  * Cartão `prev` visível, mas hoje não é dia de abertura da agenda para este atendimento.
  * @param {object} spec — cartão de `buildVisibleSegments`
  * @param {object} [profissionalConfigPorSpec]
+ * @returns {{ main: string, nota: string | null }}
  */
 export function msgForaDiaAgendamentoPrev(spec, profissionalConfigPorSpec = {}) {
   const cfg = profissionalConfigPorSpec[spec?.key];
   const dias = resolveDiasAgendamento(spec?.key, cfg);
   if (dias?.length) {
-    const nomes = dias.map((d) => (DAY_LABEL[d] || d).split("-")[0].trim()).join(", ");
-    return `Agendamento liberado às ${nomes} (antes do atendimento, das 13h30 às 18h). Hoje não é dia de abertura para este atendimento.`;
+    const nomesApp = dias.map((d) => (DAY_LABEL[d] || d).split("-")[0].trim());
+    const diasPresencial = resolveDiasAgendamentoPresencial(spec?.key, cfg);
+    let nota = null;
+    if (diasPresencial?.length) {
+      const nomesPresencial = diasPresencial.map((d) => (DAY_LABEL[d] || d).split("-")[0].trim());
+      nota = `Presencialmente na UBS, o paciente pode agendar na ${juntarDiasNomesPortugues(nomesPresencial).toLowerCase()}.`;
+    }
+    return {
+      main: `Agendamento pelo aplicativo disponível na ${juntarDiasNomesPortugues(nomesApp).toLowerCase()}, das 13h30 às 18h. Hoje não é dia de abertura da agenda.`,
+      nota,
+    };
   }
-  if (spec?.agendaQualquerDiaUtil) {
-    return "Agendamento liberado em dias úteis antes do atendimento (das 13h30 às 18h). Hoje não é dia de abertura da agenda para este atendimento.";
+  const efetivaModo = normalizarAgendaModo(cfg?.agendaModo ?? defaultAgendaModoParaSpec(spec?.key));
+  if (spec?.agendaQualquerDiaUtil || efetivaModo === AGENDA_MODO.QUALQUER_DIA_UTIL) {
+    return {
+      main: "Agendamento disponível em qualquer dia útil antes do atendimento, das 13h30 às 18h. Hoje não é um dia útil.",
+      nota: null,
+    };
   }
   if (specAgendaVesperaOuMesmoDiaAte14(spec?.key)) {
-    return "Agendamento disponível no dia útil anterior ao atendimento (13h30 às 18h) ou no dia do atendimento (7h às 14h, com vagas). Hoje não é dia de abertura da agenda.";
+    const diaNome = nomeDiaSemanaDeData(spec?.agendamentoDate);
+    const fimLabel = labelHorarioFimMesmoDia(spec?.key);
+    const main = diaNome
+      ? `Agendamento disponível na próxima ${diaNome.toLowerCase()}, das 13h30 às 18h, ou no dia do atendimento, das 7h às ${fimLabel} (se houver vagas). Hoje não é dia de abertura da agenda.`
+      : `Agendamento disponível no dia útil anterior ao atendimento (13h30 às 18h) ou no dia do atendimento (7h às ${fimLabel}, com vagas). Hoje não é dia de abertura da agenda.`;
+    return {
+      main,
+      nota: "Presencialmente na UBS, o paciente pode realizar o agendamento em qualquer dia útil.",
+    };
   }
-  return "Agendamento disponível no dia útil anterior ao atendimento (das 13h30 às 18h).";
+  // Médico, dentistas: véspera + mesmo dia com horário específico
+  const diaNome = nomeDiaSemanaDeData(spec?.agendamentoDate);
+  const fimLabel = labelHorarioFimMesmoDia(spec?.key);
+  const main = diaNome
+    ? `Agendamento disponível na próxima ${diaNome.toLowerCase()}, das 13h30 às 18h, ou no dia do atendimento, das 7h às ${fimLabel} (se houver vagas). Hoje não é dia de abertura da agenda.`
+    : `Agendamento disponível no dia útil anterior ao atendimento (das 13h30 às 18h) ou no dia do atendimento (das 7h às ${fimLabel}, se houver vagas). Hoje não é dia de abertura da agenda.`;
+  return { main, nota: null };
 }
