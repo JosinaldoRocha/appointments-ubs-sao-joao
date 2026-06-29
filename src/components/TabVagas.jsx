@@ -486,7 +486,16 @@ export default function TabVagas({
                 key={date}
                 style={{
                   ...styles.mobileDiaContainer,
-                  borderColor: isAberto ? "#C7D2FE" : "#E2E8F0",
+                  border: isHoje
+                    ? "1px solid #86EFAC"
+                    : isAberto
+                      ? "1px solid #C7D2FE"
+                      : "1px solid rgba(15,23,42,0.07)",
+                  boxShadow: isAberto
+                    ? isHoje
+                      ? "0 4px 20px rgba(22,163,74,0.10), 0 1px 4px rgba(15,23,42,0.05)"
+                      : "0 4px 20px rgba(67,56,202,0.10), 0 1px 4px rgba(15,23,42,0.05)"
+                    : "0 1px 4px rgba(15,23,42,0.06)",
                 }}
               >
                 <button
@@ -494,30 +503,79 @@ export default function TabVagas({
                   style={{
                     ...styles.mobileDiaHeader,
                     background: isAberto
-                      ? "linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%)"
-                      : "#F8FAFC",
-                    borderBottom: isAberto ? "1px solid #C7D2FE" : "1px solid transparent",
+                      ? isHoje ? "#F0FDF4" : "#EEF2FF"
+                      : "#FFFFFF",
                   }}
                   onClick={() => setDiaAberto(isAberto ? null : date)}
                   aria-expanded={isAberto}
                 >
+                  {/* Barra colorida lateral */}
+                  <div
+                    style={{
+                      ...styles.mobileDiaStripe,
+                      background: isHoje
+                        ? "linear-gradient(180deg, #4ADE80 0%, #16A34A 100%)"
+                        : isAberto
+                          ? "linear-gradient(180deg, #818CF8 0%, #4F46E5 100%)"
+                          : "linear-gradient(180deg, #CBD5E1 0%, #94A3B8 100%)",
+                    }}
+                    aria-hidden
+                  />
+                  {/* Bolha com número e mês */}
+                  <div style={styles.mobileDiaCalBox}>
+                    <span
+                      style={{
+                        ...styles.mobileDiaCalNum,
+                        color: isHoje ? "#15803D" : isAberto ? "#4338CA" : "#334155",
+                      }}
+                    >
+                      {new Date(date + "T12:00:00").getDate()}
+                    </span>
+                    <span
+                      style={{
+                        ...styles.mobileDiaCalMes,
+                        color: isHoje ? "#16A34A" : isAberto ? "#6366F1" : "#94A3B8",
+                      }}
+                    >
+                      {new Date(date + "T12:00:00")
+                        .toLocaleDateString("pt-BR", { month: "short" })
+                        .replace(".", "")
+                        .toUpperCase()}
+                    </span>
+                  </div>
+                  {/* Nome do dia e label */}
                   <div style={styles.mobileDiaHeaderInfo}>
-                    <p style={{ ...styles.mobileDiaNome, color: isAberto ? "#3730A3" : "#0F172A" }}>
+                    <p
+                      style={{
+                        ...styles.mobileDiaNome,
+                        color: isHoje ? "#14532D" : isAberto ? "#3730A3" : "#1E293B",
+                      }}
+                    >
                       {diaNome}
                     </p>
-                    <p style={styles.mobileDiaData}>{dataFormatada}</p>
+                    {isHoje ? (
+                      <p style={styles.mobileDiaHojeLabel}>Atendimento hoje</p>
+                    ) : (
+                      <p style={styles.mobileDiaData}>{dataFormatada}</p>
+                    )}
                   </div>
+                  {/* Contagem e chevron */}
                   <div style={styles.mobileDiaHeaderRight}>
-                    {isHoje && <span style={styles.mobileDiaHojeBadge}>Hoje</span>}
-                    <span style={styles.mobileDiaCount}>
-                      {totalProfissionais}{" "}
-                      {totalProfissionais === 1 ? "profissional" : "profissionais"}
+                    <span
+                      style={{
+                        ...styles.mobileDiaCountPill,
+                        background: isHoje ? "#DCFCE7" : isAberto ? "#E0E7FF" : "#F1F5F9",
+                        color: isHoje ? "#166534" : isAberto ? "#4338CA" : "#64748B",
+                        border: `1px solid ${isHoje ? "#86EFAC" : isAberto ? "#C7D2FE" : "#E2E8F0"}`,
+                      }}
+                    >
+                      {totalProfissionais}
                     </span>
                     <span
                       style={{
                         ...styles.mobileDiaChevron,
                         transform: isAberto ? "rotate(180deg)" : "rotate(0deg)",
-                        color: isAberto ? "#4338CA" : "#94A3B8",
+                        color: isHoje ? "#16A34A" : isAberto ? "#4338CA" : "#94A3B8",
                       }}
                     >
                       ▾
@@ -525,7 +583,13 @@ export default function TabVagas({
                   </div>
                 </button>
                 {isAberto && (
-                  <div style={styles.mobileDiaCards}>
+                  <div
+                    style={{
+                      ...styles.mobileDiaCards,
+                      borderTop: `1px solid ${isHoje ? "#BBF7D0" : "#E0E7FF"}`,
+                      background: isHoje ? "#F7FEF9" : "#F8FAFC",
+                    }}
+                  >
                     {lista.map((spec) => (
                       <SpecCard
                         key={`mobile-${spec.windowType}-${spec.atendimentoDate}_${spec.key}`}
@@ -2090,24 +2154,58 @@ const styles = {
     gap: 10,
   },
   mobileDiaContainer: {
-    borderRadius: 14,
-    border: "1px solid #E2E8F0",
+    borderRadius: 16,
     overflow: "hidden",
     background: "#fff",
-    boxShadow: "0 1px 3px rgba(15,23,42,0.05)",
   },
   mobileDiaHeader: {
     width: "100%",
     display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "14px 16px",
+    alignItems: "stretch",
     border: "none",
     cursor: "pointer",
     textAlign: "left",
-    gap: 12,
+    gap: 0,
+    minHeight: 72,
+    padding: 0,
   },
-  mobileDiaHeaderInfo: { flex: 1, minWidth: 0 },
+  mobileDiaStripe: {
+    width: 5,
+    flexShrink: 0,
+    alignSelf: "stretch",
+  },
+  mobileDiaCalBox: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 54,
+    flexShrink: 0,
+    padding: "10px 0",
+    gap: 1,
+  },
+  mobileDiaCalNum: {
+    fontSize: 26,
+    fontWeight: 800,
+    lineHeight: 1,
+    letterSpacing: "-0.02em",
+    margin: 0,
+  },
+  mobileDiaCalMes: {
+    fontSize: 10,
+    fontWeight: 700,
+    letterSpacing: "0.06em",
+    textTransform: "uppercase",
+    margin: 0,
+  },
+  mobileDiaHeaderInfo: {
+    flex: 1,
+    minWidth: 0,
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "center",
+    padding: "12px 0",
+  },
   mobileDiaNome: {
     margin: 0,
     fontSize: 15,
@@ -2116,8 +2214,16 @@ const styles = {
   },
   mobileDiaData: {
     margin: "3px 0 0",
-    fontSize: 12,
+    fontSize: 11,
     color: "#64748B",
+    lineHeight: 1.3,
+    fontWeight: 500,
+  },
+  mobileDiaHojeLabel: {
+    margin: "3px 0 0",
+    fontSize: 11,
+    fontWeight: 600,
+    color: "#16A34A",
     lineHeight: 1.3,
   },
   mobileDiaHeaderRight: {
@@ -2125,35 +2231,28 @@ const styles = {
     alignItems: "center",
     gap: 8,
     flexShrink: 0,
+    padding: "0 16px 0 8px",
   },
-  mobileDiaHojeBadge: {
-    fontSize: 10,
-    background: "#DCFCE7",
-    color: "#166534",
-    padding: "3px 8px",
-    borderRadius: 999,
+  mobileDiaCountPill: {
+    fontSize: 13,
     fontWeight: 700,
-    border: "1px solid #86EFAC",
-    whiteSpace: "nowrap",
-  },
-  mobileDiaCount: {
-    fontSize: 11,
-    color: "#64748B",
-    fontWeight: 500,
+    padding: "5px 11px",
+    borderRadius: 999,
+    lineHeight: 1,
     whiteSpace: "nowrap",
   },
   mobileDiaChevron: {
-    fontSize: 15,
+    fontSize: 16,
     lineHeight: 1,
     transition: "transform 0.2s",
     display: "inline-block",
+    flexShrink: 0,
   },
   mobileDiaCards: {
     display: "flex",
     flexDirection: "column",
     gap: 10,
     padding: "12px 12px 14px",
-    background: "#F8FAFC",
   },
   card: {
     background: "#fff",
