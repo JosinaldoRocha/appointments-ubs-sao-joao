@@ -9,7 +9,6 @@ import {
   JS_DAY_TO_KEY,
   recepcaoPodeMarcarAtendimentoFinalizado,
   estaDentroJanelaSolicitacaoAgendamento,
-  msgForaJanelaSolicitacaoAgendamento,
   msgForaDiaAgendamentoPrev,
   varianteVisitaDomiciliarNoCard,
   specTemSessaoNoTurno,
@@ -1243,9 +1242,6 @@ function SpecCard({
   const windowType = spec.windowType;
   const dentroJanelaSolicitacao =
     isRecepcao || estaDentroJanelaSolicitacaoAgendamento(windowType, agoraRecepcao, spec.key);
-  const msgForaJanelaAgente = isRecepcao
-    ? ""
-    : msgForaJanelaSolicitacaoAgendamento(windowType, spec.key);
   const foraDiaAgendamento =
     !isRecepcao && windowType === "prev" && spec.podeAgendarPrev === false;
   const msgForaDiaObj = foraDiaAgendamento
@@ -1407,11 +1403,6 @@ function SpecCard({
 
         {(!isMobile || !collapsed) && (
           <>
-            {!isRecepcao && !dentroJanelaSolicitacao && msgForaJanelaAgente ? (
-              <p style={styles.agenteCardForaJanela} role="status">
-                {msgForaJanelaAgente}
-              </p>
-            ) : null}
             {!isRecepcao && foraDiaAgendamento && msgForaDiaAgente ? (
               <div style={styles.agenteCardForaDia} role="status">
                 <p style={{ margin: 0 }}>{msgForaDiaAgente}</p>
@@ -2401,17 +2392,6 @@ const styles = {
     border: "1px solid #D97706",
     borderRadius: 8,
     boxShadow: "0 2px 8px rgba(217, 119, 6, 0.16), inset 0 1px 0 rgba(255,255,255,0.6)",
-  },
-  agenteCardForaJanela: {
-    margin: "0 16px 0",
-    padding: "10px 12px",
-    fontSize: 12,
-    fontWeight: 600,
-    lineHeight: 1.45,
-    color: "#B45309",
-    background: "#FFFBEB",
-    border: "1px solid #FCD34D",
-    borderRadius: 8,
   },
   agenteCardForaDia: {
     margin: "8px 16px 0",
