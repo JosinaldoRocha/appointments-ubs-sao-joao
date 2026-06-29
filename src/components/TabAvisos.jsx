@@ -32,6 +32,36 @@ function dataSuspensaoPosteriorAHoje(isoStr, hojeStr) {
   return typeof isoStr === "string" && /^\d{4}-\d{2}-\d{2}$/.test(isoStr.trim()) && isoStr.trim() > hojeStr;
 }
 
+function proximaAberturaAgendamento(agora, feriadosLista) {
+  const holidaySet = new Set(normalizeFeriadosList(feriadosLista));
+  const totalMin = agora.getHours() * 60 + agora.getMinutes();
+  const hojeStr = toDateStr(agora);
+  const dow = agora.getDay();
+  const ehDiaUtilHoje = dow >= 1 && dow <= 5 && !holidaySet.has(hojeStr);
+
+  if (ehDiaUtilHoje && totalMin < 7 * 60) {
+    return "hoje a partir das 7h";
+  }
+
+  const base = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate());
+  const cursor = new Date(base);
+  cursor.setDate(cursor.getDate() + 1);
+  for (let i = 0; i < 14; i++) {
+    const d = cursor.getDay();
+    const s = toDateStr(cursor);
+    if (d >= 1 && d <= 5 && !holidaySet.has(s)) {
+      const diffDias = Math.round((cursor - base) / 86400000);
+      const prefixo =
+        diffDias === 1
+          ? "amanhã"
+          : "na " + cursor.toLocaleDateString("pt-BR", { weekday: "long" });
+      return `${prefixo} a partir das 13h30`;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return null;
+}
+
 function formatDataLonga(isoDateStr) {
   return new Date(`${isoDateStr}T12:00:00`).toLocaleDateString("pt-BR", {
     weekday: "long",
@@ -195,6 +225,11 @@ export default function TabAvisos({
     [isRecepcao, agoraRef]
   );
 
+  const proximaAbertura = useMemo(
+    () => proximaAberturaAgendamento(agoraRef, feriados),
+    [agoraRef, feriados]
+  );
+
   const visitasDomicNoCard = useMemo(() => {
     if (!dentQuartaVisitaDomiciliarDesde) return [];
     const out = [];
@@ -326,7 +361,10 @@ export default function TabAvisos({
             {foraExpedienteAgente ? (
               <Card tone="warn">
                 <p style={S.cardLine}>
-                  <strong>Fora do horário de solicitações.</strong> {MSG_FORA_EXPEDIENTE_UBS}
+                  <strong>Fora do horário de solicitações.</strong>{" "}
+                  {proximaAbertura
+                    ? `Volte ${proximaAbertura}.`
+                    : MSG_FORA_EXPEDIENTE_UBS}
                 </p>
               </Card>
             ) : null}
