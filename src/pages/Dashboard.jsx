@@ -23,6 +23,7 @@ import {
   resolveWhatsappDestinoSolicitacao,
   tryReservaSolicitacaoAgente,
   liberarReservaSolicitacaoAgente,
+  updateUser,
 } from "../services/db";
 import {
   buildVisibleSegments,
@@ -41,6 +42,7 @@ import {
 import {
   uploadDocumentoPacienteSolicitacao,
   uploadDocumentosPacienteSolicitacao,
+  uploadFotoPerfil,
 } from "../services/storageUpload";
 import {
   montarMensagemSolicitacaoWhatsApp,
@@ -251,6 +253,14 @@ export default function Dashboard() {
   const isRecepcao = isRecepcaoPerfil(perfil);
   const isDiretor = isDiretorPerfil(perfil);
 
+  const [menuPerfilAberto, setMenuPerfilAberto] = useState(false);
+  const [fotoPerfilLocal, setFotoPerfilLocal] = useState(null);
+  const [uploadandoFoto, setUploadandoFoto] = useState(false);
+  const menuPerfilRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  const fotoAtual = fotoPerfilLocal ?? perfil?.fotoPerfil ?? null;
+
   const [tab, setTab] = useState("vagas");
   const [vagasMap, setVagasMap] = useState({});
   /** Documentos `profissionais/{id}`; campo opcional `specKey` liga à grade (medico, dentFernando, …). */
@@ -348,6 +358,17 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
+    if (!menuPerfilAberto) return;
+    const handler = (e) => {
+      if (menuPerfilRef.current && !menuPerfilRef.current.contains(e.target)) {
+        setMenuPerfilAberto(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [menuPerfilAberto]);
+
+  useEffect(() => {
     const atualizarDia = () => {
       const hoje = toDateStr(new Date());
       setDiaCalendario((prev) => (prev !== hoje ? hoje : prev));
@@ -414,6 +435,28 @@ export default function Dashboard() {
       liberarReservaSolicitacaoAgente(id, uid).catch(() => {});
     };
   }, [modal?.reservaFirestoreVagaId, user?.uid]);
+
+  const handleAbrirFilePicker = () => {
+    setMenuPerfilAberto(false);
+    fileInputRef.current?.click();
+  };
+
+  const handleFotoChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file || !user?.uid) return;
+    e.target.value = "";
+    setUploadandoFoto(true);
+    try {
+      const url = await uploadFotoPerfil(user.uid, file);
+      await updateUser(user.uid, { fotoPerfil: url });
+      setFotoPerfilLocal(url);
+      showToast("Foto de perfil atualizada.", "success");
+    } catch (err) {
+      showToast(err?.message || "Não foi possível salvar a foto.", "danger");
+    } finally {
+      setUploadandoFoto(false);
+    }
+  };
 
   function showToast(msg, type = "info") {
     setToast({ msg, type });
@@ -1038,10 +1081,41 @@ export default function Dashboard() {
           </div>
         </div>
         <div style={styles.hdrRight}>
-          <span style={styles.perfilBadge}>{perfil?.nome?.split(" ")[0]}</span>
-          <button style={styles.logoutBtn} onClick={logout}>
-            Sair
-          </button>
+          <div ref={menuPerfilRef} style={{ position: "relative" }}>
+            <button
+              onClick={() => setMenuPerfilAberto((v) => !v)}
+              style={styles.avatarBtn}
+              disabled={uploadandoFoto}
+              aria-label="Menu do perfil"
+            >
+              {fotoAtual ? (
+                <img src={fotoAtual} alt="Foto de perfil" style={styles.avatarImg} />
+              ) : (
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="8" r="4" />
+                  <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" />
+                </svg>
+              )}
+            </button>
+            {menuPerfilAberto && (
+              <div style={styles.dropdown}>
+                <button onClick={handleAbrirFilePicker} style={styles.dropdownItem}>
+                  {fotoAtual ? "Alterar foto de perfil" : "Adicionar foto de perfil"}
+                </button>
+                <div style={styles.dropdownDivider} />
+                <button onClick={logout} style={{ ...styles.dropdownItem, color: "#DC2626" }}>
+                  Sair
+                </button>
+              </div>
+            )}
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            style={{ display: "none" }}
+            onChange={handleFotoChange}
+          />
         </div>
       </header>
 
@@ -1158,24 +1232,56 @@ const styles = {
   hdrRight: { display: "flex", alignItems: "center", gap: 8 },
   hdrTitle: { fontSize: 15, fontWeight: 700, color: "#0F172A", margin: 0, letterSpacing: "-0.01em" },
   hdrSub: { fontSize: 12, color: "#64748B", margin: "2px 0 0", textTransform: "capitalize" },
-  perfilBadge: {
-    fontSize: 13,
-    color: "#4338CA",
+  avatarBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: "50%",
+    border: "2px solid #C7D2FE",
     background: "#EEF2FF",
-    padding: "5px 12px",
-    borderRadius: 999,
-    fontWeight: 600,
-    border: "1px solid #C7D2FE",
-  },
-  logoutBtn: {
-    fontSize: 13,
-    color: "#DC2626",
-    background: "transparent",
-    border: "1px solid #FECACA",
-    borderRadius: 8,
-    padding: "6px 12px",
+    color: "#4338CA",
     cursor: "pointer",
-    fontWeight: 600,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 0,
+    overflow: "hidden",
+    flexShrink: 0,
+  },
+  avatarImg: {
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+    borderRadius: "50%",
+    display: "block",
+  },
+  dropdown: {
+    position: "absolute",
+    right: 0,
+    top: "calc(100% + 8px)",
+    background: "#fff",
+    border: "1px solid #E2E8F0",
+    borderRadius: 10,
+    boxShadow: "0 4px 20px rgba(15,23,42,0.12)",
+    minWidth: 200,
+    zIndex: 100,
+    overflow: "hidden",
+  },
+  dropdownItem: {
+    display: "block",
+    width: "100%",
+    padding: "10px 16px",
+    background: "transparent",
+    border: "none",
+    textAlign: "left",
+    fontSize: 14,
+    color: "#334155",
+    cursor: "pointer",
+    fontWeight: 500,
+  },
+  dropdownDivider: {
+    height: 1,
+    background: "#F1F5F9",
+    margin: "4px 0",
   },
   nav: {
     display: "flex",
