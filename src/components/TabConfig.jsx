@@ -58,10 +58,6 @@ import {
 } from "../services/scheduleConfig";
 import PasswordInput from "./PasswordInput";
 
-/**
- * Localiza o documento em `profissionais` para a chave da agenda, mesmo sem campo `specKey`
- * (ex.: ID automático). Grava `specKey` no próximo update para amarrar de vez ao Firestore.
- */
 function resolverDocumentoProfissional(specKey, profissionaisMap) {
   const list = Object.values(profissionaisMap || {});
   const direct = list.find((p) => p.specKey === specKey || p.id === specKey);
@@ -170,6 +166,20 @@ function montarPatchProfissionalConfig(
   return Object.keys(entry).length ? entry : null;
 }
 
+const DAY_LABEL_CURTO = {
+  segunda: "Seg",
+  terca: "Ter",
+  quarta: "Qua",
+  quinta: "Qui",
+  sexta: "Sex",
+};
+
+const ROLE_STYLE = {
+  agente:   { avBg: "#D1FAE5", avTc: "#065F46", tagBg: "#ECFDF5", tagTc: "#065F46", accent: "#10B981", label: "Agente de saúde" },
+  recepcao: { avBg: "#C7D2FE", avTc: "#3730A3", tagBg: "#EEF2FF", tagTc: "#4338CA", accent: "#6366F1", label: "Recepcionista" },
+  diretor:  { avBg: "#E9D5FF", avTc: "#6B21A8", tagBg: "#F5F3FF", tagTc: "#7C3AED", accent: "#8B5CF6", label: "Direção" },
+};
+
 export default function TabConfig({
   profNames,
   profissionaisMap = {},
@@ -195,7 +205,6 @@ export default function TabConfig({
   const [pontosFacultativos, setPontosFacultativos] = useState([]);
   const [novoPontoFacultativo, setNovoPontoFacultativo] = useState("");
   const [pccuTotal, setPccuTotal] = useState(DEFAULT_PCCU_TOTAL);
-  /** Primeira quarta: a partir dela, visitas domiciliares em quinzena (Dr. Fernando). */
   const [dentQuartaVisitaDomiciliarDesde, setDentQuartaVisitaDomiciliarDesde] = useState("");
   const [whatsappDirecaoEncaixe, setWhatsappDirecaoEncaixe] = useState("");
   const [savingRegras, setSavingRegras] = useState(false);
@@ -362,7 +371,7 @@ export default function TabConfig({
       const dias = normalizeDiasAgendamentoLista(payload.diasAgendamento);
       if (!dias.length) {
         showToast(
-          "Marque os dias da semana em que o agendamento pode ser feito (ex.: terça, quarta e quinta antes de uma sexta de atendimento).",
+          "Marque os dias da semana em que o agendamento pode ser feito.",
           "danger"
         );
         return;
@@ -529,9 +538,7 @@ export default function TabConfig({
     setLoading(true);
     let cred = null;
     try {
-      // Authentication: conta com e-mail/senha (mesmo Firebase project)
       cred = await createUserWithEmailAndPassword(secondaryAuth, emailLogin, novoUser.senha);
-      // Firestore: coleção `usuarios` com o mesmo uid do Auth
       await createUser(cred.user.uid, {
         nome: novoUser.nome.trim(),
         cpf: cpfLimpo,
@@ -562,7 +569,7 @@ export default function TabConfig({
       } else if (code === "permission-denied") {
         showToast("Sem permissão para salvar o cadastro no Firestore.", "danger");
       } else {
-        showToast("Erro ao tentar criar o usuário (Authentication ou Firestore). Tente novamente.", "danger");
+        showToast("Erro ao tentar criar o usuário. Tente novamente.", "danger");
       }
     } finally {
       try {
@@ -590,11 +597,9 @@ export default function TabConfig({
     }
   }
 
-  const ruleLabel = { agente: "Agente de saúde", recepcao: "Recepcionista", diretor: "Direção" };
-
   const tabs = [
     { key: "profissionais", label: "Profissionais" },
-    { key: "calendario", label: "Calendário & regras" },
+    { key: "calendario", label: "Calendário & Regras" },
     { key: "usuarios", label: "Usuários" },
   ];
 
@@ -602,15 +607,18 @@ export default function TabConfig({
 
   return (
     <div>
-      <div style={S.configHeader}>
-        <h2 style={S.configTitle}>Configuração da unidade</h2>
-        <p style={S.configSub}>
-          Só recepcionista acessa esta área. Use as abas abaixo: <strong>Profissionais</strong> para o
-          nome em cada vaga da agenda; <strong>Usuários</strong> para criar ou excluir contas de login
-          (agente, recepção, direção).
-        </p>
+      {/* ── Header ── */}
+      <div style={S.pageHeader}>
+        <div style={S.pageHeaderRow}>
+          <div style={S.pageHeaderIcon}>⚙</div>
+          <div>
+            <h2 style={S.pageHeaderTitle}>Configuração da unidade</h2>
+            <p style={S.pageHeaderSub}>Área exclusiva da recepção</p>
+          </div>
+        </div>
       </div>
 
+      {/* ── Sub-tabs ── */}
       <div style={S.tabs}>
         {tabs.map((t) => (
           <button
@@ -623,44 +631,36 @@ export default function TabConfig({
         ))}
       </div>
 
+      {/* ════════════════ PROFISSIONAIS ════════════════ */}
       {section === "profissionais" && (
         <div>
-          <p style={S.hint}>
-            <strong>Profissionais nas vagas da agenda</strong> — cada linha corresponde a uma{" "}
-            <em>chave de agenda</em> do sistema (médico, odontologia, etc.). No <strong>médico</strong> e na{" "}
-            <strong>enfermeira</strong>, cadastre cada tipo de atendimento (ex.: PCCU, gestantes) com dia, turno e vagas.
-            Nos demais,
-            marque dias e turnos na UBS; <strong>Salvar</strong> grava nome, agenda e regras de agendamento.{" "}
-            <strong>Excluir</strong> tira o profissional da agenda e desta lista, apagando cadastro, suspensões,
-            vagas e cronograma. Use <strong>Restaurar</strong> (abaixo) para voltar a exibir na unidade. Em{" "}
-            <strong>Novo profissional</strong> cadastre quem foi contratado e ainda não está na lista fixa da UBS.
-          </p>
-          <p style={S.hintMuted}>
-            Para <strong>contas de login</strong> (agente, recepção, direção), use a aba{" "}
-            <button type="button" style={S.linkTab} onClick={() => setSection("usuarios")}>
-              Usuários
-            </button>
-            .
-          </p>
-          <hr style={S.sectionDivider} />
-          {specKeysAtivos.length === 0 && (
-            <p style={S.hintMuted}>
-              Nenhum profissional ativo na grade. Restaure um perfil na seção abaixo para voltar a exibir na agenda.
-            </p>
-          )}
-          {specKeysAtivos.map((key, i, keys) => {
-            const isFirst = i === 0;
-            const isLast = i === keys.length - 1;
-            return (
-              <div
-                key={key}
-                style={{
-                  ...S.profBlock,
-                  ...(isFirst ? S.profBlockFirst : {}),
-                  ...(isLast ? S.profBlockLast : {}),
-                }}
-              >
+          <div style={S.infoBanner}>
+            <div style={S.infoBannerBody}>
+              <p style={S.infoBannerText}>
+                Cada card abaixo representa um profissional da agenda. Edite o nome, os dias e turnos
+                de atendimento. No <strong>médico</strong> e na <strong>enfermeira</strong>, cadastre
+                cada tipo de atendimento separadamente. <strong>Excluir</strong> remove da agenda e
+                apaga todos os dados vinculados. Use{" "}
+                <button type="button" style={S.linkTab} onClick={() => setSection("usuarios")}>
+                  Usuários
+                </button>{" "}
+                para gerenciar contas de login.
+              </p>
+            </div>
+          </div>
+
+          {specKeysAtivos.length === 0 ? (
+            <div style={S.emptyState}>
+              <p style={S.emptyStateTitle}>Nenhum profissional ativo</p>
+              <p style={S.emptyStateSub}>
+                Restaure um perfil na seção abaixo para voltar a exibir na agenda.
+              </p>
+            </div>
+          ) : (
+            <div style={S.profList}>
+              {specKeysAtivos.map((key) => (
                 <ProfRow
+                  key={key}
                   specKey={key}
                   nome={profNames[key] || DEFAULT_PROF_NAMES[key]}
                   doc={resolverDocumentoProfissional(key, profissionaisMap)}
@@ -672,16 +672,20 @@ export default function TabConfig({
                   onSave={(sk, nomeVal, grade, extras) => salvarNomeProfissional(sk, nomeVal, grade, extras)}
                   onDelete={excluirProfissional}
                 />
-              </div>
-            );
-          })}
+              ))}
+            </div>
+          )}
+
           {specKeysCustomAtivos.length > 0 && (
             <>
-              <hr style={S.sectionDivider} />
-              <p style={S.sectionTitle}>Profissionais adicionados na unidade</p>
-              {specKeysCustomAtivos.map((key) => (
-                <div key={key} style={S.profBlock}>
+              <div style={S.subSectionHead}>
+                <span style={S.subSectionBadge}>+</span>
+                <p style={S.subSectionTitle}>Adicionados na unidade</p>
+              </div>
+              <div style={S.profList}>
+                {specKeysCustomAtivos.map((key) => (
                   <ProfRow
+                    key={key}
                     specKey={key}
                     nome={profNames[key] || "Profissional"}
                     doc={resolverDocumentoProfissional(key, profissionaisMap)}
@@ -691,319 +695,406 @@ export default function TabConfig({
                     onSave={(sk, nomeVal, grade, extras) => salvarNomeProfissional(sk, nomeVal, grade, extras)}
                     onDelete={excluirProfissional}
                   />
-                </div>
-              ))}
+                ))}
+              </div>
             </>
           )}
 
-          <hr style={S.sectionDivider} />
-          <NovoProfissionalForm onCreate={criarNovoProfissional} />
+          <div style={{ marginTop: 16 }}>
+            <NovoProfissionalForm onCreate={criarNovoProfissional} />
+          </div>
 
           {specKeysRemovidos.length > 0 && (
-            <>
-              <hr style={S.sectionDivider} />
-              <p style={S.sectionTitle}>Removidos da agenda</p>
-              <p style={S.hintMuted}>
-                Estes perfis não aparecem na aba Vagas nem para os agentes. Restaure e salve o nome para reativar.
+            <div style={S.removidosBox}>
+              <p style={S.removidosTitle}>Removidos da agenda</p>
+              <p style={S.removidosHint}>
+                Estes perfis não aparecem nas vagas nem para os agentes. Restaure e salve o nome para reativar.
               </p>
               {specKeysRemovidos.map((key) => {
                 const meta = SPEC_META[key] || {};
                 return (
                   <div key={key} style={S.profRemovidoRow}>
-                    <div>
-                      <strong>{meta.role || key}</strong>
-                      <span style={S.hintMuted}>
-                        {" "}
-                        — {DEFAULT_PROF_NAMES[key] || key}
-                      </span>
+                    <div style={S.profRemovidoInfo}>
+                      <span style={S.profRemovidoRole}>{meta.role || key}</span>
+                      <span style={S.profRemovidoNome}>{DEFAULT_PROF_NAMES[key] || key}</span>
                     </div>
-                    <button type="button" style={S.btnSave} onClick={() => restaurarProfissionalNaGrade(key)}>
+                    <button
+                      type="button"
+                      style={S.btnRestore}
+                      onClick={() => restaurarProfissionalNaGrade(key)}
+                    >
                       Restaurar
                     </button>
                   </div>
                 );
               })}
-            </>
+            </div>
           )}
         </div>
       )}
 
+      {/* ════════════════ CALENDÁRIO & REGRAS ════════════════ */}
       {section === "calendario" && (
-        <div>
-          <p style={S.hint}>
-            Feriados e pontos facultativos em que a UBS não agenda: o sistema usa o último dia útil antes
-            do atendimento como dia de abertura da agenda (pulando fins de semana e estas datas).
-          </p>
-
-          <p style={S.sectionTitle}>Feriados (AAAA-MM-DD)</p>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-            <input
-              type="date"
-              style={S.input}
-              value={novoFeriado}
-              onChange={(e) => setNovoFeriado(e.target.value)}
-            />
-            <button type="button" style={S.btnSave} onClick={adicionarFeriado}>
-              Adicionar
-            </button>
-          </div>
-          <ul style={{ listStyle: "none", padding: 0, margin: "0 0 16px" }}>
-            {feriados.map((iso) => (
-              <li key={iso} style={S.feriadoRow}>
-                <span>{new Date(iso + "T12:00:00").toLocaleDateString("pt-BR")}</span>
-                <button type="button" style={S.btnDel} onClick={() => removerFeriado(iso)}>
-                  Remover
-                </button>
-              </li>
-            ))}
-            {feriados.length === 0 && (
-              <li style={{ fontSize: 12, color: "#94A3B8" }}>Nenhum feriado cadastrado.</li>
-            )}
-          </ul>
-
-          <hr style={S.sectionDivider} />
-
-          <p style={S.sectionTitle}>Pontos facultativos (AAAA-MM-DD)</p>
-          <p style={S.hintMuted}>
-            Mesma regra dos feriados: sem atendimento agendado na data; o dia útil anterior ao atendimento
-            continua sendo usado para abrir a agenda.
-          </p>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10, marginTop: 8 }}>
-            <input
-              type="date"
-              style={S.input}
-              value={novoPontoFacultativo}
-              onChange={(e) => setNovoPontoFacultativo(e.target.value)}
-            />
-            <button type="button" style={S.btnSave} onClick={adicionarPontoFacultativo}>
-              Adicionar
-            </button>
-          </div>
-          <ul style={{ listStyle: "none", padding: 0, margin: "0 0 16px" }}>
-            {pontosFacultativos.map((iso) => (
-              <li key={iso} style={S.feriadoRow}>
-                <span>{new Date(iso + "T12:00:00").toLocaleDateString("pt-BR")}</span>
-                <button type="button" style={S.btnDel} onClick={() => removerPontoFacultativo(iso)}>
-                  Remover
-                </button>
-              </li>
-            ))}
-            {pontosFacultativos.length === 0 && (
-              <li style={{ fontSize: 12, color: "#94A3B8" }}>Nenhum ponto facultativo cadastrado.</li>
-            )}
-          </ul>
-
-          <hr style={S.sectionDivider} />
-
-          <div>
-            <p style={S.sectionTitle}>Odontologia — visitas domiciliares (quartas)</p>
-            <p style={S.hintMuted}>
-              Escolha uma <strong>quarta-feira</strong> de início. A partir dela, a cada <strong>15 dias</strong>{" "}
-              (quinzenal: <strong>uma quarta sim, outra não</strong>) a manhã fica{" "}
-              <strong>reservada para visitas domiciliares</strong> (sem vagas na unidade nesse turno). No{" "}
-              <strong>dia anterior</strong> a cada quarta de visitas, agentes de saúde e direção veem o lembrete na aba{" "}
-              <strong>Avisos</strong>. Altere ou limpe a data quando precisar.
-            </p>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
-              <label style={{ ...S.label, margin: 0 }}>Primeira quarta (início)</label>
-              <input
-                type="date"
-                style={S.input}
-                value={dentQuartaVisitaDomiciliarDesde}
-                onChange={(e) => setDentQuartaVisitaDomiciliarDesde(e.target.value)}
-              />
-              <button
-                type="button"
-                style={S.btnDel}
-                onClick={() => setDentQuartaVisitaDomiciliarDesde("")}
-              >
-                Desativar regra
-              </button>
+        <div style={S.calContent}>
+          <div style={S.infoBanner}>
+            <div style={S.infoBannerBody}>
+              <p style={S.infoBannerText}>
+                Feriados e pontos facultativos bloqueiam o agendamento na data. O sistema usa o
+                último dia útil anterior ao atendimento para abrir a agenda.
+              </p>
             </div>
           </div>
 
-          <hr style={S.sectionDivider} />
-
-          <div>
-            <label style={S.label}>Vagas PCCU (padrão legado)</label>
-            <p style={S.hintMuted}>
-              Usado só enquanto a enfermeira não tiver agenda customizada salva. Prefira definir cada linha de{" "}
-              <strong>PCCU</strong> no card da enfermeira (dia, turno e vagas).
-            </p>
-            <input
-              type="number"
-              min={1}
-              max={50}
-              style={{ ...S.input, maxWidth: 120, marginTop: 4 }}
-              value={pccuTotal}
-              onChange={(e) => setPccuTotal(Number(e.target.value))}
-            />
+          {/* Feriados */}
+          <div style={S.calCard}>
+            <div style={S.calCardHead}>
+              <span style={S.calCardBadge}>📅</span>
+              <p style={S.calCardTitle}>Feriados</p>
+            </div>
+            <div style={S.calCardBody}>
+              <div style={S.dateInputRow}>
+                <input
+                  type="date"
+                  style={{ ...S.input, flex: 1, minWidth: 140, maxWidth: 220 }}
+                  value={novoFeriado}
+                  onChange={(e) => setNovoFeriado(e.target.value)}
+                />
+                <button type="button" style={S.btnAdd} onClick={adicionarFeriado}>
+                  Adicionar
+                </button>
+              </div>
+              {feriados.length > 0 ? (
+                <div style={S.feriadoChips}>
+                  {feriados.map((iso) => (
+                    <span key={iso} style={S.feriadoChip}>
+                      {new Date(iso + "T12:00:00").toLocaleDateString("pt-BR")}
+                      <button
+                        type="button"
+                        style={S.feriadoChipX}
+                        onClick={() => removerFeriado(iso)}
+                        title="Remover"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p style={S.feriadoEmpty}>Nenhum feriado cadastrado.</p>
+              )}
+            </div>
           </div>
 
-          <hr style={S.sectionDivider} />
+          {/* Pontos Facultativos */}
+          <div style={S.calCard}>
+            <div style={S.calCardHead}>
+              <span style={S.calCardBadge}>📋</span>
+              <p style={S.calCardTitle}>Pontos facultativos</p>
+            </div>
+            <div style={S.calCardBody}>
+              <p style={S.calCardHint}>
+                Mesma regra dos feriados: sem agendamento na data.
+              </p>
+              <div style={S.dateInputRow}>
+                <input
+                  type="date"
+                  style={{ ...S.input, flex: 1, minWidth: 140, maxWidth: 220 }}
+                  value={novoPontoFacultativo}
+                  onChange={(e) => setNovoPontoFacultativo(e.target.value)}
+                />
+                <button type="button" style={S.btnAdd} onClick={adicionarPontoFacultativo}>
+                  Adicionar
+                </button>
+              </div>
+              {pontosFacultativos.length > 0 ? (
+                <div style={S.feriadoChips}>
+                  {pontosFacultativos.map((iso) => (
+                    <span key={iso} style={S.feriadoChip}>
+                      {new Date(iso + "T12:00:00").toLocaleDateString("pt-BR")}
+                      <button
+                        type="button"
+                        style={S.feriadoChipX}
+                        onClick={() => removerPontoFacultativo(iso)}
+                        title="Remover"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p style={S.feriadoEmpty}>Nenhum ponto facultativo cadastrado.</p>
+              )}
+            </div>
+          </div>
+
+          {/* Visitas domiciliares */}
+          <div style={S.calCard}>
+            <div style={S.calCardHead}>
+              <span style={S.calCardBadge}>🏠</span>
+              <p style={S.calCardTitle}>Odontologia — visitas domiciliares (quartas)</p>
+            </div>
+            <div style={S.calCardBody}>
+              <p style={S.calCardHint}>
+                Escolha uma <strong>quarta-feira</strong> de início. A partir dela, a cada{" "}
+                <strong>15 dias</strong> a manhã fica reservada para visitas domiciliares (sem vagas
+                na unidade). No dia anterior à cada quarta de visita, agentes e direção veem o
+                lembrete na aba <strong>Avisos</strong>.
+              </p>
+              <div style={S.dateInputRow}>
+                <label style={{ ...S.label, flexShrink: 0 }}>Primeira quarta (início)</label>
+                <input
+                  type="date"
+                  style={{ ...S.input, flex: 1, minWidth: 140, maxWidth: 220 }}
+                  value={dentQuartaVisitaDomiciliarDesde}
+                  onChange={(e) => setDentQuartaVisitaDomiciliarDesde(e.target.value)}
+                />
+                {dentQuartaVisitaDomiciliarDesde && (
+                  <button
+                    type="button"
+                    style={S.btnDel}
+                    onClick={() => setDentQuartaVisitaDomiciliarDesde("")}
+                  >
+                    Desativar
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Vagas PCCU */}
+          <div style={S.calCard}>
+            <div style={S.calCardHead}>
+              <span style={S.calCardBadge}>💉</span>
+              <p style={S.calCardTitle}>Vagas PCCU (padrão legado)</p>
+            </div>
+            <div style={S.calCardBody}>
+              <p style={S.calCardHint}>
+                Usado só enquanto a enfermeira não tiver agenda customizada salva. Prefira definir
+                cada linha de <strong>PCCU</strong> no card da enfermeira.
+              </p>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6 }}>
+                <label style={S.label}>Total de vagas</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  style={{ ...S.input, maxWidth: 100 }}
+                  value={pccuTotal}
+                  onChange={(e) => setPccuTotal(Number(e.target.value))}
+                />
+              </div>
+            </div>
+          </div>
 
           <button
             type="button"
-            style={{ ...S.btnAdd, marginTop: 0, opacity: savingRegras ? 0.6 : 1 }}
+            style={{ ...S.btnSalvar, opacity: savingRegras ? 0.6 : 1 }}
             disabled={savingRegras}
             onClick={salvarRegras}
           >
-            {savingRegras ? "Salvando..." : "Salvar calendário e regras"}
+            {savingRegras ? "Salvando…" : "Salvar calendário e regras"}
           </button>
         </div>
       )}
 
+      {/* ════════════════ USUÁRIOS ════════════════ */}
       {section === "usuarios" && (
         <div>
-          <p style={S.hint}>
-            <strong>Contas de acesso ao sistema</strong> — crie ou exclua usuários (CPF para identificação,
-            <strong> e-mail</strong> como login no app e no Firebase, senha inicial). Para redefinir senha,
-            todos usam o botão <strong>Redefinir senha</strong> na tela de login. Isso é independente dos nomes
-            nas vagas da aba Profissionais.
-          </p>
-          <p style={S.sectionTitle}>WhatsApp da direção (pedidos de encaixe)</p>
-          <p style={S.hint}>
-            Quando um <strong>agente de saúde</strong> solicita encaixe, o pedido abre neste WhatsApp. A direção
-            avalia e alinha com o ACS e a recepção. Quando a <strong>direção</strong> solicita encaixe, o pedido vai
-            para o WhatsApp do recepcionista (cadastro abaixo, no usuário recepcionista).
-          </p>
-          <WaDirecaoEncaixeSettingRow digits={whatsappDirecaoEncaixe} showToast={showToast} />
-          <hr style={S.sectionDivider} />
-          <p style={S.sectionTitle}>Novo usuário</p>
-          <div style={S.formGrid}>
-            <Field label="Nome completo">
-              <input
-                style={S.input}
-                value={novoUser.nome}
-                onChange={(e) => setNovoUser((u) => ({ ...u, nome: e.target.value }))}
-                placeholder="Nome do usuário"
-              />
-            </Field>
-            <Field label="CPF">
-              <input
-                style={S.input}
-                value={novoUser.cpf}
-                onChange={(e) => setNovoUser((u) => ({ ...u, cpf: formatCpf(e.target.value) }))}
-                placeholder="000.000.000-00"
-                maxLength={14}
-                inputMode="numeric"
-              />
-            </Field>
-            <Field label="Telefone">
-              <input
-                style={S.input}
-                value={novoUser.telefone}
-                onChange={(e) => setNovoUser((u) => ({ ...u, telefone: formatTelefoneBR(e.target.value) }))}
-                placeholder="(00) 00000-0000"
-                maxLength={16}
-                inputMode="numeric"
-                autoComplete="tel"
-              />
-            </Field>
-            <Field label="E-mail de login">
-              <input
-                style={S.input}
-                type="email"
-                autoComplete="off"
-                value={novoUser.email}
-                onChange={(e) => setNovoUser((u) => ({ ...u, email: e.target.value }))}
-                placeholder="seu@email.com"
-              />
-            </Field>
-            <Field label="Senha inicial">
-              <PasswordInput
-                compact
-                value={novoUser.senha}
-                onChange={(e) => setNovoUser((u) => ({ ...u, senha: e.target.value }))}
-                placeholder="Mínimo 6 caracteres"
-                autoComplete="new-password"
-                inputStyle={S.input}
-              />
-            </Field>
-            <Field label="Perfil">
-              <select
-                style={S.input}
-                value={novoUser.rule}
-                onChange={(e) => setNovoUser((u) => ({ ...u, rule: e.target.value }))}
-              >
-                <option value="agente">Agente de saúde</option>
-                <option value="recepcao">Recepcionista</option>
-                <option value="diretor">Direção</option>
-              </select>
-            </Field>
-          </div>
-          <button style={{ ...S.btnAdd, opacity: loading ? 0.6 : 1 }} disabled={loading} onClick={criarUsuario}>
-            {loading ? "Criando..." : "Criar usuário"}
-          </button>
-
-          <hr style={S.sectionDivider} />
-
-          <p style={{ ...S.sectionTitle, marginTop: 0 }}>Usuários cadastrados</p>
-          {users.map((u) => (
-            <div key={u.id}>
-              <div style={S.userRow}>
-                <div style={S.userAvatar}>{u.nome?.[0]?.toUpperCase() || "?"}</div>
-                <div style={{ flex: 1 }}>
-                  <p style={S.userName}>{u.nome}</p>
-                  <p style={S.userDetail}>
-                    CPF: {u.cpf?.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4")} ·{" "}
-                    {ruleLabel[u.rule] || u.rule || ruleLabel[u.role] || u.role}
-                    {u.email ? (
-                      <>
-                        {" "}
-                        · Login: {u.email}
-                      </>
-                    ) : null}
-                    {u.telefone ? (
-                      <>
-                        {" "}
-                        · Tel.: {formatTelefoneBR(u.telefone)}
-                      </>
-                    ) : null}
-                  </p>
-                </div>
-                <button style={S.btnDel} onClick={() => excluirUsuario(u.id)}>
-                  Excluir
-                </button>
-              </div>
-              {(u.rule === "recepcao" || u.role === "recepcao") && (
-                <RecepcionistaWhatsappRow
-                  usuario={u}
-                  showToast={showToast}
-                  onSaved={async () => setUsers(await getAllUsers())}
-                />
-              )}
+          <div style={S.infoBanner}>
+            <div style={S.infoBannerBody}>
+              <p style={S.infoBannerText}>
+                Crie ou exclua contas de acesso. O <strong>e-mail</strong> é usado como login. Para
+                redefinir senha, use o botão <strong>Redefinir senha</strong> na tela de login.
+              </p>
             </div>
-          ))}
+          </div>
+
+          {/* WhatsApp da direção */}
+          <div style={S.calCard}>
+            <div style={S.calCardHead}>
+              <span style={S.calCardBadge}>📱</span>
+              <p style={S.calCardTitle}>WhatsApp da direção (encaixes)</p>
+            </div>
+            <div style={S.calCardBody}>
+              <p style={S.calCardHint}>
+                Quando um agente solicita encaixe, o pedido vai para este número. Quando a direção
+                solicita, o pedido vai para o WhatsApp do recepcionista (configurado abaixo no card
+                do usuário recepcionista).
+              </p>
+              <WaDirecaoEncaixeSettingRow digits={whatsappDirecaoEncaixe} showToast={showToast} />
+            </div>
+          </div>
+
+          {/* Novo usuário */}
+          <div style={S.calCard}>
+            <div style={{ ...S.calCardHead, background: "linear-gradient(90deg, #EEF2FF 0%, #F8FAFC 100%)", borderBottom: "1px solid #C7D2FE" }}>
+              <span style={S.calCardBadge}>+</span>
+              <p style={S.calCardTitle}>Novo usuário</p>
+            </div>
+            <div style={S.calCardBody}>
+              <div style={S.formGrid}>
+                <Field label="Nome completo">
+                  <input
+                    style={S.input}
+                    value={novoUser.nome}
+                    onChange={(e) => setNovoUser((u) => ({ ...u, nome: e.target.value }))}
+                    placeholder="Nome do usuário"
+                  />
+                </Field>
+                <Field label="CPF">
+                  <input
+                    style={S.input}
+                    value={novoUser.cpf}
+                    onChange={(e) => setNovoUser((u) => ({ ...u, cpf: formatCpf(e.target.value) }))}
+                    placeholder="000.000.000-00"
+                    maxLength={14}
+                    inputMode="numeric"
+                  />
+                </Field>
+                <Field label="Telefone">
+                  <input
+                    style={S.input}
+                    value={novoUser.telefone}
+                    onChange={(e) => setNovoUser((u) => ({ ...u, telefone: formatTelefoneBR(e.target.value) }))}
+                    placeholder="(00) 00000-0000"
+                    maxLength={16}
+                    inputMode="numeric"
+                    autoComplete="tel"
+                  />
+                </Field>
+                <Field label="E-mail de login">
+                  <input
+                    style={S.input}
+                    type="email"
+                    autoComplete="off"
+                    value={novoUser.email}
+                    onChange={(e) => setNovoUser((u) => ({ ...u, email: e.target.value }))}
+                    placeholder="seu@email.com"
+                  />
+                </Field>
+                <Field label="Senha inicial">
+                  <PasswordInput
+                    compact
+                    value={novoUser.senha}
+                    onChange={(e) => setNovoUser((u) => ({ ...u, senha: e.target.value }))}
+                    placeholder="Mínimo 6 caracteres"
+                    autoComplete="new-password"
+                    inputStyle={S.input}
+                  />
+                </Field>
+                <Field label="Perfil de acesso">
+                  <select
+                    style={S.input}
+                    value={novoUser.rule}
+                    onChange={(e) => setNovoUser((u) => ({ ...u, rule: e.target.value }))}
+                  >
+                    <option value="agente">Agente de saúde</option>
+                    <option value="recepcao">Recepcionista</option>
+                    <option value="diretor">Direção</option>
+                  </select>
+                </Field>
+              </div>
+              <button
+                style={{ ...S.btnSalvar, opacity: loading ? 0.6 : 1 }}
+                disabled={loading}
+                onClick={criarUsuario}
+              >
+                {loading ? "Criando…" : "Criar usuário"}
+              </button>
+            </div>
+          </div>
+
+          {/* Lista de usuários */}
+          <div style={S.subSectionHead}>
+            <span style={S.subSectionBadge}>👥</span>
+            <p style={S.subSectionTitle}>Usuários cadastrados</p>
+          </div>
+
+          {users.length === 0 ? (
+            <div style={S.emptyState}>
+              <p style={S.emptyStateTitle}>Nenhum usuário cadastrado</p>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {users.map((u) => {
+                const ruleKey = u.rule || u.role || "agente";
+                const rs = ROLE_STYLE[ruleKey] || ROLE_STYLE.agente;
+                return (
+                  <div key={u.id}>
+                    <div style={{ ...S.userCard, borderLeftColor: rs.accent }}>
+                      <div style={{ ...S.userAvatar, background: rs.avBg, color: rs.avTc }}>
+                        {u.nome?.[0]?.toUpperCase() || "?"}
+                      </div>
+                      <div style={S.userInfo}>
+                        <div style={S.userTopRow}>
+                          <p style={S.userName}>{u.nome}</p>
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 700,
+                              padding: "2px 8px",
+                              borderRadius: 999,
+                              textTransform: "uppercase",
+                              letterSpacing: "0.04em",
+                              background: rs.tagBg,
+                              color: rs.tagTc,
+                            }}
+                          >
+                            {rs.label}
+                          </span>
+                        </div>
+                        <p style={S.userDetail}>
+                          {u.cpf
+                            ? `CPF: ${u.cpf.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4")}`
+                            : null}
+                          {u.email ? ` · ${u.email}` : null}
+                          {u.telefone ? ` · ${formatTelefoneBR(u.telefone)}` : null}
+                        </p>
+                      </div>
+                      <button style={S.btnDel} onClick={() => excluirUsuario(u.id)}>
+                        Excluir
+                      </button>
+                    </div>
+                    {(u.rule === "recepcao" || u.role === "recepcao") && (
+                      <RecepcionistaWhatsappRow
+                        usuario={u}
+                        showToast={showToast}
+                        onSaved={async () => setUsers(await getAllUsers())}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
+// ─────────────────────────────────────────────
+// WaDirecaoEncaixeSettingRow
+// ─────────────────────────────────────────────
 function WaDirecaoEncaixeSettingRow({ digits, showToast }) {
   const [val, setVal] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     const d = String(digits || "").replace(/\D/g, "").slice(0, 11);
-    if (!d) {
-      setVal("");
-      return;
-    }
-    const f =
-      d.length <= 10
-        ? d.replace(/(\d{2})(\d{4})(\d{0,4})/, "($1) $2-$3")
-        : d.replace(/(\d{2})(\d{5})(\d{0,4})/, "($1) $2-$3");
+    if (!d) { setVal(""); return; }
+    const f = d.length <= 10
+      ? d.replace(/(\d{2})(\d{4})(\d{0,4})/, "($1) $2-$3")
+      : d.replace(/(\d{2})(\d{5})(\d{0,4})/, "($1) $2-$3");
     setVal(f);
   }, [digits]);
 
   function handleChange(v) {
     const d = v.replace(/\D/g, "").slice(0, 11);
-    const f =
-      d.length <= 10
-        ? d.replace(/(\d{2})(\d{4})(\d{0,4})/, "($1) $2-$3")
-        : d.replace(/(\d{2})(\d{5})(\d{0,4})/, "($1) $2-$3");
+    const f = d.length <= 10
+      ? d.replace(/(\d{2})(\d{4})(\d{0,4})/, "($1) $2-$3")
+      : d.replace(/(\d{2})(\d{5})(\d{0,4})/, "($1) $2-$3");
     setVal(f);
   }
 
@@ -1025,11 +1116,11 @@ function WaDirecaoEncaixeSettingRow({ digits, showToast }) {
   }
 
   return (
-    <div style={S.waRow}>
-      <span style={S.waLabel}>Número que recebe pedidos de encaixe dos agentes</span>
+    <div style={S.waInputRow}>
+      <label style={S.label}>Número que recebe pedidos de encaixe dos agentes</label>
       <div style={S.waInputs}>
         <input
-          style={{ ...S.input, flex: 1, minWidth: 140 }}
+          style={{ ...S.input, flex: 1, minWidth: 160 }}
           value={val}
           onChange={(e) => handleChange(e.target.value)}
           placeholder="(99) 99999-9999"
@@ -1047,29 +1138,27 @@ function isEmailLoginValido(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
+// ─────────────────────────────────────────────
+// RecepcionistaWhatsappRow
+// ─────────────────────────────────────────────
 function RecepcionistaWhatsappRow({ usuario, showToast, onSaved }) {
   const [val, setVal] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     const d = String(usuario.telefoneWhatsapp || "").replace(/\D/g, "").slice(0, 11);
-    if (!d) {
-      setVal("");
-      return;
-    }
-    const f =
-      d.length <= 10
-        ? d.replace(/(\d{2})(\d{4})(\d{0,4})/, "($1) $2-$3")
-        : d.replace(/(\d{2})(\d{5})(\d{0,4})/, "($1) $2-$3");
+    if (!d) { setVal(""); return; }
+    const f = d.length <= 10
+      ? d.replace(/(\d{2})(\d{4})(\d{0,4})/, "($1) $2-$3")
+      : d.replace(/(\d{2})(\d{5})(\d{0,4})/, "($1) $2-$3");
     setVal(f);
   }, [usuario.id, usuario.telefoneWhatsapp]);
 
   function handleChange(v) {
     const d = v.replace(/\D/g, "").slice(0, 11);
-    const f =
-      d.length <= 10
-        ? d.replace(/(\d{2})(\d{4})(\d{0,4})/, "($1) $2-$3")
-        : d.replace(/(\d{2})(\d{5})(\d{0,4})/, "($1) $2-$3");
+    const f = d.length <= 10
+      ? d.replace(/(\d{2})(\d{4})(\d{0,4})/, "($1) $2-$3")
+      : d.replace(/(\d{2})(\d{5})(\d{0,4})/, "($1) $2-$3");
     setVal(f);
   }
 
@@ -1084,7 +1173,7 @@ function RecepcionistaWhatsappRow({ usuario, showToast, onSaved }) {
       await updateUser(usuario.id, { telefoneWhatsapp: digits });
       await onSaved();
       showToast(
-        "WhatsApp da recepção salvo. Agendamentos comuns e encaixes solicitados pela direção usam este número.",
+        "WhatsApp da recepção salvo. Agendamentos e encaixes solicitados pela direção usam este número.",
         "success"
       );
     } catch {
@@ -1095,24 +1184,29 @@ function RecepcionistaWhatsappRow({ usuario, showToast, onSaved }) {
   }
 
   return (
-    <div style={S.waRow}>
-      <span style={S.waLabel}>WhatsApp da recepção (agendamentos comuns e encaixes da direção)</span>
-      <div style={S.waInputs}>
-        <input
-          style={{ ...S.input, flex: 1, minWidth: 140 }}
-          value={val}
-          onChange={(e) => handleChange(e.target.value)}
-          placeholder="(99) 99999-9999"
-          inputMode="numeric"
-        />
-        <button type="button" style={S.btnSave} disabled={saving} onClick={salvar}>
-          {saving ? "…" : "Salvar"}
-        </button>
+    <div style={S.waSubRow}>
+      <div style={S.waSubRowContent}>
+        <span style={S.waSubLabel}>WhatsApp da recepção (agendamentos e encaixes da direção)</span>
+        <div style={S.waInputs}>
+          <input
+            style={{ ...S.input, flex: 1, minWidth: 160 }}
+            value={val}
+            onChange={(e) => handleChange(e.target.value)}
+            placeholder="(99) 99999-9999"
+            inputMode="numeric"
+          />
+          <button type="button" style={S.btnSave} disabled={saving} onClick={salvar}>
+            {saving ? "…" : "Salvar"}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
+// ─────────────────────────────────────────────
+// gradeMapInicialProf (helper — lógica inalterada)
+// ─────────────────────────────────────────────
 function gradeMapInicialProf(specKey, doc) {
   const def = defaultAtendimentoDiasTurnosParaSpec(specKey);
   const norm = normalizeAtendimentoDiasTurnosParaSpec(specKey, doc?.atendimentoDiasTurnos);
@@ -1129,6 +1223,9 @@ function gradeMapInicialProf(specKey, doc) {
   return out;
 }
 
+// ─────────────────────────────────────────────
+// NovoProfissionalForm
+// ─────────────────────────────────────────────
 function NovoProfissionalForm({ onCreate }) {
   const [aberto, setAberto] = useState(false);
   const [nome, setNome] = useState("");
@@ -1193,9 +1290,12 @@ function NovoProfissionalForm({ onCreate }) {
 
   return (
     <div>
-      <p style={S.sectionTitle}>Novo profissional</p>
+      <div style={S.subSectionHead}>
+        <span style={S.subSectionBadge}>+</span>
+        <p style={S.subSectionTitle}>Novo profissional</p>
+      </div>
       <p style={S.hintMuted}>
-        Use quando alguém for contratado e precisar aparecer na agenda (além dos perfis fixos acima).
+        Use quando alguém for contratado e precisar aparecer na agenda além dos perfis fixos.
       </p>
       {!aberto ? (
         <button type="button" style={S.btnAdd} onClick={() => setAberto(true)}>
@@ -1203,72 +1303,75 @@ function NovoProfissionalForm({ onCreate }) {
         </button>
       ) : (
         <div style={S.novoProfPanel}>
-          <Field label="Nome do profissional">
-            <input
-              style={S.input}
-              value={nome}
-              onChange={(e) => setNome(e.target.value)}
-              placeholder="Ex.: Dra. Maria Silva"
-            />
-          </Field>
-          <Field label="Função ou área">
-            <select style={S.input} value={role} onChange={(e) => setRole(e.target.value)}>
-              <option value="">Selecione…</option>
-              {ROLES_SUGERIDAS.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </select>
-            {role === "Outro" && (
+          <div style={S.formGrid}>
+            <Field label="Nome do profissional">
               <input
-                style={{ ...S.input, marginTop: 6 }}
-                value={roleOutro}
-                onChange={(e) => setRoleOutro(e.target.value)}
-                placeholder="Descreva a função"
+                style={S.input}
+                value={nome}
+                onChange={(e) => setNome(e.target.value)}
+                placeholder="Ex.: Dra. Maria Silva"
               />
-            )}
-          </Field>
-          <Field label="Vagas por atendimento (turno)">
-            <input
-              type="number"
-              min={0}
-              max={99}
-              style={{ ...S.input, maxWidth: 100 }}
-              value={vagasBase}
-              onChange={(e) => setVagasBase(Number(e.target.value))}
-            />
-          </Field>
-          <Field label="Como funciona o agendamento">
-            <select style={S.input} value={agendaModo} onChange={(e) => setAgendaModo(e.target.value)}>
-              {AGENDA_MODO_OPCOES.filter((o) => o.value !== AGENDA_MODO.PADRAO).map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </Field>
+            </Field>
+            <Field label="Função ou área">
+              <select style={S.input} value={role} onChange={(e) => setRole(e.target.value)}>
+                <option value="">Selecione…</option>
+                {ROLES_SUGERIDAS.map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+              {role === "Outro" && (
+                <input
+                  style={{ ...S.input, marginTop: 6 }}
+                  value={roleOutro}
+                  onChange={(e) => setRoleOutro(e.target.value)}
+                  placeholder="Descreva a função"
+                />
+              )}
+            </Field>
+            <Field label="Vagas por turno">
+              <input
+                type="number"
+                min={0}
+                max={99}
+                style={{ ...S.input, maxWidth: 100 }}
+                value={vagasBase}
+                onChange={(e) => setVagasBase(Number(e.target.value))}
+              />
+            </Field>
+            <Field label="Regra de agendamento">
+              <select style={S.input} value={agendaModo} onChange={(e) => setAgendaModo(e.target.value)}>
+                {AGENDA_MODO_OPCOES.filter((o) => o.value !== AGENDA_MODO.PADRAO).map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </Field>
+          </div>
+
           {isModoDiasAgendamento(agendaModo) && (
             <Field label="Dias em que o agendamento fica disponível">
               <DiasAgendamentoSelector
                 dias={diasAgendamento}
                 onToggle={toggleDiaAgendamento}
-                hint="Ex.: nutricionista atende na sexta — marque terça, quarta e quinta para liberar agendamento até 3 dias antes."
+                hint="Ex.: nutricionista atende sexta — marque terça, quarta e quinta para liberar agendamento antes."
               />
             </Field>
           )}
-          <p style={S.gradeTitle}>Dias e turnos na UBS</p>
-          <GradeDiasTurnos gradeMap={gradeMap} onToggle={toggleTurno} />
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+
+          <div>
+            <p style={S.profSectionTitle}>Dias e turnos na UBS</p>
+            <GradeDiasTurnos gradeMap={gradeMap} onToggle={toggleTurno} />
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
             <button
               type="button"
-              style={{ ...S.btnAdd, opacity: saving ? 0.6 : 1 }}
+              style={{ ...S.btnSalvar, opacity: saving ? 0.6 : 1 }}
               disabled={saving}
               onClick={handleCreate}
             >
               {saving ? "Cadastrando…" : "Cadastrar profissional"}
             </button>
-            <button type="button" style={S.btnDel} onClick={() => setAberto(false)}>
+            <button type="button" style={S.btnCancelar} onClick={() => setAberto(false)}>
               Cancelar
             </button>
           </div>
@@ -1278,18 +1381,28 @@ function NovoProfissionalForm({ onCreate }) {
   );
 }
 
+// ─────────────────────────────────────────────
+// DiasAgendamentoSelector — toggle pills
+// ─────────────────────────────────────────────
 function DiasAgendamentoSelector({ dias, onToggle, hint }) {
   const ativos = dias || [];
   return (
-    <div style={S.diasAgendamentoBox}>
-      {hint ? <p style={S.gradeHint}>{hint}</p> : null}
-      <div style={S.gradeList}>
-        {ORDEM_DIA_SEMANA_GRADE.map((dia) => (
-          <label key={dia} style={S.gradeChk}>
-            <input type="checkbox" checked={ativos.includes(dia)} onChange={() => onToggle(dia)} />
-            {DAY_LABEL[dia] || dia}
-          </label>
-        ))}
+    <div style={{ marginTop: 4 }}>
+      {hint && <p style={S.gradeHint}>{hint}</p>}
+      <div style={S.diaChips}>
+        {ORDEM_DIA_SEMANA_GRADE.map((dia) => {
+          const ativo = ativos.includes(dia);
+          return (
+            <button
+              key={dia}
+              type="button"
+              style={{ ...S.diaChip, ...(ativo ? S.diaChipAtivo : {}) }}
+              onClick={() => onToggle(dia)}
+            >
+              {DAY_LABEL_CURTO[dia] || dia}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -1299,6 +1412,9 @@ function novoIdSessaoProf(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// ─────────────────────────────────────────────
+// ProfissionalSessoesEditor
+// ─────────────────────────────────────────────
 function ProfissionalSessoesEditor({
   sessoes,
   onChange,
@@ -1339,45 +1455,46 @@ function ProfissionalSessoesEditor({
   }
 
   return (
-    <div style={S.medicoSessoesWrap}>
-      {hint ? <p style={S.gradeHint}>{hint}</p> : null}
+    <div style={S.sessoesWrap}>
+      {hint && <p style={S.gradeHint}>{hint}</p>}
       {sessoes.length > 0 && (
-        <ul style={S.medicoSessoesList}>
+        <ul style={S.sessoesList}>
           {sessoes.map((s) => (
-            <li key={s.id} style={S.medicoSessaoItem}>
-              <span style={S.medicoSessaoTxt}>
-                <strong>{tiposMap[s[tipoField]]?.label || s[tipoField]}</strong>
-                {" · "}
-                {DAY_LABEL[s.dia] || s.dia}
-                {" · "}
-                {s.turno === "manha" ? "Manhã" : "Tarde"}
-                {" · "}
-                {s.vagas} vaga{s.vagas !== 1 ? "s" : ""}
-              </span>
-              <button type="button" style={S.btnDel} onClick={() => remover(s.id)}>
+            <li key={s.id} style={S.sessaoItem}>
+              <div style={S.sessaoItemInfo}>
+                <span style={S.sessaoTipo}>{tiposMap[s[tipoField]]?.label || s[tipoField]}</span>
+                <span style={S.sessaoMeta}>
+                  {DAY_LABEL[s.dia] || s.dia}
+                  {" · "}
+                  {s.turno === "manha" ? "Manhã" : "Tarde"}
+                  {" · "}
+                  <strong>{s.vagas}</strong> vaga{s.vagas !== 1 ? "s" : ""}
+                </span>
+              </div>
+              <button type="button" style={S.btnDelSm} onClick={() => remover(s.id)}>
                 Remover
               </button>
             </li>
           ))}
         </ul>
       )}
-      <div style={S.medicoSessaoForm}>
+      <div style={S.sessaoForm}>
         <select
           style={S.input}
           value={novo[tipoField]}
           onChange={(e) => setNovo((n) => ({ ...n, [tipoField]: e.target.value }))}
         >
           {Object.entries(tiposMap).map(([k, m]) => (
-            <option key={k} value={k}>
-              {m.label}
-            </option>
+            <option key={k} value={k}>{m.label}</option>
           ))}
         </select>
-        <select style={S.input} value={novo.dia} onChange={(e) => setNovo((n) => ({ ...n, dia: e.target.value }))}>
+        <select
+          style={S.input}
+          value={novo.dia}
+          onChange={(e) => setNovo((n) => ({ ...n, dia: e.target.value }))}
+        >
           {ORDEM_DIA_SEMANA_GRADE.map((d) => (
-            <option key={d} value={d}>
-              {DAY_LABEL[d]}
-            </option>
+            <option key={d} value={d}>{DAY_LABEL[d]}</option>
           ))}
         </select>
         <select
@@ -1397,7 +1514,7 @@ function ProfissionalSessoesEditor({
           onChange={(e) => setNovo((n) => ({ ...n, vagas: Number(e.target.value) }))}
           title="Quantidade de vagas"
         />
-        <button type="button" style={S.btnSave} onClick={adicionar}>
+        <button type="button" style={S.btnAdd} onClick={adicionar}>
           Adicionar
         </button>
       </div>
@@ -1405,31 +1522,34 @@ function ProfissionalSessoesEditor({
   );
 }
 
+// ─────────────────────────────────────────────
+// GradeDiasTurnos — toggle pills
+// ─────────────────────────────────────────────
 function GradeDiasTurnos({ gradeMap, onToggle }) {
   return (
-    <div style={S.gradeList}>
+    <div style={S.gradeBox}>
       {ORDEM_DIA_SEMANA_GRADE.map((dia) => {
         const ativos = gradeMap[dia] || [];
+        const temManha = ativos.includes("manha");
+        const temTarde = ativos.includes("tarde");
         return (
           <div key={dia} style={S.gradeRow}>
-            <span style={S.gradeDia}>{DAY_LABEL[dia] || dia}</span>
+            <span style={S.gradeDia}>{DAY_LABEL_CURTO[dia] || dia}</span>
             <div style={S.gradeTurnos}>
-              <label style={S.gradeChk}>
-                <input
-                  type="checkbox"
-                  checked={ativos.includes("manha")}
-                  onChange={() => onToggle(dia, "manha")}
-                />
+              <button
+                type="button"
+                style={{ ...S.turnoBtn, ...(temManha ? S.turnoBtnManha : {}) }}
+                onClick={() => onToggle(dia, "manha")}
+              >
                 Manhã
-              </label>
-              <label style={S.gradeChk}>
-                <input
-                  type="checkbox"
-                  checked={ativos.includes("tarde")}
-                  onChange={() => onToggle(dia, "tarde")}
-                />
+              </button>
+              <button
+                type="button"
+                style={{ ...S.turnoBtn, ...(temTarde ? S.turnoBtnTarde : {}) }}
+                onClick={() => onToggle(dia, "tarde")}
+              >
                 Tarde
-              </label>
+              </button>
             </div>
           </div>
         );
@@ -1438,6 +1558,9 @@ function GradeDiasTurnos({ gradeMap, onToggle }) {
   );
 }
 
+// ─────────────────────────────────────────────
+// ProfRow — card-based redesign
+// ─────────────────────────────────────────────
 function ProfRow({
   specKey,
   nome,
@@ -1492,6 +1615,7 @@ function ProfRow({
         : defaultDiasAgendamentoPresencialParaSpec(specKey) || []
     )
   );
+
   const meta = getSpecMetaForKey(specKey, {
     profissionalConfigPorSpec: { [specKey]: profCfg },
     roleFallback: doc?.role,
@@ -1566,180 +1690,194 @@ function ProfRow({
     });
   }
 
+  function handleSave() {
+    onSave(
+      specKey,
+      val,
+      isMedico
+        ? gradeMapFromMedicoSessoes(medicoSessoes)
+        : isEnfermeira
+          ? gradeMapFromEnfermeiraSessoes(enfermeiraSessoes)
+          : gradeMap,
+      {
+        agendaModo,
+        vagasPorTipo,
+        vagasBase,
+        diasAgendamento,
+        diasAgendamentoPresencial,
+        medicoSessoes: isMedico ? medicoSessoes : undefined,
+        enfermeiraSessoes: isEnfermeira ? enfermeiraSessoes : undefined,
+        role: isCustom ? doc?.role || meta.role : undefined,
+      }
+    );
+  }
+
   return (
-    <div style={S.profRow}>
-      <div style={{ ...S.avSmall, background: meta.bg || "#F1F5F9", color: meta.tc || "#475569" }}>
-        {meta.av || "?"}
+    <div style={{ ...S.profCard, borderLeftColor: meta.tc || "#A5B4FC" }}>
+      {/* ── Card header ── */}
+      <div style={S.profCardHead}>
+        <div style={{ ...S.avSmall, background: meta.bg || "#EEF2FF", color: meta.tc || "#4338CA" }}>
+          {meta.av || "?"}
+        </div>
+        <div style={S.profCardHeadText}>
+          <span style={S.profRole}>{meta.role || specKey}</span>
+          <input
+            style={S.profNameInput}
+            value={val}
+            onChange={(e) => setVal(e.target.value)}
+            placeholder="Nome do profissional"
+          />
+          {!temCadastro && (
+            <span style={S.profHintMuted}>Novo — preencha e salve para cadastrar.</span>
+          )}
+        </div>
+        <div style={S.profCardHeadActions}>
+          <button type="button" style={S.btnSave} onClick={handleSave}>
+            {temCadastro ? "Salvar" : "Cadastrar"}
+          </button>
+          <button
+            type="button"
+            style={{ ...S.btnDel, opacity: temCadastro ? 1 : 0.4 }}
+            disabled={!temCadastro}
+            title={temCadastro ? "Excluir cadastro" : "Nada para excluir"}
+            onClick={() => onDelete(specKey)}
+          >
+            Excluir
+          </button>
+        </div>
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <p style={S.profRole}>{meta.role || specKey}</p>
-        <input style={S.input} value={val} onChange={(e) => setVal(e.target.value)} />
-        {isMedico ? (
-          <>
-            <p style={S.gradeTitle}>Atendimentos na agenda</p>
-            <ProfissionalSessoesEditor
-              sessoes={medicoSessoes}
-              onChange={setMedicoSessoes}
-              showToast={showToast}
-              tiposMap={MEDICO_TIPO}
-              tipoField="medicoTipo"
-              normalizeFn={normalizeMedicoSessoesConfig}
-              idPrefix="ms"
-              hint={
-                <>
-                  Cadastre cada tipo com <strong>dia</strong>, <strong>turno</strong> (manhã e tarde sempre
-                  disponíveis; hoje a UBS funciona das 13h às 18h) e <strong>vagas</strong>. Ex.: gestantes, terça à
-                  tarde, 6 vagas.
-                </>
-              }
-              defaultNovo={{ medicoTipo: "clinico", dia: "segunda", turno: "tarde", vagas: 8 }}
-            />
-          </>
-        ) : isEnfermeira ? (
-          <>
-            <p style={S.gradeTitle}>Atendimentos na agenda (PCCU e enfermagem)</p>
-            <ProfissionalSessoesEditor
-              sessoes={enfermeiraSessoes}
-              onChange={setEnfermeiraSessoes}
-              showToast={showToast}
-              tiposMap={ENFERMEIRA_ATENDIMENTO_TIPO}
-              tipoField="enfermeiraTipo"
-              normalizeFn={normalizeEnfermeiraSessoesConfig}
-              idPrefix="es"
-              hint={
-                <>
-                  Informe <strong>PCCU</strong> ou <strong>enfermagem</strong>, o <strong>dia</strong>, o{" "}
-                  <strong>turno</strong> (manhã/tarde) e as <strong>vagas</strong>. Ex.: PCCU, quarta à tarde, 15
-                  vagas.
-                </>
-              }
-              defaultNovo={{ enfermeiraTipo: "pccu", dia: "quarta", turno: "tarde", vagas: 15 }}
-            />
-          </>
-        ) : (
-          <>
-            <p style={S.gradeTitle}>Dias e turnos na UBS (segunda a sexta)</p>
-            <p style={S.gradeHint}>
-              Todos os dias e os dois turnos podem ser marcados, mesmo que ainda não apareçam na grade do app — assim a
-              recepção antecipa mudanças na agenda.
-            </p>
-            {specKey === "dentPatrick" && (
-              <p style={{ ...S.profHintMuted, marginTop: 4 }}>
-                Às <strong>sexta-feiras à tarde</strong> o Dr. Patrick não atende na unidade (turno reservado para{" "}
-                <strong>visitas domiciliares</strong>).
-              </p>
-            )}
-            <GradeDiasTurnos gradeMap={gradeMap} onToggle={toggleTurno} />
-          </>
-        )}
-        <p style={S.gradeTitle}>
-          {isMedico || isEnfermeira ? "Regra de agendamento" : "Vagas e agendamento"}
-        </p>
-        {isMedico || isEnfermeira ? null : isCustom ? (
-          <div style={S.vagasAgendaRow}>
-            <label style={S.vagasAgendaLbl}>
-              Vagas por turno
-              <input
-                type="number"
-                min={0}
-                max={99}
-                style={S.inputNum}
-                value={vagasBase}
-                onChange={(e) => setVagasBase(Number(e.target.value))}
+
+      {/* ── Card body ── */}
+      <div style={S.profCardBody}>
+        {/* Agenda / sessões */}
+        <div>
+          {isMedico ? (
+            <>
+              <p style={S.profSectionTitle}>Atendimentos na agenda</p>
+              <ProfissionalSessoesEditor
+                sessoes={medicoSessoes}
+                onChange={setMedicoSessoes}
+                showToast={showToast}
+                tiposMap={MEDICO_TIPO}
+                tipoField="medicoTipo"
+                normalizeFn={normalizeMedicoSessoesConfig}
+                idPrefix="ms"
+                hint="Cadastre tipo, dia, turno e vagas. Ex.: gestantes, terça à tarde, 6 vagas."
+                defaultNovo={{ medicoTipo: "clinico", dia: "segunda", turno: "tarde", vagas: 8 }}
               />
-            </label>
-          </div>
-        ) : (
-          <div style={S.vagasAgendaCol}>
-            {sessionDefs.map((d) => (
-              <label key={d.id} style={S.vagasAgendaLbl}>
-                {d.label}
-                <input
-                  type="number"
-                  min={0}
-                  max={99}
-                  style={S.inputNum}
-                  value={vagasPorTipo[d.id] ?? d.defaultTotal}
-                  onChange={(e) =>
-                    setVagasPorTipo((prev) => ({ ...prev, [d.id]: Number(e.target.value) }))
-                  }
-                />
-              </label>
-            ))}
-          </div>
-        )}
-        <label style={S.vagasAgendaLblFull}>
-          Agendamento para agentes
-          <select style={S.input} value={agendaModo} onChange={(e) => setAgendaModo(e.target.value)}>
-            {AGENDA_MODO_OPCOES.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        {isModoDiasAgendamento(agendaModo) && (
-          <>
-            <p style={{ ...S.gradeTitle, marginTop: 10 }}>Dias de agendamento pelo aplicativo</p>
-            <DiasAgendamentoSelector
-              dias={diasAgendamento}
-              onToggle={toggleDiaAgendamento}
-              hint="Dias em que agentes e direção podem solicitar vaga pelo aplicativo (das 13h30 às 18h), antes do dia do atendimento."
-            />
-            <p style={{ ...S.gradeTitle, marginTop: 12 }}>Dias de agendamento presencial (paciente na UBS)</p>
-            <DiasAgendamentoSelector
-              dias={diasAgendamentoPresencial}
-              onToggle={toggleDiaAgendamentoPresencial}
-              hint="Dias em que o paciente pode ir à UBS para agendar pessoalmente. Esta informação aparece na mensagem do card para orientar o paciente."
-            />
-          </>
-        )}
-        {!temCadastro && (
-          <p style={S.profHintMuted}>Sem cadastro no Firestore — Cadastrar cria o registro.</p>
-        )}
-      </div>
-      <div style={S.profActions}>
-        <button
-          type="button"
-          style={S.btnSave}
-          onClick={() =>
-            onSave(
-              specKey,
-              val,
-              isMedico
-                ? gradeMapFromMedicoSessoes(medicoSessoes)
-                : isEnfermeira
-                  ? gradeMapFromEnfermeiraSessoes(enfermeiraSessoes)
-                  : gradeMap,
-              {
-                agendaModo,
-                vagasPorTipo,
-                vagasBase,
-                diasAgendamento,
-                diasAgendamentoPresencial,
-                medicoSessoes: isMedico ? medicoSessoes : undefined,
-                enfermeiraSessoes: isEnfermeira ? enfermeiraSessoes : undefined,
-                role: isCustom ? doc?.role || meta.role : undefined,
-              }
+            </>
+          ) : isEnfermeira ? (
+            <>
+              <p style={S.profSectionTitle}>Atendimentos na agenda (PCCU e enfermagem)</p>
+              <ProfissionalSessoesEditor
+                sessoes={enfermeiraSessoes}
+                onChange={setEnfermeiraSessoes}
+                showToast={showToast}
+                tiposMap={ENFERMEIRA_ATENDIMENTO_TIPO}
+                tipoField="enfermeiraTipo"
+                normalizeFn={normalizeEnfermeiraSessoesConfig}
+                idPrefix="es"
+                hint="Informe PCCU ou enfermagem, dia, turno e vagas. Ex.: PCCU, quarta à tarde, 15 vagas."
+                defaultNovo={{ enfermeiraTipo: "pccu", dia: "quarta", turno: "tarde", vagas: 15 }}
+              />
+            </>
+          ) : (
+            <>
+              <p style={S.profSectionTitle}>Dias e turnos na UBS</p>
+              {specKey === "dentPatrick" && (
+                <p style={S.profHintMuted}>
+                  Às <strong>sextas-feiras à tarde</strong> o Dr. Patrick reserva o turno para visitas domiciliares.
+                </p>
+              )}
+              <GradeDiasTurnos gradeMap={gradeMap} onToggle={toggleTurno} />
+            </>
+          )}
+        </div>
+
+        {/* Vagas e agendamento */}
+        <div>
+          <p style={S.profSectionTitle}>
+            {isMedico || isEnfermeira ? "Regra de agendamento" : "Vagas e agendamento"}
+          </p>
+
+          {!(isMedico || isEnfermeira) && (
+            isCustom ? (
+              <div style={{ marginBottom: 8 }}>
+                <label style={S.vagasAgendaLbl}>
+                  Vagas por turno
+                  <input
+                    type="number"
+                    min={0}
+                    max={99}
+                    style={S.inputNum}
+                    value={vagasBase}
+                    onChange={(e) => setVagasBase(Number(e.target.value))}
+                  />
+                </label>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 7, marginBottom: 8 }}>
+                {sessionDefs.map((d) => (
+                  <label key={d.id} style={S.vagasAgendaLbl}>
+                    {d.label}
+                    <input
+                      type="number"
+                      min={0}
+                      max={99}
+                      style={S.inputNum}
+                      value={vagasPorTipo[d.id] ?? d.defaultTotal}
+                      onChange={(e) =>
+                        setVagasPorTipo((prev) => ({ ...prev, [d.id]: Number(e.target.value) }))
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
             )
-          }
-        >
-          {temCadastro ? "Salvar" : "Cadastrar"}
-        </button>
-        <button
-          type="button"
-          style={{ ...S.btnDel, opacity: temCadastro ? 1 : 0.45 }}
-          disabled={!temCadastro}
-          title={temCadastro ? "Excluir cadastro" : "Nada para excluir"}
-          onClick={() => onDelete(specKey)}
-        >
-          Excluir
-        </button>
+          )}
+
+          <label style={S.vagasAgendaLblFull}>
+            Agendamento para agentes
+            <select
+              style={S.input}
+              value={agendaModo}
+              onChange={(e) => setAgendaModo(e.target.value)}
+            >
+              {AGENDA_MODO_OPCOES.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </label>
+
+          {isModoDiasAgendamento(agendaModo) && (
+            <>
+              <p style={{ ...S.profSectionTitle, marginTop: 10 }}>
+                Dias de agendamento pelo app
+              </p>
+              <DiasAgendamentoSelector
+                dias={diasAgendamento}
+                onToggle={toggleDiaAgendamento}
+                hint="Dias em que agentes e direção podem solicitar vaga (das 13h30 às 18h)."
+              />
+              <p style={{ ...S.profSectionTitle, marginTop: 10 }}>
+                Dias de agendamento presencial
+              </p>
+              <DiasAgendamentoSelector
+                dias={diasAgendamentoPresencial}
+                onToggle={toggleDiaAgendamentoPresencial}
+                hint="Dias em que o paciente pode ir à UBS agendar pessoalmente."
+              />
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
+// ─────────────────────────────────────────────
+// Field — label + input wrapper
+// ─────────────────────────────────────────────
 function Field({ label, children }) {
   return (
     <div style={S.fieldWrap}>
@@ -1749,176 +1887,355 @@ function Field({ label, children }) {
   );
 }
 
+// ─────────────────────────────────────────────
+// Styles
+// ─────────────────────────────────────────────
 const S = {
-  configHeader: { marginBottom: 16, paddingBottom: 14, borderBottom: "1px solid #E2E8F0" },
-  configTitle: { fontSize: 18, fontWeight: 700, color: "#0F172A", margin: "0 0 6px", letterSpacing: "-0.01em" },
-  configSub: { fontSize: 13, color: "#64748B", margin: 0, lineHeight: 1.5 },
+  // Page header
+  pageHeader: {
+    marginBottom: 18,
+    padding: "14px 16px",
+    background: "linear-gradient(135deg, #EEF2FF 0%, #F5F3FF 100%)",
+    borderRadius: 12,
+    border: "1px solid #C7D2FE",
+  },
+  pageHeaderRow: { display: "flex", alignItems: "center", gap: 12 },
+  pageHeaderIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 9,
+    background: "linear-gradient(135deg, #6366F1 0%, #4338CA 100%)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 18,
+    flexShrink: 0,
+  },
+  pageHeaderTitle: { fontSize: 16, fontWeight: 700, color: "#1E1B4B", margin: "0 0 2px", letterSpacing: "-0.01em" },
+  pageHeaderSub: { fontSize: 11, color: "#6366F1", margin: 0, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" },
+
+  // Sub-tabs
   tabs: {
-    display: "flex", gap: 4, marginBottom: 20,
+    display: "flex", gap: 4, marginBottom: 18,
     background: "#F1F5F9", borderRadius: 10, padding: 4, flexWrap: "wrap",
   },
   stab: {
-    flex: 1, padding: "9px 14px", fontSize: 13, fontWeight: 500,
+    flex: 1, padding: "9px 12px", fontSize: 12, fontWeight: 500,
     border: "none", borderRadius: 7, cursor: "pointer",
-    background: "transparent", color: "#64748B", minWidth: 0,
+    background: "transparent", color: "#64748B", minWidth: 0, fontFamily: "inherit",
   },
   stabActive: {
     background: "#fff", color: "#4338CA", fontWeight: 700,
     boxShadow: "0 1px 4px rgba(15,23,42,0.1)",
   },
-  hint: { fontSize: 13, color: "#64748B", marginBottom: 14, lineHeight: 1.5 },
-  hintMuted: { fontSize: 12, color: "#94A3B8", marginBottom: 14, lineHeight: 1.5 },
-  code: { fontSize: 11, background: "#F1F5F9", padding: "1px 5px", borderRadius: 4, color: "#0F172A" },
+
+  // Info banner
+  infoBanner: {
+    display: "flex", gap: 10, padding: "10px 14px",
+    background: "#F8FAFC", borderRadius: 9,
+    border: "0.5px solid #E2E8F0", marginBottom: 14,
+  },
+  infoBannerBody: { flex: 1, minWidth: 0 },
+  infoBannerText: { fontSize: 12, color: "#64748B", margin: 0, lineHeight: 1.55 },
+
+  // Link-style tab button
   linkTab: {
-    font: "inherit",
-    fontWeight: 600,
-    color: "#4338CA",
-    background: "none",
-    border: "none",
-    padding: 0,
-    cursor: "pointer",
-    textDecoration: "underline",
+    font: "inherit", fontWeight: 600, color: "#4338CA",
+    background: "none", border: "none", padding: 0,
+    cursor: "pointer", textDecoration: "underline",
   },
-  sectionTitle: { fontSize: 13, fontWeight: 700, color: "#0F172A", margin: "0 0 10px" },
-  sectionDivider: {
-    border: "none",
-    borderTop: "1px solid #E2E8F0",
-    margin: "22px 0",
-    height: 0,
+
+  // Sub-section headers
+  subSectionHead: {
+    display: "flex", alignItems: "center", gap: 7,
+    margin: "18px 0 8px",
   },
-  profBlock: {
-    borderBottom: "1px solid #E2E8F0",
-    paddingTop: 18,
-    paddingBottom: 18,
+  subSectionBadge: {
+    width: 22, height: 22, borderRadius: 6,
+    background: "#E0E7FF", color: "#4338CA",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    fontSize: 12, fontWeight: 700, flexShrink: 0,
   },
-  profBlockFirst: { paddingTop: 0 },
-  profBlockLast: { borderBottom: "none", paddingBottom: 0 },
-  profRemovidoRow: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
+  subSectionTitle: {
+    fontSize: 12, fontWeight: 700, color: "#334155", margin: 0,
+    textTransform: "uppercase", letterSpacing: "0.04em",
+  },
+
+  // Empty state
+  emptyState: {
+    padding: "22px 18px", textAlign: "center",
+    background: "#F8FAFC", borderRadius: 10,
+    border: "1px dashed #CBD5E1", marginBottom: 12,
+  },
+  emptyStateTitle: { fontSize: 13, fontWeight: 600, color: "#334155", margin: "0 0 4px" },
+  emptyStateSub: { fontSize: 12, color: "#64748B", margin: 0 },
+
+  // Prof list container
+  profList: { display: "flex", flexDirection: "column", gap: 8, marginBottom: 4 },
+
+  // Prof card
+  profCard: {
+    background: "#fff",
+    border: "0.5px solid #E2E8F0",
+    borderLeft: "3px solid #A5B4FC",
+    borderRadius: 10,
+    boxShadow: "0 1px 3px rgba(15,23,42,0.05)",
+    overflow: "hidden",
+  },
+  profCardHead: {
+    display: "flex", alignItems: "flex-start", gap: 10,
+    padding: "11px 14px",
+    background: "linear-gradient(90deg, #F8FAFC 0%, #fff 100%)",
+    borderBottom: "0.5px solid #E2E8F0",
     flexWrap: "wrap",
-    padding: "12px 0",
-    borderBottom: "1px solid #E2E8F0",
   },
-  profRow: { display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 0 },
-  profActions: { display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 },
-  profHintMuted: { fontSize: 11, color: "#94A3B8", margin: "6px 0 0" },
-  gradeTitle: { fontSize: 11, fontWeight: 700, color: "#64748B", margin: "12px 0 5px", textTransform: "uppercase", letterSpacing: "0.04em" },
-  gradeHint: { fontSize: 12, color: "#94A3B8", margin: "0 0 8px", lineHeight: 1.45 },
-  gradeList: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 5,
-    marginBottom: 4,
+  profCardHeadText: { flex: 1, minWidth: 120, display: "flex", flexDirection: "column", gap: 4 },
+  profCardHeadActions: { display: "flex", gap: 6, alignItems: "center", flexShrink: 0 },
+  profCardBody: { padding: "12px 14px", display: "flex", flexDirection: "column", gap: 14 },
+
+  profRole: { fontSize: 10, color: "#64748B", margin: 0, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" },
+  profNameInput: {
+    padding: "7px 10px", fontSize: 13, fontFamily: "inherit",
+    border: "1.5px solid #E2E8F0", borderRadius: 8,
+    background: "#fff", color: "#0F172A", outline: "none",
+    width: "100%", boxSizing: "border-box",
+  },
+  profHintMuted: { fontSize: 11, color: "#94A3B8", margin: "2px 0 0", fontStyle: "italic" },
+  profSectionTitle: {
+    fontSize: 10, fontWeight: 700, color: "#94A3B8",
+    margin: "0 0 7px", textTransform: "uppercase", letterSpacing: "0.07em",
+  },
+
+  // Grade (days × shifts) — toggle buttons
+  gradeBox: {
+    display: "flex", flexDirection: "column", gap: 5,
+    padding: "10px 12px", background: "#F8FAFC",
+    borderRadius: 8, border: "0.5px solid #E2E8F0",
+  },
+  gradeRow: { display: "flex", alignItems: "center", gap: 10 },
+  gradeDia: { minWidth: 32, fontSize: 12, fontWeight: 700, color: "#475569" },
+  gradeTurnos: { display: "flex", gap: 6 },
+  turnoBtn: {
+    fontFamily: "inherit", fontSize: 11, fontWeight: 600,
+    color: "#94A3B8", background: "#fff",
+    border: "1px solid #E2E8F0", borderRadius: 999,
+    padding: "4px 11px", cursor: "pointer",
+  },
+  turnoBtnManha: {
+    color: "#92400E", background: "#FEF3C7", borderColor: "#FDE68A",
+  },
+  turnoBtnTarde: {
+    color: "#1E40AF", background: "#DBEAFE", borderColor: "#BFDBFE",
+  },
+  gradeHint: { fontSize: 11, color: "#94A3B8", margin: "0 0 7px", lineHeight: 1.45 },
+
+  // Day chips (dias agendamento)
+  diaChips: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4 },
+  diaChip: {
+    fontFamily: "inherit", fontSize: 12, fontWeight: 600,
+    color: "#64748B", background: "#fff",
+    border: "1px solid #E2E8F0", borderRadius: 999,
+    padding: "5px 12px", cursor: "pointer",
+  },
+  diaChipAtivo: {
+    color: "#4338CA", background: "#EEF2FF", borderColor: "#A5B4FC",
+  },
+
+  // Removed profs
+  removidosBox: {
+    marginTop: 18, padding: "14px 16px",
+    background: "#FFFBEB", border: "0.5px solid #FDE68A",
+    borderRadius: 10,
+  },
+  removidosTitle: {
+    fontSize: 10, fontWeight: 700, color: "#92400E",
+    margin: "0 0 6px", textTransform: "uppercase", letterSpacing: "0.06em",
+  },
+  removidosHint: { fontSize: 12, color: "#B45309", margin: "0 0 10px", lineHeight: 1.45 },
+  profRemovidoRow: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    gap: 10, flexWrap: "wrap",
+    padding: "9px 12px", background: "#fff",
+    borderRadius: 8, border: "0.5px solid #FDE68A",
+    marginBottom: 6,
+  },
+  profRemovidoInfo: { display: "flex", flexDirection: "column", gap: 2 },
+  profRemovidoRole: { fontSize: 12, fontWeight: 700, color: "#92400E" },
+  profRemovidoNome: { fontSize: 11, color: "#B45309" },
+
+  // NovoProfissional panel
+  novoProfPanel: {
+    padding: "14px 16px", background: "#F8FAFC",
+    borderRadius: 10, border: "0.5px solid #E2E8F0",
+    display: "flex", flexDirection: "column", gap: 12,
+  },
+
+  // Calendar section cards
+  calContent: { display: "flex", flexDirection: "column", gap: 0 },
+  calCard: {
+    background: "#fff", border: "0.5px solid #E2E8F0",
+    borderRadius: 10, boxShadow: "0 1px 2px rgba(15,23,42,0.04)",
+    marginBottom: 10, overflow: "hidden",
+  },
+  calCardHead: {
+    display: "flex", alignItems: "center", gap: 8,
+    padding: "9px 14px",
+    background: "linear-gradient(90deg, #F8FAFC 0%, #fff 100%)",
+    borderBottom: "0.5px solid #E2E8F0",
+  },
+  calCardBadge: { fontSize: 15, flexShrink: 0 },
+  calCardTitle: { fontSize: 13, fontWeight: 700, color: "#0F172A", margin: 0 },
+  calCardHint: { fontSize: 12, color: "#64748B", margin: "0 0 10px", lineHeight: 1.5 },
+  calCardBody: { padding: "12px 14px" },
+
+  // Date input row
+  dateInputRow: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" },
+
+  // Feriado chips
+  feriadoChips: { display: "flex", flexWrap: "wrap", gap: 7, marginTop: 10 },
+  feriadoChip: {
+    display: "inline-flex", alignItems: "center", gap: 5,
+    padding: "5px 10px", background: "#F1F5F9",
+    border: "1px solid #E2E8F0", borderRadius: 999,
+    fontSize: 12, color: "#334155", fontWeight: 500,
+  },
+  feriadoChipX: {
+    background: "none", border: "none", cursor: "pointer",
+    color: "#94A3B8", fontSize: 15, lineHeight: 1,
+    padding: 0, display: "flex", alignItems: "center",
+    fontFamily: "inherit",
+  },
+  feriadoEmpty: { fontSize: 12, color: "#94A3B8", margin: "10px 0 0" },
+
+  // Users
+  userCard: {
+    display: "flex", alignItems: "flex-start", gap: 10,
+    padding: "11px 14px", background: "#fff",
+    borderRadius: 10, border: "0.5px solid #E2E8F0",
+    borderLeft: "3px solid #CBD5E1",
+    boxShadow: "0 1px 2px rgba(15,23,42,0.04)",
+    flexWrap: "wrap",
+  },
+  userAvatar: {
+    width: 34, height: 34, borderRadius: "50%",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    fontSize: 14, fontWeight: 700, flexShrink: 0,
+  },
+  userInfo: { flex: 1, minWidth: 0 },
+  userTopRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 3 },
+  userName: { fontSize: 13, fontWeight: 700, color: "#0F172A", margin: 0 },
+  userDetail: { fontSize: 11, color: "#64748B", margin: 0, lineHeight: 1.5 },
+
+  // WhatsApp rows
+  waInputRow: { marginTop: 6 },
+  waSubRow: {
+    margin: "0 0 0 44px",
+    padding: "10px 14px",
+    background: "#F8FAFC",
+    borderRadius: "0 0 10px 10px",
+    border: "0.5px solid #E2E8F0",
+    borderTop: "none",
+  },
+  waSubRowContent: {},
+  waSubLabel: { display: "block", fontSize: 11, fontWeight: 600, color: "#64748B", marginBottom: 7 },
+  waInputs: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
+
+  // Sessions (medico / enfermeira)
+  sessoesWrap: {},
+  sessoesList: {
+    listStyle: "none", padding: 0, margin: "0 0 8px",
+    display: "flex", flexDirection: "column", gap: 6,
+  },
+  sessaoItem: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    gap: 8, flexWrap: "wrap",
+    padding: "8px 11px", background: "#F8FAFC",
+    borderRadius: 8, border: "0.5px solid #E2E8F0",
+  },
+  sessaoItemInfo: { display: "flex", flexDirection: "column", gap: 2, flex: 1, minWidth: 0 },
+  sessaoTipo: { fontSize: 12, fontWeight: 700, color: "#0F172A" },
+  sessaoMeta: { fontSize: 11, color: "#64748B" },
+  sessaoForm: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))",
+    gap: 7, alignItems: "center",
     padding: "10px 12px",
     background: "#F8FAFC",
-    borderRadius: 8,
-    border: "1px solid #E2E8F0",
+    borderRadius: 8, border: "0.5px solid #E2E8F0",
   },
-  gradeRow: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 13, color: "#334155" },
-  gradeDia: { minWidth: 118, fontWeight: 500 },
-  gradeTurnos: { display: "flex", gap: 12, flexWrap: "wrap" },
-  gradeChk: { display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none", fontSize: 13 },
-  avSmall: { width: 34, height: 34, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, flexShrink: 0 },
-  profRole: { fontSize: 11, color: "#64748B", margin: "0 0 5px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" },
-  formGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12, marginBottom: 14 },
+
+  // Form
+  formGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+    gap: 12, marginBottom: 14,
+  },
   fieldWrap: { display: "flex", flexDirection: "column", gap: 5 },
   label: { fontSize: 12, color: "#475569", fontWeight: 600 },
-  input: { padding: "8px 10px", fontSize: 13, border: "1.5px solid #E2E8F0", borderRadius: 8, background: "#fff", color: "#0F172A", outline: "none" },
-  btnAdd: {
-    padding: "10px 20px", fontSize: 13, fontWeight: 700,
-    border: "none", borderRadius: 8, cursor: "pointer",
+  input: {
+    padding: "8px 10px", fontSize: 13, fontFamily: "inherit",
+    border: "1.5px solid #E2E8F0", borderRadius: 8,
+    background: "#fff", color: "#0F172A", outline: "none",
+  },
+  inputNum: {
+    padding: "6px 9px", fontSize: 13, fontFamily: "inherit",
+    border: "1.5px solid #E2E8F0", borderRadius: 7,
+    width: 70, background: "#fff", outline: "none",
+  },
+  vagasAgendaLbl: {
+    display: "flex", alignItems: "center",
+    justifyContent: "space-between", gap: 10,
+    fontSize: 12, color: "#475569", flexWrap: "wrap",
+  },
+  vagasAgendaLblFull: {
+    display: "flex", flexDirection: "column", gap: 5,
+    fontSize: 12, color: "#475569", marginTop: 4,
+  },
+  hintMuted: { fontSize: 12, color: "#94A3B8", marginBottom: 12, lineHeight: 1.5 },
+
+  // Buttons
+  btnSalvar: {
+    padding: "10px 22px", fontSize: 13, fontWeight: 700,
+    border: "none", borderRadius: 8, cursor: "pointer", fontFamily: "inherit",
     background: "linear-gradient(135deg, #6366F1 0%, #4338CA 100%)", color: "#fff",
     boxShadow: "0 2px 8px rgba(67,56,202,0.28)",
   },
-  userRow: { display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: "#F8FAFC", borderRadius: 10, marginBottom: 6, border: "1px solid #E2E8F0" },
-  userAvatar: { width: 34, height: 34, borderRadius: "50%", background: "#E0E7FF", color: "#3730A3", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700 },
-  userName: { fontSize: 13, fontWeight: 700, color: "#0F172A", margin: 0 },
-  userDetail: { fontSize: 11, color: "#64748B", margin: "2px 0 0" },
+  btnAdd: {
+    padding: "9px 16px", fontSize: 13, fontWeight: 700,
+    border: "none", borderRadius: 8, cursor: "pointer", fontFamily: "inherit",
+    background: "linear-gradient(135deg, #6366F1 0%, #4338CA 100%)", color: "#fff",
+    boxShadow: "0 2px 8px rgba(67,56,202,0.28)",
+  },
   btnSave: {
-    padding: "7px 14px", fontSize: 12, fontWeight: 700,
+    padding: "7px 13px", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
     border: "1px solid #86EFAC", borderRadius: 7, cursor: "pointer",
     background: "#F0FDF4", color: "#166534",
   },
   btnDel: {
-    padding: "7px 12px", fontSize: 12, fontWeight: 700,
+    padding: "7px 12px", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
     border: "1px solid #FECACA", borderRadius: 7, cursor: "pointer",
     background: "#FEF2F2", color: "#991B1B",
   },
-  feriadoRow: {
-    display: "flex", alignItems: "center", justifyContent: "space-between",
-    padding: "8px 12px", background: "#fff", borderRadius: 8,
-    marginBottom: 5, border: "1px solid #E2E8F0", fontSize: 13,
+  btnDelSm: {
+    padding: "4px 9px", fontSize: 11, fontWeight: 700, fontFamily: "inherit",
+    border: "1px solid #FECACA", borderRadius: 6, cursor: "pointer",
+    background: "#FEF2F2", color: "#991B1B", flexShrink: 0,
   },
-  waRow: {
-    margin: "-4px 0 12px 46px",
-    padding: "10px 12px",
-    background: "#F8FAFC",
-    borderRadius: 9,
-    border: "1px solid #E2E8F0",
+  btnRestore: {
+    padding: "6px 12px", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+    border: "1px solid #FDE68A", borderRadius: 7, cursor: "pointer",
+    background: "#FFFBEB", color: "#92400E",
   },
-  waLabel: { display: "block", fontSize: 12, fontWeight: 600, color: "#64748B", marginBottom: 7 },
-  waHint: { fontSize: 11, color: "#94A3B8", margin: "0 0 8px", lineHeight: 1.4 },
-  waInputs: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
-  novoProfPanel: {
-    padding: "14px 16px",
-    background: "#F8FAFC",
-    borderRadius: 12,
-    border: "1px solid #E2E8F0",
-    display: "flex",
-    flexDirection: "column",
-    gap: 12,
+  btnCancelar: {
+    padding: "9px 16px", fontSize: 13, fontWeight: 600, fontFamily: "inherit",
+    border: "1px solid #E2E8F0", borderRadius: 8, cursor: "pointer",
+    background: "#F1F5F9", color: "#475569",
   },
-  vagasAgendaCol: { display: "flex", flexDirection: "column", gap: 8, marginBottom: 8 },
-  vagasAgendaRow: { marginBottom: 8 },
-  vagasAgendaLbl: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-    fontSize: 12,
-    color: "#475569",
-    flexWrap: "wrap",
-  },
-  vagasAgendaLblFull: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 5,
-    fontSize: 12,
-    color: "#475569",
-    marginTop: 4,
-  },
-  inputNum: {
-    padding: "6px 9px",
-    fontSize: 13,
-    border: "1.5px solid #E2E8F0",
-    borderRadius: 7,
-    width: 74,
-    background: "#fff",
-    outline: "none",
-  },
-  diasAgendamentoBox: { marginTop: 4, marginBottom: 4 },
-  medicoSessoesWrap: { marginBottom: 8 },
-  medicoSessoesList: { listStyle: "none", padding: 0, margin: "0 0 10px", display: "flex", flexDirection: "column", gap: 6 },
-  medicoSessaoItem: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 8,
-    flexWrap: "wrap",
-    padding: "9px 12px",
-    background: "#fff",
-    borderRadius: 8,
-    border: "1px solid #E2E8F0",
-    fontSize: 12,
-  },
-  medicoSessaoTxt: { color: "#334155", flex: 1, minWidth: 0 },
-  medicoSessaoForm: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))",
-    gap: 8,
-    alignItems: "center",
+
+  // Avatar
+  avSmall: {
+    width: 34, height: 34, borderRadius: "50%",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    fontSize: 12, fontWeight: 700, flexShrink: 0,
   },
 };
