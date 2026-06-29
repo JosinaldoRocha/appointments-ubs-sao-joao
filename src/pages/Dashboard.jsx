@@ -50,7 +50,7 @@ import {
   abrirWhatsAppNavegandoJanela,
 } from "../services/whatsappSolicitacao";
 import TabVagas from "../components/TabVagas";
-import TabAvisos from "../components/TabAvisos";
+import TabAvisos, { computeAvisosPreview } from "../components/TabAvisos";
 import TabCronograma from "../components/TabCronograma";
 import TabConfig from "../components/TabConfig";
 import ModalAgendar from "../components/ModalAgendar";
@@ -1064,6 +1064,59 @@ export default function Dashboard() {
     ]
   );
 
+  const avisosPreview = useMemo(
+    () =>
+      computeAvisosPreview({
+        hojeStr: todayStr,
+        isRecepcao,
+        incluirAvisosOperacionais: isAgenteOuDiretorPerfil(perfil) || isRecepcaoPerfil(perfil),
+        specs: specsVisiveis,
+        profissionaisMap,
+        profNames,
+        feriados: settings.feriados,
+        pontosFacultativos: settings.pontosFacultativos,
+        dentQuartaVisitaDomiciliarDesde: settings.dentQuartaVisitaDomiciliarDesde,
+        atendimentoEncerradoMap: settings.atendimentoEncerradoPorSpecData || {},
+        atendimentoSuspensoPorSpec: settings.atendimentoSuspensoPorSpec || {},
+        atendimentoSuspensoSlots: settings.atendimentoSuspensoSlots || {},
+        atendimentoDiasAtivosPorSpec: settings.atendimentoDiasAtivosPorSpec || {},
+        specKeysDesativados: settings.specKeysDesativados || [],
+      }),
+    [
+      todayStr,
+      isRecepcao,
+      perfil,
+      specsVisiveis,
+      profissionaisMap,
+      profNames,
+      settings.feriados,
+      settings.pontosFacultativos,
+      settings.dentQuartaVisitaDomiciliarDesde,
+      settings.atendimentoEncerradoPorSpecData,
+      settings.atendimentoSuspensoPorSpec,
+      settings.atendimentoSuspensoSlots,
+      settings.atendimentoDiasAtivosPorSpec,
+      settings.specKeysDesativados,
+    ]
+  );
+
+  const avisosFingerprint = useMemo(
+    () => avisosPreview.map((i) => `${i.badge}|${i.title}|${i.preview}`).join("§"),
+    [avisosPreview]
+  );
+
+  const [avisosVistosFingerprint, setAvisosVistosFingerprint] = useState(
+    () => localStorage.getItem("avisosVistosFingerprint") || ""
+  );
+
+  const avisosPreviewVisivel = avisosFingerprint !== avisosVistosFingerprint ? avisosPreview : [];
+
+  const handleNavigateToAvisos = useCallback(() => {
+    localStorage.setItem("avisosVistosFingerprint", avisosFingerprint);
+    setAvisosVistosFingerprint(avisosFingerprint);
+    setTab("avisos");
+  }, [avisosFingerprint]);
+
   return (
     <div style={styles.app}>
       <header style={styles.hdr}>
@@ -1126,7 +1179,24 @@ export default function Dashboard() {
             style={{ ...styles.navBtn, ...(tab === t.key ? styles.navBtnActive : {}) }}
             onClick={() => setTab(t.key)}
           >
-            {t.label}
+            <span style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+              {t.label}
+              {t.key === "avisos" && avisosPreview.length > 0 && (
+                <span
+                  style={{
+                    position: "absolute",
+                    top: -3,
+                    right: -9,
+                    width: 7,
+                    height: 7,
+                    borderRadius: "50%",
+                    background: "#EF4444",
+                    border: "1.5px solid #fff",
+                    flexShrink: 0,
+                  }}
+                />
+              )}
+            </span>
           </button>
         ))}
       </nav>
@@ -1150,6 +1220,8 @@ export default function Dashboard() {
             profissionalConfigPorSpec={settings.profissionalConfigPorSpec || {}}
             usuarioUid={user?.uid ?? ""}
             isDiretor={isDiretor}
+            avisosPreview={avisosPreviewVisivel}
+            onNavigateToAvisos={handleNavigateToAvisos}
           />
         )}
         {tab === "avisos" && (

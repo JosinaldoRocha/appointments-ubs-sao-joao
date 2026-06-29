@@ -271,6 +271,109 @@ function turnoPadraoSuspensaoPontual(specKey) {
   return "manha";
 }
 
+const BANNER_TONE = {
+  danger:    { bg: "linear-gradient(90deg,#FEF2F2,#FFF1F2)", border: "#FECACA", accent: "#EF4444", text: "#7F1D1D" },
+  warn:      { bg: "linear-gradient(90deg,#FFFBEB,#FEF3C7)", border: "#FCD34D", accent: "#F59E0B", text: "#78350F" },
+  info:      { bg: "linear-gradient(90deg,#EEF2FF,#E0E7FF)", border: "#A5B4FC", accent: "#6366F1", text: "#1E1B4B" },
+  calendario:{ bg: "linear-gradient(90deg,#F5F3FF,#EDE9FE)", border: "#C4B5FD", accent: "#7C3AED", text: "#2E1065" },
+  muted:     { bg: "#F8FAFC",                                 border: "#CBD5E1", accent: "#64748B", text: "#1E293B" },
+  neutral:   { bg: "#fff",                                    border: "#E2E8F0", accent: "#334155", text: "#334155" },
+};
+
+function AvisosPreviewBanner({ items, onClick }) {
+  if (!items || items.length === 0) return null;
+  const first = items[0];
+  const rest = items.length - 1;
+  const c = BANNER_TONE[first.tone] || BANNER_TONE.neutral;
+  const maxChars = 68;
+  const previewText =
+    first.preview.length > maxChars ? first.preview.slice(0, maxChars) + "…" : first.preview;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        width: "100%",
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "9px 13px",
+        marginBottom: 14,
+        borderRadius: 10,
+        border: `1px solid ${c.border}`,
+        borderLeft: `4px solid ${c.accent}`,
+        background: c.bg,
+        cursor: "pointer",
+        textAlign: "left",
+        boxSizing: "border-box",
+        boxShadow: "0 1px 3px rgba(15,23,42,0.05)",
+      }}
+    >
+      <span
+        style={{
+          display: "inline-block",
+          fontSize: 9,
+          fontWeight: 800,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          padding: "2px 8px",
+          borderRadius: 5,
+          background: c.accent,
+          color: "#fff",
+          flexShrink: 0,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {first.badge}
+      </span>
+      <p
+        style={{
+          flex: 1,
+          margin: 0,
+          fontSize: 13,
+          color: c.text,
+          overflow: "hidden",
+          whiteSpace: "nowrap",
+          textOverflow: "ellipsis",
+        }}
+      >
+        <strong>{first.title}</strong>
+        {" · "}
+        {previewText}
+      </p>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+        {rest > 0 && (
+          <span
+            style={{
+              fontSize: 11,
+              fontWeight: 700,
+              color: c.accent,
+              background: c.accent + "22",
+              padding: "2px 8px",
+              borderRadius: 10,
+              whiteSpace: "nowrap",
+            }}
+          >
+            +{rest} {rest === 1 ? "aviso" : "avisos"}
+          </span>
+        )}
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke={c.accent}
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+      </div>
+    </button>
+  );
+}
+
 export default function TabVagas({
   specs,
   profissionaisMap = {},
@@ -286,6 +389,8 @@ export default function TabVagas({
   profissionalConfigPorSpec = {},
   usuarioUid = "",
   isDiretor = false,
+  avisosPreview = [],
+  onNavigateToAvisos,
 }) {
   const [agoraRecepcao, setAgoraRecepcao] = useState(() => new Date());
   const [modalSuspenderSpecKey, setModalSuspenderSpecKey] = useState(null);
@@ -418,6 +523,7 @@ export default function TabVagas({
   if (specs.length === 0 && Object.keys(placeholdersPorData).length === 0 && !isRecepcao) {
     return (
       <div style={styles.wrap}>
+        <AvisosPreviewBanner items={avisosPreview} onClick={onNavigateToAvisos} />
         <div style={styles.empty}>
           <p style={{ fontSize: 15, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>
             Nenhum agendamento disponível hoje
@@ -432,19 +538,23 @@ export default function TabVagas({
 
   if (specsLista.length === 0 && Object.keys(placeholdersPorData).length === 0 && !isRecepcao) {
     return (
-      <div style={styles.empty}>
-        <p style={{ fontSize: 15, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>
-          Nenhum cartão de atendimento visível
-        </p>
+      <div style={styles.wrap}>
+        <AvisosPreviewBanner items={avisosPreview} onClick={onNavigateToAvisos} />
+        <div style={styles.empty}>
+          <p style={{ fontSize: 15, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>
+            Nenhum cartão de atendimento visível
+          </p>
           <p style={{ fontSize: 13, color: "#64748B", lineHeight: 1.55 }}>
             Cartões somem quando a recepção encerra o turno. Suspensões e lembretes na aba <strong>Avisos</strong>.
           </p>
+        </div>
       </div>
     );
   }
 
   return (
     <div style={styles.wrap}>
+      <AvisosPreviewBanner items={avisosPreview} onClick={onNavigateToAvisos} />
       {isRecepcao && (
         <div style={styles.legend}>
           <LegendItem color="#E0E7FF" border="#A5B4FC" label="Agenda: dia útil anterior ao atendimento" />

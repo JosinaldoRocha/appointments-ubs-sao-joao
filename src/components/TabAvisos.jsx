@@ -40,7 +40,7 @@ function proximaAberturaAgendamento(agora, feriadosLista) {
   const ehDiaUtilHoje = dow >= 1 && dow <= 5 && !holidaySet.has(hojeStr);
 
   if (ehDiaUtilHoje && totalMin < 7 * 60) {
-    return "hoje a partir das 7h";
+    return "Hoje · a partir das 7h";
   }
 
   const base = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate());
@@ -51,11 +51,16 @@ function proximaAberturaAgendamento(agora, feriadosLista) {
     const s = toDateStr(cursor);
     if (d >= 1 && d <= 5 && !holidaySet.has(s)) {
       const diffDias = Math.round((cursor - base) / 86400000);
-      const prefixo =
-        diffDias === 1
-          ? "amanhã"
-          : "na " + cursor.toLocaleDateString("pt-BR", { weekday: "long" });
-      return `${prefixo} a partir das 13h30`;
+      if (diffDias === 1) {
+        return "Amanhã · a partir das 13h30";
+      }
+      const dataPorExtenso = cursor.toLocaleDateString("pt-BR", {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+      });
+      const dataCap = dataPorExtenso.charAt(0).toUpperCase() + dataPorExtenso.slice(1);
+      return `${dataCap} · a partir das 13h30`;
     }
     cursor.setDate(cursor.getDate() + 1);
   }
@@ -85,13 +90,12 @@ function profissionalDocPorSpecKey(profissionaisMap, specKey) {
 }
 
 function labelEscopoSuspensaoPontual(escopo) {
-  if (escopo === "dia") return "dia inteiro";
-  if (escopo === "manha") return "manhã";
-  if (escopo === "tarde") return "tarde";
+  if (escopo === "dia") return "Dia inteiro";
+  if (escopo === "manha") return "Manhã";
+  if (escopo === "tarde") return "Tarde";
   return escopo;
 }
 
-/** Há vaga livre na agenda ou sessão com lista de espera / WhatsApp. */
 function hasAnyVacancy(specs) {
   return specs.some((spec) =>
     spec.sessions.some((s) => {
@@ -125,11 +129,100 @@ function listaAvisosEncerrado(specs, atendimentoEncerradoMap) {
   return out;
 }
 
-function Card({ tone, children }) {
-  const toneStyle = S.cardTone[tone] || S.cardTone.neutral;
+const TONE = {
+  danger: {
+    bg: "linear-gradient(160deg, #FEF2F2 0%, #FFF1F2 100%)",
+    border: "#FECACA",
+    accent: "#EF4444",
+    text: "#7F1D1D",
+  },
+  warn: {
+    bg: "linear-gradient(160deg, #FFFBEB 0%, #FEF3C7 100%)",
+    border: "#FCD34D",
+    accent: "#F59E0B",
+    text: "#78350F",
+  },
+  info: {
+    bg: "linear-gradient(160deg, #EEF2FF 0%, #E0E7FF 100%)",
+    border: "#A5B4FC",
+    accent: "#6366F1",
+    text: "#1E1B4B",
+  },
+  calendario: {
+    bg: "linear-gradient(160deg, #F5F3FF 0%, #EDE9FE 100%)",
+    border: "#C4B5FD",
+    accent: "#7C3AED",
+    text: "#2E1065",
+  },
+  muted: {
+    bg: "#F8FAFC",
+    border: "#CBD5E1",
+    accent: "#64748B",
+    text: "#1E293B",
+  },
+  neutral: {
+    bg: "#fff",
+    border: "#E2E8F0",
+    accent: "#334155",
+    text: "#334155",
+  },
+};
+
+function NoticeCard({ tone, badge, title, subject, role, details = [], note, children }) {
+  const colors = TONE[tone] || TONE.neutral;
   return (
-    <div style={{ ...S.card, ...toneStyle }} role="status">
-      {children}
+    <div
+      style={{
+        borderRadius: 12,
+        border: `1px solid ${colors.border}`,
+        borderLeft: `4px solid ${colors.accent}`,
+        background: colors.bg,
+        padding: "12px 14px 14px",
+        boxShadow: "0 1px 3px rgba(15,23,42,0.05)",
+      }}
+      role="status"
+    >
+      <span
+        style={{
+          display: "inline-block",
+          fontSize: 10,
+          fontWeight: 800,
+          letterSpacing: "0.07em",
+          textTransform: "uppercase",
+          padding: "3px 9px",
+          borderRadius: 6,
+          background: colors.accent,
+          color: "#fff",
+          marginBottom: 8,
+        }}
+      >
+        {badge}
+      </span>
+      <p style={{ margin: 0, fontSize: 15, fontWeight: 700, lineHeight: 1.3, color: colors.text }}>
+        {title}
+      </p>
+      {subject && (
+        <p style={{ margin: "3px 0 0", fontSize: 13, lineHeight: 1.4, color: colors.text }}>
+          <strong>{subject}</strong>
+          {role ? <span style={{ fontWeight: 400, opacity: 0.7 }}> · {role}</span> : null}
+        </p>
+      )}
+      {details.length > 0 && (
+        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
+          {details.map((d, i) => (
+            <div key={i} style={{ display: "flex", gap: 8, fontSize: 13, lineHeight: 1.4, color: colors.text }}>
+              <span style={{ fontWeight: 700, opacity: 0.55, minWidth: 64, flexShrink: 0 }}>{d.label}</span>
+              <span style={{ fontWeight: 500 }}>{d.value}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {note && (
+        <p style={{ margin: "8px 0 0", fontSize: 12, color: colors.text, opacity: 0.65, lineHeight: 1.5 }}>
+          {note}
+        </p>
+      )}
+      {children && <div style={{ marginTop: 12 }}>{children}</div>}
     </div>
   );
 }
@@ -144,6 +237,183 @@ function Section({ title, hint, children, empty }) {
       {empty ? <p style={S.sectionEmpty}>{empty}</p> : children}
     </section>
   );
+}
+
+export function computeAvisosPreview({
+  hojeStr,
+  isRecepcao,
+  incluirAvisosOperacionais,
+  specs = [],
+  profissionaisMap = {},
+  profNames = {},
+  feriados = [],
+  pontosFacultativos = [],
+  dentQuartaVisitaDomiciliarDesde = "",
+  atendimentoEncerradoMap = {},
+  atendimentoSuspensoPorSpec = {},
+  atendimentoSuspensoSlots = {},
+  atendimentoDiasAtivosPorSpec = {},
+  specKeysDesativados = [],
+}) {
+  const hoje = hojeStr || toDateStr(new Date());
+  const items = [];
+
+  // Suspensões por período
+  const susp = atendimentoSuspensoPorSpec || {};
+  const periodEntries = Object.entries(susp)
+    .filter(
+      ([specKey, v]) =>
+        !specKeyEstaDesativado(specKey, specKeysDesativados) &&
+        v &&
+        typeof v.desde === "string" &&
+        /^\d{4}-\d{2}-\d{2}$/.test(v.desde.trim()) &&
+        suspensaoRegistroNaoExpirado(v, hoje) &&
+        (isRecepcao || specSuspensaoAfetaAgenda(specKey, susp, hoje, atendimentoDiasAtivosPorSpec || {}))
+    )
+    .sort((a, b) => a[1].desde.localeCompare(b[1].desde));
+  for (const [specKey, entry] of periodEntries) {
+    const nome = nomeProfissional(specKey, profissionaisMap);
+    const desde = entry.desde.trim();
+    const exibirDesde = dataSuspensaoPosteriorAHoje(desde, hoje);
+    items.push({
+      badge: "Suspenso",
+      tone: "danger",
+      title: "Atendimento suspenso",
+      preview: exibirDesde
+        ? `${nome} · A partir de ${formatDataLonga(desde)}`
+        : `${nome} · Suspensão em vigor`,
+    });
+  }
+
+  // Suspensões pontuais
+  const slots = atendimentoSuspensoSlots || {};
+  const diasCfg = atendimentoDiasAtivosPorSpec || {};
+  const pontuais = [];
+  for (const key of Object.keys(slots)) {
+    const p = parseAtendimentoSuspensoSlotKey(key);
+    if (!p) continue;
+    if (specKeyEstaDesativado(p.specKey, specKeysDesativados)) continue;
+    if (!isRecepcao && !suspensaoPontualSlotVisivelParaAgente(p.specKey, p.data, hoje, diasCfg)) continue;
+    if (isRecepcao && p.data < hoje) continue;
+    pontuais.push(p);
+  }
+  pontuais.sort((a, b) => a.data.localeCompare(b.data));
+  for (const p of pontuais) {
+    const nome = nomeProfissional(p.specKey, profissionaisMap);
+    const exibirData = dataSuspensaoPosteriorAHoje(p.data, hoje);
+    const turnoLabel = p.escopo === "dia" ? "dia inteiro" : p.escopo === "manha" ? "manhã" : "tarde";
+    items.push({
+      badge: "Suspensão pontual",
+      tone: "danger",
+      title: "Atendimento suspenso",
+      preview: `${nome} · ${exibirData ? formatDataLonga(p.data) : "Hoje"} · ${turnoLabel}`,
+    });
+  }
+
+  // Feriado / ponto facultativo amanhã (operacional)
+  if (incluirAvisosOperacionais) {
+    const r = avisoSemAtendimentoUbAmanha(hoje, feriados, pontosFacultativos);
+    if (r) {
+      const amanhaIso = addDaysLocal(hoje, 1);
+      const motivo =
+        r.eFeriado && r.ePontoFacultativo
+          ? "Feriado e ponto facultativo"
+          : r.eFeriado
+          ? "Feriado"
+          : "Ponto facultativo";
+      items.push({
+        badge: "Amanhã",
+        tone: "warn",
+        title: "Sem atendimento",
+        preview: `${formatDataLonga(amanhaIso)} · ${motivo}`,
+      });
+    }
+    if (
+      dentQuartaVisitaDomiciliarDesde &&
+      shouldShowAvisoVisitaDomiciliarAmanha(hoje, dentQuartaVisitaDomiciliarDesde)
+    ) {
+      const nomeDent = profNames.dentFernando || DEFAULT_PROF_NAMES.dentFernando;
+      const amanhaIso = addDaysLocal(hoje, 1);
+      items.push({
+        badge: "Amanhã",
+        tone: "info",
+        title: "Sem atendimento na UBS",
+        preview: `${nomeDent} · ${formatDataLonga(amanhaIso)} · Manhã`,
+      });
+    }
+  }
+
+  // Encerrados
+  const encerrados = listaAvisosEncerrado(specs, atendimentoEncerradoMap);
+  for (const { spec, turno } of encerrados) {
+    const nome = nomeProfissional(spec.key, profissionaisMap);
+    const hasM = specTemSessaoNoTurno(spec, "manha");
+    const hasT = specTemSessaoNoTurno(spec, "tarde");
+    let turnoLabel;
+    if (turno === "manha") turnoLabel = "Manhã";
+    else if (turno === "tarde") turnoLabel = "Tarde";
+    else if (hasM && hasT) turnoLabel = "Manhã e tarde";
+    else if (hasM) turnoLabel = "Manhã";
+    else if (hasT) turnoLabel = "Tarde";
+    else turnoLabel = null;
+    items.push({
+      badge: "Encerrado",
+      tone: "muted",
+      title: "Atendimento encerrado",
+      preview: turnoLabel ? `${nome} · ${turnoLabel}` : nome,
+    });
+  }
+
+  // Calendário futuro
+  const ferList = normalizeFeriadosList(feriados).filter((d) => d >= hoje);
+  const pfList = normalizeFeriadosList(pontosFacultativos).filter((d) => d >= hoje);
+  const calRows = [];
+  for (const iso of ferList) calRows.push({ iso, tipo: "feriado" });
+  for (const iso of pfList) {
+    if (!calRows.some((r) => r.iso === iso && r.tipo === "feriado")) {
+      calRows.push({ iso, tipo: "pontoFacultativo" });
+    } else {
+      const row = calRows.find((r) => r.iso === iso);
+      if (row) row.tipo = "ambos";
+    }
+  }
+  calRows.sort((a, b) => a.iso.localeCompare(b.iso));
+  for (const row of calRows) {
+    const isFer = row.tipo === "feriado" || row.tipo === "ambos";
+    const tipo =
+      row.tipo === "ambos"
+        ? "Feriado e ponto facultativo"
+        : row.tipo === "feriado"
+        ? "Feriado"
+        : "Ponto facultativo";
+    items.push({
+      badge: isFer ? "Feriado" : "Ponto facultativo",
+      tone: row.tipo === "pontoFacultativo" ? "calendario" : "warn",
+      title: "Sem atendimento",
+      preview: `${formatDataLonga(row.iso)} · ${tipo}`,
+    });
+  }
+
+  // Visitas domiciliares (in-card)
+  if (dentQuartaVisitaDomiciliarDesde) {
+    for (const spec of specs) {
+      const v = varianteVisitaDomiciliarNoCard({
+        spec,
+        todayStr: hoje,
+        desdeStr: dentQuartaVisitaDomiciliarDesde,
+      });
+      if (!v) continue;
+      const nome = nomeProfissional(spec.key, profissionaisMap);
+      items.push({
+        badge: "Visita domiciliar",
+        tone: "info",
+        title: v === "vespera" ? "Sem vagas para amanhã" : "Sem atendimento na UBS hoje",
+        preview: `${nome} · ${formatDataLonga(spec.atendimentoDate)} · Manhã`,
+      });
+    }
+  }
+
+  return items;
 }
 
 export default function TabAvisos({
@@ -230,6 +500,19 @@ export default function TabAvisos({
     [agoraRef, feriados]
   );
 
+  const ehFimDeSemanaAgora = useMemo(() => {
+    const dow = agoraRef.getDay();
+    return dow === 0 || dow === 6;
+  }, [agoraRef]);
+
+  const ehFeriadoAgora = useMemo(() => {
+    const hojeStr = toDateStr(agoraRef);
+    return (
+      normalizeFeriadosList(feriados).includes(hojeStr) ||
+      normalizeFeriadosList(pontosFacultativos).includes(hojeStr)
+    );
+  }, [agoraRef, feriados, pontosFacultativos]);
+
   const visitasDomicNoCard = useMemo(() => {
     if (!dentQuartaVisitaDomiciliarDesde) return [];
     const out = [];
@@ -315,9 +598,7 @@ export default function TabAvisos({
     [specs, atendimentoEncerradoMap]
   );
 
-  const temAmanha =
-    !!avisoVisitaDomiciliarAmanha ||
-    !!avisoSemAtendimentoAmanha;
+  const temAmanha = !!avisoVisitaDomiciliarAmanha || !!avisoSemAtendimentoAmanha;
   const temCalendario = calendarioFuturo.length > 0;
   const temSuspensao = suspensaoPeriodo.length > 0 || suspensaoPontual.length > 0;
   const temEncerrado = encerrados.length > 0;
@@ -337,8 +618,8 @@ export default function TabAvisos({
         <h1 style={S.title}>Avisos</h1>
         <p style={S.lead}>
           {isRecepcao
-            ? "Calendário, suspensões, encerramentos de turno e demais situações que afetam a agenda — gerencie reativações e remoções aqui."
-            : "Informativos da unidade: calendário, suspensões, encerramentos, horário de expediente e situações que afetam o agendamento."}
+            ? "Suspensões, encerramentos e situações que afetam a agenda — gerencie reativações aqui."
+            : "Suspensões, feriados, encerramentos e informações que afetam o agendamento."}
         </p>
       </header>
 
@@ -346,35 +627,44 @@ export default function TabAvisos({
         <div style={S.empty}>
           <p style={S.emptyTitle}>Nenhum aviso no momento</p>
           <p style={S.emptyText}>
-            Quando houver feriados, pontos facultativos, suspensões ou outras situações relevantes, elas aparecerão
-            aqui.
+            Feriados, pontos facultativos, suspensões e demais situações relevantes aparecerão aqui.
           </p>
         </div>
       ) : null}
 
       {temHorarioVagas ? (
-        <Section
-          title="Horário da UBS e vagas"
-          hint="Para agentes de saúde e direção: atendimento hoje (com vagas) — solicitações das 7h às 18h; outros dias — das 13h30 às 18h."
-        >
+        <Section title="Horário e vagas">
           <div style={S.cardList}>
             {foraExpedienteAgente ? (
-              <Card tone="warn">
-                <p style={S.cardLine}>
-                  <strong>Fora do horário de solicitações.</strong>{" "}
-                  {proximaAbertura
-                    ? `Volte ${proximaAbertura}.`
-                    : MSG_FORA_EXPEDIENTE_UBS}
-                </p>
-              </Card>
+              <NoticeCard
+                tone="warn"
+                badge={
+                  ehFimDeSemanaAgora
+                    ? "Fim de semana"
+                    : ehFeriadoAgora
+                    ? "Feriado"
+                    : "Fora do horário"
+                }
+                title={
+                  ehFimDeSemanaAgora || ehFeriadoAgora
+                    ? "Sem expediente de agendamento hoje"
+                    : "Solicitações encerradas"
+                }
+                details={[
+                  {
+                    label: "Próxima abertura",
+                    value: proximaAbertura || "Consulte o calendário da UBS",
+                  },
+                ]}
+              />
             ) : null}
             {semVagasLivresAgente ? (
-              <Card tone="muted">
-                <p style={S.cardLine}>
-                  <strong>Não há mais vagas disponíveis.</strong> Todas as vagas de agenda estão preenchidas no
-                  momento. Acompanhe novas aberturas pela equipe ou pela recepção.
-                </p>
-              </Card>
+              <NoticeCard
+                tone="muted"
+                badge="Agenda lotada"
+                title="Sem vagas disponíveis"
+                note="Acompanhe novas aberturas pela equipe ou pela recepção."
+              />
             ) : null}
           </div>
         </Section>
@@ -382,27 +672,37 @@ export default function TabAvisos({
 
       {temVisitaDomicCard ? (
         <Section
-          title="Odontologia — visitas domiciliares (quartas)"
-          hint="Quando a quarta é dedicada a visitas, não há consultas na UBS no turno da manhã."
+          title="Odontologia — visitas domiciliares"
+          hint="Quartas com visitas: sem consultas na UBS pela manhã."
         >
           <div style={S.cardList}>
             {visitasDomicNoCard.map(({ spec, v, nome }) =>
               v === "vespera" ? (
-                <Card key={`${spec.key}_vespera_${spec.atendimentoDate}`} tone="info">
-                  <p style={S.cardLine}>
-                    <strong>Sem vagas para amanhã</strong> — Na próxima quarta-feira, <strong>{nome}</strong> não
-                    atende na unidade pela manhã: a agenda está dedicada a <strong>visitas domiciliares</strong>. Não
-                    é possível agendar consulta na UBS nesse turno ({formatDataLonga(spec.atendimentoDate)}).
-                  </p>
-                </Card>
+                <NoticeCard
+                  key={`${spec.key}_vespera_${spec.atendimentoDate}`}
+                  tone="info"
+                  badge="Visita domiciliar"
+                  title="Sem vagas para amanhã"
+                  subject={nome}
+                  details={[
+                    { label: "Data", value: formatDataLonga(spec.atendimentoDate) },
+                    { label: "Período", value: "Manhã" },
+                    { label: "Motivo", value: "Agenda exclusiva para visitas domiciliares" },
+                  ]}
+                />
               ) : (
-                <Card key={`${spec.key}_hoje_${spec.atendimentoDate}`} tone="info">
-                  <p style={S.cardLine}>
-                    <strong>Sem atendimento na unidade hoje</strong> — Em {formatDataLonga(spec.atendimentoDate)},{" "}
-                    <strong>{nome}</strong> não realiza consultas na UBS nesta quarta: o atendimento odontológico é
-                    exclusivamente em <strong>visita domiciliar</strong>.
-                  </p>
-                </Card>
+                <NoticeCard
+                  key={`${spec.key}_hoje_${spec.atendimentoDate}`}
+                  tone="info"
+                  badge="Visita domiciliar"
+                  title="Sem atendimento na UBS hoje"
+                  subject={nome}
+                  details={[
+                    { label: "Data", value: formatDataLonga(spec.atendimentoDate) },
+                    { label: "Período", value: "Manhã" },
+                    { label: "Motivo", value: "Agenda exclusiva para visitas domiciliares" },
+                  ]}
+                />
               )
             )}
           </div>
@@ -410,66 +710,66 @@ export default function TabAvisos({
       ) : null}
 
       {temAmanha ? (
-        <Section title="Para amanhã" hint="Lembretes do dia anterior ao evento.">
-          {avisoVisitaDomiciliarAmanha ? (
-            <Card tone="info">
-              <p style={S.cardLine}>
-                <strong>Visitas domiciliares —</strong> amanhã ({avisoVisitaDomiciliarAmanha.dataFmt}), o{" "}
-                {avisoVisitaDomiciliarAmanha.nomeDent} não terá atendimento na unidade pela manhã: estará
-                realizando <strong>visitas domiciliares</strong>.
-              </p>
-            </Card>
-          ) : null}
-          {avisoSemAtendimentoAmanha ? (
-            <Card tone="warn">
-              <p style={S.cardLine}>
-                {avisoSemAtendimentoAmanha.eFeriado && avisoSemAtendimentoAmanha.ePontoFacultativo ? (
-                  <>
-                    <strong>Feriado e ponto facultativo —</strong> amanhã ({avisoSemAtendimentoAmanha.dataFmt}) está
-                    cadastrado nas duas listas na UBS.
-                  </>
-                ) : avisoSemAtendimentoAmanha.eFeriado ? (
-                  <>
-                    <strong>Feriado —</strong> amanhã ({avisoSemAtendimentoAmanha.dataFmt}) é feriado na UBS.
-                  </>
-                ) : (
-                  <>
-                    <strong>Ponto facultativo —</strong> amanhã ({avisoSemAtendimentoAmanha.dataFmt}) é ponto
-                    facultativo na UBS.
-                  </>
-                )}{" "}
-                <strong>Não haverá atendimento agendado</strong> nesse dia.
-              </p>
-            </Card>
-          ) : null}
+        <Section title="Para amanhã">
+          <div style={S.cardList}>
+            {avisoVisitaDomiciliarAmanha ? (
+              <NoticeCard
+                tone="info"
+                badge="Amanhã"
+                title="Sem atendimento na UBS"
+                subject={avisoVisitaDomiciliarAmanha.nomeDent}
+                details={[
+                  { label: "Data", value: avisoVisitaDomiciliarAmanha.dataFmt },
+                  { label: "Período", value: "Manhã" },
+                  { label: "Motivo", value: "Visitas domiciliares" },
+                ]}
+              />
+            ) : null}
+            {avisoSemAtendimentoAmanha ? (
+              <NoticeCard
+                tone="warn"
+                badge="Amanhã"
+                title="Sem atendimento"
+                details={[
+                  { label: "Data", value: avisoSemAtendimentoAmanha.dataFmt },
+                  {
+                    label: "Motivo",
+                    value:
+                      avisoSemAtendimentoAmanha.eFeriado && avisoSemAtendimentoAmanha.ePontoFacultativo
+                        ? "Feriado e ponto facultativo"
+                        : avisoSemAtendimentoAmanha.eFeriado
+                        ? "Feriado"
+                        : "Ponto facultativo",
+                  },
+                ]}
+              />
+            ) : null}
+          </div>
         </Section>
       ) : null}
 
       {temCalendario ? (
-        <Section
-          title="Calendário da UBS"
-          hint="Feriados e pontos facultativos cadastrados a partir de hoje."
-        >
+        <Section title="Calendário da UBS" hint="Datas sem atendimento a partir de hoje.">
           <div style={S.cardList}>
             {calendarioFuturo.map((row) => (
-              <Card key={`${row.tipo}_${row.iso}`} tone={row.tipo === "feriado" ? "warn" : row.tipo === "ambos" ? "warn" : "calendario"}>
-                <p style={S.cardLine}>
-                  {row.tipo === "ambos" ? (
-                    <>
-                      <strong>Feriado e ponto facultativo</strong> em {formatDataLonga(row.iso)}.
-                    </>
-                  ) : row.tipo === "feriado" ? (
-                    <>
-                      <strong>Feriado cadastrado</strong> em {formatDataLonga(row.iso)}.
-                    </>
-                  ) : (
-                    <>
-                      <strong>Ponto facultativo cadastrado</strong> em {formatDataLonga(row.iso)}.
-                    </>
-                  )}{" "}
-                  Sem atendimento agendado na data.
-                </p>
-              </Card>
+              <NoticeCard
+                key={`${row.tipo}_${row.iso}`}
+                tone={row.tipo === "pontoFacultativo" ? "calendario" : "warn"}
+                badge={
+                  row.tipo === "feriado"
+                    ? "Feriado"
+                    : row.tipo === "pontoFacultativo"
+                    ? "Ponto facultativo"
+                    : "Feriado"
+                }
+                title="Sem atendimento"
+                details={[
+                  { label: "Data", value: formatDataLonga(row.iso) },
+                  ...(row.tipo === "ambos"
+                    ? [{ label: "Tipo", value: "Feriado e ponto facultativo" }]
+                    : []),
+                ]}
+              />
             ))}
           </div>
         </Section>
@@ -479,9 +779,7 @@ export default function TabAvisos({
         <Section
           title="Suspensões de atendimento"
           hint={
-            isRecepcao
-              ? "Profissionais ou turnos sem agendamento na agenda. Use os botões para reativar ou remover suspensões pontuais."
-              : "Profissionais ou turnos sem agendamento na agenda."
+            isRecepcao ? "Use os botões para reativar ou remover suspensões pontuais." : null
           }
         >
           <div style={S.cardList}>
@@ -492,27 +790,32 @@ export default function TabAvisos({
               const exibirDesde = dataSuspensaoPosteriorAHoje(desde, hoje);
               const ateRaw = typeof entry.ate === "string" ? entry.ate.trim() : "";
               const exibirAte = dataSuspensaoPosteriorAHoje(ateRaw, hoje);
-              let fim = "";
-              if (entry.indefinido) fim = "Prazo indeterminado.";
-              else if (ateRaw && /^\d{4}-\d{2}-\d{2}$/.test(ateRaw)) {
-                fim = exibirAte
-                  ? `Até ${formatDataLonga(ateRaw)}.`
-                  : "Encerra ao final do período cadastrado.";
-              } else fim = "Sem data fim cadastrada.";
+              const details = [
+                {
+                  label: "Início",
+                  value: exibirDesde ? formatDataLonga(desde) : "Já em vigor",
+                },
+                {
+                  label: "Término",
+                  value: entry.indefinido
+                    ? "Prazo indeterminado"
+                    : ateRaw && /^\d{4}-\d{2}-\d{2}$/.test(ateRaw)
+                    ? exibirAte
+                      ? formatDataLonga(ateRaw)
+                      : "Sem data definida"
+                    : "Sem previsão cadastrada",
+                },
+              ];
               return (
-                <Card key={`periodo_${specKey}`} tone="danger">
-                  <p style={S.cardLine}>
-                    <strong>Atendimento suspenso</strong> — {nome}
-                    {role ? ` (${role})` : ""}:{" "}
-                    {exibirDesde ? (
-                      <>
-                        sem agendamento na UBS a partir de <strong>{formatDataLonga(desde)}</strong>.
-                      </>
-                    ) : (
-                      <>sem agendamento na UBS (suspensão em vigor).</>
-                    )}{" "}
-                    {fim}
-                  </p>
+                <NoticeCard
+                  key={`periodo_${specKey}`}
+                  tone="danger"
+                  badge="Suspenso"
+                  title="Atendimento suspenso"
+                  subject={nome}
+                  role={role || undefined}
+                  details={details}
+                >
                   {isRecepcao && typeof onReativarAtendimentoSpec === "function" ? (
                     <button
                       type="button"
@@ -522,39 +825,31 @@ export default function TabAvisos({
                       Reativar atendimento…
                     </button>
                   ) : null}
-                </Card>
+                </NoticeCard>
               );
             })}
             {suspensaoPontual.map((row) => {
               const nome = nomeProfissional(row.specKey, profissionaisMap);
               const role = SPEC_META[row.specKey]?.role || "";
-              const turnoTxt = labelEscopoSuspensaoPontual(row.escopo);
               const exibirData = dataSuspensaoPosteriorAHoje(row.data, hoje);
-              const corpoTurno =
-                row.escopo === "dia"
-                  ? "nesta data não haverá atendimento na UBS durante o dia inteiro."
-                  : `não haverá atendimento na UBS no turno da ${turnoTxt}.`;
+              const details = [
+                {
+                  label: "Data",
+                  value: exibirData ? formatDataLonga(row.data) : "Hoje",
+                },
+                { label: "Turno", value: labelEscopoSuspensaoPontual(row.escopo) },
+                ...(row.motivo ? [{ label: "Motivo", value: row.motivo }] : []),
+              ];
               return (
-                <Card key={row.key} tone="danger">
-                  <p style={S.cardLine}>
-                    <strong>Suspensão pontual</strong> — {nome}
-                    {role ? ` (${role})` : ""}:
-                    {exibirData ? (
-                      <>
-                        {" "}
-                        em <strong>{formatDataLonga(row.data)}</strong>{" "}
-                      </>
-                    ) : (
-                      " "
-                    )}
-                    {corpoTurno}
-                    {row.motivo ? (
-                      <>
-                        {" "}
-                        <em style={{ fontWeight: 500 }}>Motivo:</em> {row.motivo}
-                      </>
-                    ) : null}
-                  </p>
+                <NoticeCard
+                  key={row.key}
+                  tone="danger"
+                  badge="Suspensão pontual"
+                  title="Atendimento suspenso"
+                  subject={nome}
+                  role={role || undefined}
+                  details={details}
+                >
                   {isRecepcao && typeof onRemoverSuspensaoPontual === "function" ? (
                     <button
                       type="button"
@@ -564,7 +859,7 @@ export default function TabAvisos({
                       Remover suspensão
                     </button>
                   ) : null}
-                </Card>
+                </NoticeCard>
               );
             })}
           </div>
@@ -572,40 +867,28 @@ export default function TabAvisos({
       ) : null}
 
       {temEncerrado ? (
-        <Section
-          title="Atendimentos encerrados"
-          hint={
-            isRecepcao
-              ? "Turnos marcados como encerrados no dia do atendimento; os cartões somem da aba Vagas."
-              : "Marcados pela recepção no dia do atendimento; os cartões somem da aba Vagas."
-          }
-        >
+        <Section title="Atendimentos encerrados">
           <div style={S.cardList}>
             {encerrados.map(({ spec, turno }) => {
               const nome = nomeProfissional(spec.key, profissionaisMap);
               const hasM = specTemSessaoNoTurno(spec, "manha");
               const hasT = specTemSessaoNoTurno(spec, "tarde");
-              let sufixoTurno;
-              if (turno === "manha") sufixoTurno = "da manhã";
-              else if (turno === "tarde") sufixoTurno = "da tarde";
-              else if (hasM && hasT) sufixoTurno = "da manhã e da tarde";
-              else if (hasM) sufixoTurno = "da manhã";
-              else if (hasT) sufixoTurno = "da tarde";
-              else sufixoTurno = null;
+              let turnoLabel;
+              if (turno === "manha") turnoLabel = "Manhã";
+              else if (turno === "tarde") turnoLabel = "Tarde";
+              else if (hasM && hasT) turnoLabel = "Manhã e tarde";
+              else if (hasM) turnoLabel = "Manhã";
+              else if (hasT) turnoLabel = "Tarde";
+              else turnoLabel = null;
               return (
-                <Card key={`${spec.key}_${spec.atendimentoDate}_${turno ?? "legado"}`} tone="muted">
-                  <p style={S.cardLine}>
-                    {sufixoTurno != null ? (
-                      <>
-                        Atendimento encerrado para <strong>{nome}</strong> no turno {sufixoTurno}.
-                      </>
-                    ) : (
-                      <>
-                        Atendimento encerrado para <strong>{nome}</strong>.
-                      </>
-                    )}
-                  </p>
-                </Card>
+                <NoticeCard
+                  key={`${spec.key}_${spec.atendimentoDate}_${turno ?? "legado"}`}
+                  tone="muted"
+                  badge="Encerrado"
+                  title="Atendimento encerrado"
+                  subject={nome}
+                  details={turnoLabel ? [{ label: "Turno", value: turnoLabel }] : []}
+                />
               );
             })}
           </div>
@@ -754,13 +1037,7 @@ const S = {
   sectionHint: { margin: 0, fontSize: 12, color: "#94A3B8" },
   sectionEmpty: { margin: 0, fontSize: 13, color: "#64748B" },
   cardList: { display: "flex", flexDirection: "column", gap: 8 },
-  card: {
-    padding: "12px 15px", borderRadius: 12, border: "1px solid #E2E8F0",
-    boxShadow: "0 1px 3px rgba(15,23,42,0.05)",
-  },
-  cardLine: { margin: 0, fontSize: 13, fontWeight: 600, lineHeight: 1.5 },
   cardActionBtn: {
-    marginTop: 10,
     padding: "8px 14px",
     fontSize: 12,
     fontWeight: 700,
@@ -771,7 +1048,6 @@ const S = {
     cursor: "pointer",
   },
   cardActionBtnSecondary: {
-    marginTop: 10,
     padding: "8px 14px",
     fontSize: 12,
     fontWeight: 700,
@@ -832,13 +1108,5 @@ const S = {
     color: "#fff",
     cursor: "pointer",
     boxShadow: "0 2px 8px rgba(67,56,202,0.3)",
-  },
-  cardTone: {
-    info: { borderColor: "#A5B4FC", background: "linear-gradient(180deg, #EEF2FF 0%, #E0E7FF 100%)", color: "#312E81" },
-    warn: { borderColor: "#FDBA74", background: "linear-gradient(180deg, #FFEDD5 0%, #FEF3C7 100%)", color: "#7C2D12" },
-    calendario: { borderColor: "#C4B5FD", background: "linear-gradient(180deg, #F5F3FF 0%, #EDE9FE 100%)", color: "#4C1D95" },
-    danger: { borderColor: "#FECACA", background: "linear-gradient(180deg, #FEF2F2 0%, #FFF1F2 100%)", color: "#991B1B" },
-    muted: { borderColor: "#CBD5E1", background: "#F8FAFC", color: "#334155" },
-    neutral: { background: "#fff", color: "#334155" },
   },
 };
