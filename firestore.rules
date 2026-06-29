@@ -109,7 +109,7 @@ service cloud.firestore {
       allow read:   if isLoggedIn() && (request.auth.uid == uid || isRecepcao() || isDiretor());
       allow write:  if isRecepcao();
       allow update: if isLoggedIn() && request.auth.uid == uid
-                       && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["fcmTokens"]);
+                       && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["fcmTokens", "fotoPerfil"]);
     }
 
     // Profissionais: todos leem; só recepção edita
