@@ -18,6 +18,7 @@ import {
   diasAtendimentoDefaultParaSpec,
   turnosDefaultParaSpecNoDia,
   suspensaoRegistroNaoExpirado,
+  suspensaoPontualAfetaData,
   filtrarSpecKeysAtivos,
 } from "../services/scheduleConfig";
 import { fraseVagasEsgotadasEncaixe } from "../services/whatsappSolicitacao";
@@ -389,6 +390,7 @@ export default function TabVagas({
   profissionalConfigPorSpec = {},
   usuarioUid = "",
   isDiretor = false,
+  atendimentoSuspensoSlots = {},
   avisosPreview = [],
   onNavigateToAvisos,
 }) {
@@ -721,6 +723,8 @@ export default function TabVagas({
                         profissionalConfigPorSpec={profissionalConfigPorSpec}
                         usuarioUid={usuarioUid}
                         isDiretor={isDiretor}
+                        atendimentoSuspensoPorSpec={atendimentoSuspensoPorSpec}
+                        atendimentoSuspensoSlots={atendimentoSuspensoSlots}
                       />
                     ))}
                     {placeholderKeys?.map((specKey) => (
@@ -728,6 +732,9 @@ export default function TabVagas({
                         key={`placeholder-${date}_${specKey}`}
                         specKey={specKey}
                         profissionaisMap={profissionaisMap}
+                        atendimentoDate={date}
+                        atendimentoSuspensoPorSpec={atendimentoSuspensoPorSpec}
+                        atendimentoSuspensoSlots={atendimentoSuspensoSlots}
                       />
                     ))}
                   </div>
@@ -764,6 +771,8 @@ export default function TabVagas({
                   profissionalConfigPorSpec={profissionalConfigPorSpec}
                   usuarioUid={usuarioUid}
                   isDiretor={isDiretor}
+                  atendimentoSuspensoPorSpec={atendimentoSuspensoPorSpec}
+                  atendimentoSuspensoSlots={atendimentoSuspensoSlots}
                 />
               ))}
             </Section>
@@ -796,6 +805,8 @@ export default function TabVagas({
                   profissionalConfigPorSpec={profissionalConfigPorSpec}
                   usuarioUid={usuarioUid}
                   isDiretor={isDiretor}
+                  atendimentoSuspensoPorSpec={atendimentoSuspensoPorSpec}
+                  atendimentoSuspensoSlots={atendimentoSuspensoSlots}
                 />
               ))}
               {placeholderKeys.map((specKey) => (
@@ -803,6 +814,9 @@ export default function TabVagas({
                   key={`placeholder-${date}_${specKey}`}
                   specKey={specKey}
                   profissionaisMap={profissionaisMap}
+                  atendimentoDate={date}
+                  atendimentoSuspensoPorSpec={atendimentoSuspensoPorSpec}
+                  atendimentoSuspensoSlots={atendimentoSuspensoSlots}
                 />
               ))}
             </Section>
@@ -1357,9 +1371,15 @@ function RecepcaoBotoesAtendimentoEncerrado({
 
 /** Card informativo para profissionais cujo agendamento só abre na véspera.
  *  Não possui botões de ação — aparece apenas na vista mobile por dia. */
-function PlaceholderCard({ specKey, profissionaisMap }) {
+function PlaceholderCard({ specKey, profissionaisMap, atendimentoDate, atendimentoSuspensoPorSpec = {}, atendimentoSuspensoSlots = {} }) {
   const meta = SPEC_META[specKey] || { role: "", av: "?", bg: "#F1F5F9", tc: "#475569" };
   const name = nomeProfissionalFirestore(specKey, profissionaisMap);
+  const isSuspenso = useMemo(() => {
+    if (!atendimentoDate) return false;
+    const entry = atendimentoSuspensoPorSpec[specKey];
+    if (entry && suspensaoRegistroNaoExpirado(entry, atendimentoDate) && entry.desde <= atendimentoDate) return true;
+    return suspensaoPontualAfetaData(specKey, atendimentoDate, atendimentoSuspensoSlots);
+  }, [specKey, atendimentoDate, atendimentoSuspensoPorSpec, atendimentoSuspensoSlots]);
   return (
     <div
       style={{
@@ -1391,6 +1411,9 @@ function PlaceholderCard({ specKey, profissionaisMap }) {
             >
               Agenda
             </span>
+            {isSuspenso && (
+              <span style={styles.suspensoBadge}>Suspenso</span>
+            )}
           </div>
         </div>
       </div>
@@ -1412,6 +1435,8 @@ function SpecCard({
   profissionalConfigPorSpec = {},
   usuarioUid = "",
   isDiretor = false,
+  atendimentoSuspensoPorSpec = {},
+  atendimentoSuspensoSlots = {},
 }) {
   const windowType = spec.windowType;
   const dentroJanelaSolicitacao =
@@ -1468,6 +1493,13 @@ function SpecCard({
     desdeStr: dentQuartaVisitaDomiciliarDesde,
   });
   const isSame = spec.windowType === "same";
+  const isSuspenso = useMemo(() => {
+    const date = spec.atendimentoDate;
+    if (!date) return false;
+    const entry = atendimentoSuspensoPorSpec[spec.key];
+    if (entry && suspensaoRegistroNaoExpirado(entry, date) && entry.desde <= date) return true;
+    return suspensaoPontualAfetaData(spec.key, date, atendimentoSuspensoSlots);
+  }, [spec.key, spec.atendimentoDate, atendimentoSuspensoPorSpec, atendimentoSuspensoSlots]);
   const dataEncerrado =
     typeof spec.atendimentoDate === "string" && spec.atendimentoDate
       ? spec.atendimentoDate
@@ -1549,6 +1581,9 @@ function SpecCard({
             >
               {isSame ? "Atend. hoje" : DAY_LABEL[spec.atendimentoDia]?.split("-")[0] || "Agenda"}
             </span>
+            {isSuspenso && (
+              <span style={styles.suspensoBadge}>Suspenso</span>
+            )}
             {!hasSome && visitaVariant && (
               <span style={styles.fullBadgeVisita}>Visitas domiciliares</span>
             )}
@@ -2438,6 +2473,18 @@ const styles = {
   cardAgendaLivre: { fontSize: 11, color: "#047857", margin: "4px 0 0", fontWeight: 600 },
   cardDate: { fontSize: 12, color: "#4338CA", margin: "6px 0 0", fontWeight: 500 },
   winTag: { fontSize: 11, padding: "4px 10px", borderRadius: 999, fontWeight: 600, whiteSpace: "nowrap" },
+  suspensoBadge: {
+    fontSize: 10,
+    fontWeight: 800,
+    letterSpacing: "0.06em",
+    textTransform: "uppercase",
+    padding: "3px 8px",
+    borderRadius: 999,
+    background: "#FEF2F2",
+    color: "#991B1B",
+    border: "1px solid #FECACA",
+    whiteSpace: "nowrap",
+  },
   fullBadge: {
     fontSize: 10,
     background: "#FEE2E2",

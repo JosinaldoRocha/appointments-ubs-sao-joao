@@ -1213,6 +1213,7 @@ export default function Dashboard() {
               isRecepcao ? handleToggleAtendimentoEncerrado : undefined
             }
             atendimentoSuspensoPorSpec={settings.atendimentoSuspensoPorSpec || {}}
+            atendimentoSuspensoSlots={settings.atendimentoSuspensoSlots || {}}
             specKeysDesativados={settings.specKeysDesativados || []}
             onSuspenderAtendimentoSpec={isRecepcao ? handleSuspenderAtendimentoSpec : undefined}
             onSolicitar={isRecepcao ? undefined : abrirModalSolicitacao}
