@@ -503,6 +503,8 @@ export default function TabVagas({
   }, [isMobile, mobilePorDataComPlaceholders]);
 
   // Desktop: seções ordenadas por data mesclando specs reais e placeholders.
+  // Hoje é tratado inteiramente na seção "same" — excluído das prev.
+  const hojeIso = dataHojeIso();
   const secoesDesktopComPlaceholders = (() => {
     const datesComSecao = new Set(prevSecoes.map((s) => s.dataMin).filter(Boolean));
     const merged = prevSecoes.map(({ dia, lista, dataMin }) => ({
@@ -516,11 +518,30 @@ export default function TabVagas({
         merged.push({ key: `placeholder-sec-${date}`, date, lista: [], placeholderKeys: keys });
       }
     }
-    return merged.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+    return merged
+      .sort((a, b) => (a.date || "").localeCompare(b.date || ""))
+      .filter((s) => s.date !== hojeIso);
   })();
 
+  // Placeholders de hoje entram na seção "same" (não criam seção separada com título duplicado).
+  const todayPlaceholderKeys = placeholdersPorData[hojeIso] || [];
+
+  // Separa cards de hoje entre disponíveis e suspensos para o desktop.
+  const isSuspensoHoje = (specKey, dateStr) => {
+    if (!dateStr) return false;
+    const entry = atendimentoSuspensoPorSpec[specKey];
+    if (entry && suspensaoRegistroNaoExpirado(entry, dateStr) && entry.desde <= dateStr) return true;
+    return suspensaoPontualAfetaData(specKey, dateStr, atendimentoSuspensoSlots);
+  };
+  const sameAtivos = same.filter((s) => !isSuspensoHoje(s.key, s.atendimentoDate));
+  const sameSuspensos = same.filter((s) => isSuspensoHoje(s.key, s.atendimentoDate));
+  const todayPHAtivos = todayPlaceholderKeys.filter((k) => !isSuspensoHoje(k, hojeIso));
+  const todayPHSuspensos = todayPlaceholderKeys.filter((k) => isSuspensoHoje(k, hojeIso));
+
   const temConteudoDesktop =
-    same.length > 0 || secoesDesktopComPlaceholders.length > 0;
+    sameAtivos.length > 0 || todayPHAtivos.length > 0 ||
+    sameSuspensos.length > 0 || todayPHSuspensos.length > 0 ||
+    secoesDesktopComPlaceholders.length > 0;
 
   if (specs.length === 0 && Object.keys(placeholdersPorData).length === 0 && !isRecepcao) {
     return (
@@ -745,12 +766,13 @@ export default function TabVagas({
         </div>
       ) : (
         <>
-          {same.length > 0 && (
+          {/* Atendimentos disponíveis hoje: specs ativos + placeholders de hoje não suspensos */}
+          {(sameAtivos.length > 0 || todayPHAtivos.length > 0) && (
             <Section
               sentenceTitle
-              title={<TituloAgendamentoDisponivel isoDateStr={same[0]?.atendimentoDate} />}
+              title={<TituloAgendamentoDisponivel isoDateStr={hojeIso} />}
             >
-              {same.map((spec) => (
+              {sameAtivos.map((spec) => (
                 <SpecCard
                   key={`same-${spec.atendimentoDate}_${spec.key}`}
                   spec={spec}
@@ -771,6 +793,65 @@ export default function TabVagas({
                   profissionalConfigPorSpec={profissionalConfigPorSpec}
                   usuarioUid={usuarioUid}
                   isDiretor={isDiretor}
+                  atendimentoSuspensoPorSpec={atendimentoSuspensoPorSpec}
+                  atendimentoSuspensoSlots={atendimentoSuspensoSlots}
+                />
+              ))}
+              {todayPHAtivos.map((specKey) => (
+                <PlaceholderCard
+                  key={`placeholder-${hojeIso}_${specKey}`}
+                  specKey={specKey}
+                  profissionaisMap={profissionaisMap}
+                  atendimentoDate={hojeIso}
+                  atendimentoSuspensoPorSpec={atendimentoSuspensoPorSpec}
+                  atendimentoSuspensoSlots={atendimentoSuspensoSlots}
+                />
+              ))}
+            </Section>
+          )}
+
+          {/* Suspensos hoje: specs suspensos + placeholders de hoje suspensos */}
+          {(sameSuspensos.length > 0 || todayPHSuspensos.length > 0) && (
+            <Section
+              sentenceTitle
+              title={
+                <>
+                  <span style={{ color: "#991B1B", fontWeight: 700 }}>Atendimento suspenso</span>
+                  {" hoje"}
+                </>
+              }
+            >
+              {sameSuspensos.map((spec) => (
+                <SpecCard
+                  key={`same-susp-${spec.atendimentoDate}_${spec.key}`}
+                  spec={spec}
+                  profissionaisMap={profissionaisMap}
+                  isRecepcao={isRecepcao}
+                  onSlotAction={onSlotAction}
+                  onSolicitar={onSolicitar}
+                  agoraRecepcao={agoraRecepcao}
+                  atendimentoEncerradoMap={atendimentoEncerradoMap}
+                  onToggleAtendimentoEncerrado={onToggleAtendimentoEncerrado}
+                  mostrarBotaoEncerradoRecepcao={recepcaoPrecisaFooterEncerrado(
+                    spec,
+                    atendimentoEncerradoMap,
+                    agoraRecepcao,
+                    onToggleAtendimentoEncerrado
+                  )}
+                  dentQuartaVisitaDomiciliarDesde={dentQuartaVisitaDomiciliarDesde}
+                  profissionalConfigPorSpec={profissionalConfigPorSpec}
+                  usuarioUid={usuarioUid}
+                  isDiretor={isDiretor}
+                  atendimentoSuspensoPorSpec={atendimentoSuspensoPorSpec}
+                  atendimentoSuspensoSlots={atendimentoSuspensoSlots}
+                />
+              ))}
+              {todayPHSuspensos.map((specKey) => (
+                <PlaceholderCard
+                  key={`placeholder-susp-${hojeIso}_${specKey}`}
+                  specKey={specKey}
+                  profissionaisMap={profissionaisMap}
+                  atendimentoDate={hojeIso}
                   atendimentoSuspensoPorSpec={atendimentoSuspensoPorSpec}
                   atendimentoSuspensoSlots={atendimentoSuspensoSlots}
                 />
@@ -1396,8 +1477,10 @@ function PlaceholderCard({ specKey, profissionaisMap, atendimentoDate, atendimen
           <div style={styles.cardHeaderMain}>
             <p style={styles.cardName}>{name}</p>
             <p style={styles.cardRole}>{meta.role}</p>
-            <p style={{ fontSize: 12, color: "#94A3B8", margin: "6px 0 0", fontWeight: 500 }}>
-              Agendamento abre na véspera
+            <p style={{ fontSize: 12, color: isSuspenso ? "#991B1B" : "#94A3B8", margin: "6px 0 0", fontWeight: 500 }}>
+              {isSuspenso
+                ? "Atendimento suspenso — volte no próximo dia de agendamento para verificar disponibilidade"
+                : "Agendamento abre na véspera"}
             </p>
           </div>
           <div style={styles.cardHeaderTags}>
