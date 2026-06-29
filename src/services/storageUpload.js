@@ -64,3 +64,11 @@ export async function uploadDocumentosPacienteSolicitacao(files) {
   if (!lista.length) return [];
   return Promise.all(lista.map((file) => uploadDocumentoPacienteSolicitacao(file)));
 }
+
+export async function uploadFotoPerfil(uid, file) {
+  const ext = (file.name || "foto").split(".").pop().replace(/[^a-z0-9]/gi, "").slice(0, 6) || "jpg";
+  const path = `perfis/${uid}/foto.${ext}`;
+  const objectRef = ref(storage, path);
+  await uploadBytes(objectRef, file, { contentType: file.type || "image/jpeg" });
+  return getDownloadURL(objectRef);
+}
