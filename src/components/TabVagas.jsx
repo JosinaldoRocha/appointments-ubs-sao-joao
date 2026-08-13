@@ -1,7 +1,6 @@
 // src/components/TabVagas.jsx
-import { useMemo, useState, useEffect, memo } from "react";
+import { useMemo, useState, useEffect, useRef, memo } from "react";
 import {
-  SPEC_META,
   DAY_LABEL,
   MEDICO_TIPO,
   DEFAULT_PROF_NAMES,
@@ -20,9 +19,14 @@ import {
   suspensaoRegistroNaoExpirado,
   suspensaoPontualAfetaData,
   filtrarSpecKeysAtivos,
+  listaSpecKeysCustom,
+  especialidadeUsaPlaceholderVespera,
+  diasAtendimentoEfetivosCompletoParaSpec,
+  getSpecMetaForKey,
 } from "../services/scheduleConfig";
 import { fraseVagasEsgotadasEncaixe } from "../services/whatsappSolicitacao";
 import { SessaoLabelComDestaqueTurno } from "./SessaoLabelDestaqueTurno";
+import { listenPainelVagasPublico, updatePainelVagasPublico } from "../services/db";
 
 function dataHojeIso() {
   return toDateStr(new Date());
@@ -388,6 +392,8 @@ export default function TabVagas({
   onSuspenderAtendimentoSpec,
   dentQuartaVisitaDomiciliarDesde = "",
   profissionalConfigPorSpec = {},
+  atendimentoDiasAtivosPorSpec = {},
+  atendimentoDiasTurnosPorSpec = {},
   usuarioUid = "",
   isDiretor = false,
   atendimentoSuspensoSlots = {},
@@ -397,10 +403,17 @@ export default function TabVagas({
   const [agoraRecepcao, setAgoraRecepcao] = useState(() => new Date());
   const [modalSuspenderSpecKey, setModalSuspenderSpecKey] = useState(null);
 
-  const specKeysAtivosAgenda = useMemo(
-    () => filtrarSpecKeysAtivos(Object.keys(DEFAULT_PROF_NAMES), specKeysDesativados),
-    [specKeysDesativados]
-  );
+  // Profissionais fixos + cadastrados pela recepção (`custom_*`) ainda ativos na agenda — usado
+  // no painel "Suspender atendimento" e nos cartões-placeholder abaixo. Sem incluir os `custom_*`
+  // aqui, um profissional recém-cadastrado nunca aparecia nesses lugares.
+  const specKeysAtivosAgenda = useMemo(() => {
+    const fixos = filtrarSpecKeysAtivos(Object.keys(DEFAULT_PROF_NAMES), specKeysDesativados);
+    const customs = filtrarSpecKeysAtivos(
+      listaSpecKeysCustom(profissionaisMap, profissionalConfigPorSpec),
+      specKeysDesativados
+    );
+    return [...fixos, ...customs];
+  }, [specKeysDesativados, profissionaisMap, profissionalConfigPorSpec]);
   const [suspendModo, setSuspendModo] = useState("pontual");
   const [suspendPontualData, setSuspendPontualData] = useState("");
   const [suspendPontualEscopo, setSuspendPontualEscopo] = useState("manha");
@@ -454,18 +467,28 @@ export default function TabVagas({
       .map(([date, lista]) => ({ date, lista }));
   }, [isMobile, specs]);
 
-  // Profissionais cujo card só abre na véspera — mapa data → [specKeys] para todos
-  // os dias que eles trabalham sem spec gerado. Usado em mobile e desktop.
+  // Profissionais cujo card só abre na véspera — mapa data → [specKeys] para todos os dias
+  // que eles trabalham sem spec gerado ainda. Vale tanto para os fixos (médico, dentistas)
+  // quanto para qualquer profissional cadastrado pela recepção (`custom_*`), já que o modo de
+  // agendamento padrão de um novo cadastro também é "dia útil anterior". Usado em mobile e desktop.
+  const vesperaKeys = useMemo(
+    () =>
+      specKeysAtivosAgenda.filter((k) =>
+        especialidadeUsaPlaceholderVespera(k, profissionalConfigPorSpec)
+      ),
+    [specKeysAtivosAgenda, profissionalConfigPorSpec]
+  );
   const placeholdersPorData = useMemo(() => {
-    const vesperaKeys = ["medico", "dentFernando", "dentPatrick"].filter((k) =>
-      specKeysAtivosAgenda.includes(k)
-    );
     if (vesperaKeys.length === 0) return {};
     const jaNoSpecs = new Set(specs.map((s) => `${s.key}_${s.atendimentoDate}`));
     const hojeRef = new Date(dataHojeIso() + "T12:00:00");
     const result = {};
     for (const specKey of vesperaKeys) {
-      const diasTrabalho = diasAtendimentoDefaultParaSpec(specKey);
+      const diasTrabalho = diasAtendimentoEfetivosCompletoParaSpec(specKey, {
+        atendimentoDiasAtivosPorSpec,
+        atendimentoDiasTurnosPorSpec,
+        profissionalConfigPorSpec,
+      });
       for (let add = 0; add < 14; add++) {
         const cand = new Date(hojeRef);
         cand.setDate(cand.getDate() + add);
@@ -478,7 +501,7 @@ export default function TabVagas({
       }
     }
     return result;
-  }, [specs, specKeysAtivosAgenda]);
+  }, [specs, vesperaKeys, atendimentoDiasAtivosPorSpec, atendimentoDiasTurnosPorSpec, profissionalConfigPorSpec]);
 
   const mobilePorDataComPlaceholders = useMemo(() => {
     if (!isMobile) return [];
@@ -578,6 +601,7 @@ export default function TabVagas({
   return (
     <div style={styles.wrap}>
       <AvisosPreviewBanner items={avisosPreview} onClick={onNavigateToAvisos} />
+      {isRecepcao && <PainelVagasControl />}
       {isRecepcao && (
         <div style={styles.legend}>
           <LegendItem color="#E0E7FF" border="#A5B4FC" label="Agenda: dia útil anterior ao atendimento" />
@@ -756,6 +780,7 @@ export default function TabVagas({
                         atendimentoDate={date}
                         atendimentoSuspensoPorSpec={atendimentoSuspensoPorSpec}
                         atendimentoSuspensoSlots={atendimentoSuspensoSlots}
+                        profissionalConfigPorSpec={profissionalConfigPorSpec}
                       />
                     ))}
                   </div>
@@ -805,6 +830,7 @@ export default function TabVagas({
                   atendimentoDate={hojeIso}
                   atendimentoSuspensoPorSpec={atendimentoSuspensoPorSpec}
                   atendimentoSuspensoSlots={atendimentoSuspensoSlots}
+                  profissionalConfigPorSpec={profissionalConfigPorSpec}
                 />
               ))}
             </Section>
@@ -854,6 +880,7 @@ export default function TabVagas({
                   atendimentoDate={hojeIso}
                   atendimentoSuspensoPorSpec={atendimentoSuspensoPorSpec}
                   atendimentoSuspensoSlots={atendimentoSuspensoSlots}
+                  profissionalConfigPorSpec={profissionalConfigPorSpec}
                 />
               ))}
             </Section>
@@ -898,6 +925,7 @@ export default function TabVagas({
                   atendimentoDate={date}
                   atendimentoSuspensoPorSpec={atendimentoSuspensoPorSpec}
                   atendimentoSuspensoSlots={atendimentoSuspensoSlots}
+                  profissionalConfigPorSpec={profissionalConfigPorSpec}
                 />
               ))}
             </Section>
@@ -915,7 +943,10 @@ export default function TabVagas({
           </p>
           <div style={styles.painelSuspenderAcessoGrid}>
             {specKeysAtivosAgenda.map((specKey) => {
-              const meta = SPEC_META[specKey];
+              const meta = getSpecMetaForKey(specKey, {
+                profissionalConfigPorSpec,
+                nome: nomeProfissionalFirestore(specKey, profissionaisMap),
+              });
               const suspensoPeriodo = suspensaoRegistroNaoExpirado(
                 atendimentoSuspensoPorSpec[specKey],
                 dataHojeIso()
@@ -974,8 +1005,9 @@ export default function TabVagas({
             </h2>
             <p style={styles.modalLead}>
               {nomeProfissionalFirestore(modalSuspenderSpecKey, profissionaisMap)}
-              {SPEC_META[modalSuspenderSpecKey]?.role
-                ? ` (${SPEC_META[modalSuspenderSpecKey].role})`
+              {modalSuspenderSpecKey &&
+              getSpecMetaForKey(modalSuspenderSpecKey, { profissionalConfigPorSpec }).role
+                ? ` (${getSpecMetaForKey(modalSuspenderSpecKey, { profissionalConfigPorSpec }).role})`
                 : ""}
             </p>
             <div style={styles.modalTipoSuspRow} role="radiogroup" aria-label="Tipo de suspensão">
@@ -1452,9 +1484,16 @@ function RecepcaoBotoesAtendimentoEncerrado({
 
 /** Card informativo para profissionais cujo agendamento só abre na véspera.
  *  Não possui botões de ação — aparece apenas na vista mobile por dia. */
-function PlaceholderCard({ specKey, profissionaisMap, atendimentoDate, atendimentoSuspensoPorSpec = {}, atendimentoSuspensoSlots = {} }) {
-  const meta = SPEC_META[specKey] || { role: "", av: "?", bg: "#F1F5F9", tc: "#475569" };
+function PlaceholderCard({
+  specKey,
+  profissionaisMap,
+  atendimentoDate,
+  atendimentoSuspensoPorSpec = {},
+  atendimentoSuspensoSlots = {},
+  profissionalConfigPorSpec = {},
+}) {
   const name = nomeProfissionalFirestore(specKey, profissionaisMap);
+  const meta = getSpecMetaForKey(specKey, { profissionalConfigPorSpec, nome: name });
   const isSuspenso = useMemo(() => {
     if (!atendimentoDate) return false;
     const entry = atendimentoSuspensoPorSpec[specKey];
@@ -1531,8 +1570,8 @@ function SpecCard({
     : null;
   const msgForaDiaAgente = msgForaDiaObj?.main ?? "";
   const notaForaDiaAgente = msgForaDiaObj?.nota ?? "";
-  const meta = SPEC_META[spec.key] || { role: "", av: "?", bg: "#F1F5F9", tc: "#475569" };
   const name = nomeProfissionalFirestore(spec.key, profissionaisMap);
+  const meta = getSpecMetaForKey(spec.key, { profissionalConfigPorSpec, nome: name });
   const indicesSessoesUi = useMemo(() => {
     const v = indicesSessoesAtendimentoHojeVisiveis(spec, agoraRecepcao);
     if (v == null) return spec.sessions.map((_, i) => i);
@@ -2070,6 +2109,79 @@ const SessionRow = memo(function SessionRow({
   );
 }, sessionRowPropsIguais);
 
+/** Liga/desliga o painel de vagas do balcão (tela pública em `/painel-vagas`). */
+function PainelVagasControl() {
+  const [mirror, setMirror] = useState({ ativo: false, itens: [] });
+  const [saving, setSaving] = useState(false);
+  const painelWindowRef = useRef(null);
+  const isMobile = useIsMobile();
+
+  useEffect(() => listenPainelVagasPublico(setMirror), []);
+
+  const configurado = (mirror.itens || []).length > 0;
+
+  function abrirPainel() {
+    painelWindowRef.current = window.open("/painel-vagas", "_blank");
+  }
+
+  async function toggle() {
+    const proximoAtivo = !mirror.ativo;
+    // Abre antes do `await` — depois de uma chamada assíncrona o navegador pode tratar
+    // como pop-up e bloquear, por perder o contexto de gesto do usuário.
+    // Abertura automática só na versão mobile; no desktop a recepção usa "Exibir painel".
+    if (proximoAtivo && isMobile) {
+      abrirPainel();
+    } else if (!proximoAtivo && painelWindowRef.current && !painelWindowRef.current.closed) {
+      // Só funciona se o painel foi aberto nesta mesma sessão do navegador (mesmo
+      // aparelho); num tablet separado no balcão não há como fechar a aba remotamente —
+      // ela mesma detecta `ativo: false` e volta à tela de espera.
+      painelWindowRef.current.close();
+      painelWindowRef.current = null;
+    }
+    setSaving(true);
+    try {
+      await updatePainelVagasPublico({ ativo: proximoAtivo });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!configurado) {
+    return (
+      <div style={styles.painelControl}>
+        <span style={styles.painelControlHint}>
+          Painel de vagas: configure os profissionais em Config &gt; Painel de vagas.
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.painelControl}>
+      <span style={styles.painelControlHint}>
+        Painel de vagas do balcão: {mirror.ativo ? "ativo" : "desativado"}
+      </span>
+      {mirror.ativo && (
+        <button type="button" style={styles.painelControlBtn} onClick={abrirPainel}>
+          Exibir painel
+        </button>
+      )}
+      <button
+        type="button"
+        style={{
+          ...styles.painelControlBtn,
+          ...(mirror.ativo ? styles.painelControlBtnAtivo : {}),
+          opacity: saving ? 0.6 : 1,
+        }}
+        disabled={saving}
+        onClick={toggle}
+      >
+        {mirror.ativo ? "Encerrar painel" : "Ativar painel"}
+      </button>
+    </div>
+  );
+}
+
 function LegendItem({ color, border, label }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "#64748B" }}>
@@ -2090,6 +2202,33 @@ function LegendItem({ color, border, label }) {
 
 const styles = {
   wrap: { maxWidth: 1200, margin: "0 auto" },
+  painelControl: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    flexWrap: "wrap",
+    background: "#F8FAFC",
+    border: "1px solid #E2E8F0",
+    borderRadius: 10,
+    padding: "10px 14px",
+    marginBottom: 12,
+  },
+  painelControlHint: { fontSize: 13, color: "#475569" },
+  painelControlBtn: {
+    fontSize: 13,
+    fontWeight: 600,
+    padding: "8px 16px",
+    borderRadius: 8,
+    border: "1px solid #0C447C",
+    background: "#fff",
+    color: "#0C447C",
+    cursor: "pointer",
+  },
+  painelControlBtnAtivo: {
+    background: "#0C447C",
+    color: "#fff",
+  },
   modalBackdrop: {
     position: "fixed",
     inset: 0,

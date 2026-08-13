@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from "./hooks/useAuth";
 import Login from "./pages/Login";
 import RecuperarSenha from "./pages/RecuperarSenha";
 import Dashboard from "./pages/Dashboard";
+import PainelVagas from "./pages/PainelVagas";
 
 const APP_VERSION = process.env.REACT_APP_VERSION || "1.0.0";
 const VERSION_LABEL = `v${APP_VERSION}`;
@@ -26,6 +27,7 @@ export default function App() {
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/recuperar-senha" element={<RecuperarSenha />} />
+            <Route path="/painel-vagas" element={<PainelVagas />} />
             <Route path="/" element={<Guard><Dashboard /></Guard>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

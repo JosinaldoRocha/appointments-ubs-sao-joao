@@ -32,6 +32,7 @@ import {
   isSpecKeyCustom,
   coletarLimpezaSuspensoesExpiradas,
   toDateStr,
+  normalizePainelVagasSpecKeys,
 } from "./scheduleConfig";
 import { normalizeCronogramaUbs, cronogramaUbsVazio } from "./cronogramaUbs";
 
@@ -57,6 +58,7 @@ const EMPTY_SETTINGS = {
   profissionalConfigPorSpec: {},
   specKeysDesativados: [],
   cronogramaUbs: cronogramaUbsVazio(),
+  painelVagasSpecKeys: [],
 };
 
 const DIAS_SEMANA_SPEC = new Set(["segunda", "terca", "quarta", "quinta", "sexta"]);
@@ -148,6 +150,7 @@ function normalizeSettingsData(raw = {}) {
     profissionalConfigPorSpec: normalizeProfissionalConfigPorSpec(d.profissionalConfigPorSpec),
     specKeysDesativados: normalizeSpecKeysDesativados(d.specKeysDesativados),
     cronogramaUbs: normalizeCronogramaUbs(d.cronogramaUbs),
+    painelVagasSpecKeys: normalizePainelVagasSpecKeys(d.painelVagasSpecKeys),
   };
 }
 
@@ -213,6 +216,23 @@ export async function createProfissional(data) {
     atualizadoEm: serverTimestamp(),
   });
   return ref.id;
+}
+
+/**
+ * Cria profissional customizado (`specKey` = `custom_{id}`) num único write — gera o id do
+ * documento no cliente para gravar `specKey` já na criação, evitando um segundo round-trip
+ * (`createProfissional` + `updateProfissional`) que atrasava o profissional aparecer na agenda.
+ */
+export async function createProfissionalComSpecKeyCustom(data) {
+  const ref = doc(collection(db, "profissionais"));
+  const specKey = `custom_${ref.id}`;
+  await setDoc(ref, {
+    ...data,
+    specKey,
+    criadoEm: serverTimestamp(),
+    atualizadoEm: serverTimestamp(),
+  });
+  return { id: ref.id, specKey };
 }
 
 /** Grava ou remove override de vagas/agenda em `settings/ubs.profissionalConfigPorSpec`. */
@@ -300,16 +320,23 @@ async function purgeSettingsParaSpecKey(specKey) {
   await setDoc(ref, patch, { merge: true });
 }
 
-/** Tira o `specKey` da lista de profissionais removidos da agenda (ex.: ao cadastrar de novo). */
+/**
+ * Tira o `specKey` da lista de profissionais removidos da agenda (ex.: ao cadastrar de novo).
+ * Usa `arrayRemove` direto (sem ler o documento antes) para não gastar um round-trip extra —
+ * é chamado sempre que um profissional é salvo, e cada round-trip a mais atrasa o cartão
+ * aparecer na agenda.
+ */
 export async function restaurarSpecKeyNaAgenda(specKey) {
   const sk = typeof specKey === "string" ? specKey.trim() : "";
   if (!sk) return;
-  const ref = doc(db, "settings", SETTINGS_ID);
-  const snap = await getDoc(ref);
-  const list = normalizeSpecKeysDesativados(snap.exists() ? snap.data().specKeysDesativados : []);
-  const next = list.filter((k) => k !== sk);
-  if (next.length === list.length) return;
-  await updateSettings({ specKeysDesativados: next });
+  await setDoc(
+    doc(db, "settings", SETTINGS_ID),
+    {
+      atualizadoEm: serverTimestamp(),
+      specKeysDesativados: arrayRemove(sk),
+    },
+    { merge: true }
+  );
 }
 
 /** Apaga documentos em `vagas` e `listaEspera` vinculados ao `specKey`. */
@@ -456,6 +483,39 @@ export function listenRecepcaoSession(callback) {
     const uidAtivo = d.uidAtivo != null ? String(d.uidAtivo) : null;
     callback({ uidAtivo });
   });
+}
+
+// ── PAINEL DE VAGAS DO BALCÃO (tela pública/kiosk) ───────────────
+// Doc dedicado e de leitura pública (ver firestore.rules): guarda só specKey/nome/contagem
+// agregada, nunca dados de `vagas` bruta (que tem `reservaSolicitacao.nome` do paciente).
+const PAINEL_VAGAS_PUBLICO_ID = "painelVagasPublico";
+
+export function listenPainelVagasPublico(callback) {
+  return onSnapshot(doc(db, "settings", PAINEL_VAGAS_PUBLICO_ID), (snap) => {
+    if (!snap.exists()) {
+      callback({ ativo: false, itens: [], atualizadoEm: null });
+      return;
+    }
+    const d = snap.data();
+    callback({
+      ativo: d.ativo === true,
+      itens: Array.isArray(d.itens) ? d.itens : [],
+      atualizadoEm: d.atualizadoEm ?? null,
+    });
+  });
+}
+
+/**
+ * Atualiza o doc do painel público. Quem recalcula os números (`itens`) nunca deve mandar
+ * `ativo` junto, e quem liga/desliga (`ativo`) nunca deve mandar `itens` junto — cada um
+ * escreve só o seu campo para não sobrescrever o outro via merge.
+ */
+export async function updatePainelVagasPublico(partial) {
+  await setDoc(
+    doc(db, "settings", PAINEL_VAGAS_PUBLICO_ID),
+    { ...partial, atualizadoEm: serverTimestamp() },
+    { merge: true }
+  );
 }
 
 /**

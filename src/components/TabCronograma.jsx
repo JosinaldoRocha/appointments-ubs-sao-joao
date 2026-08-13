@@ -20,7 +20,12 @@ import {
   tiposAtendimentoParaCategoria,
   validarItemCronogramaRascunho,
 } from "../services/cronogramaUbs";
-import { filtrarSpecKeysAtivos } from "../services/scheduleConfig";
+import {
+  filtrarSpecKeysAtivos,
+  listaSpecKeysCustom,
+  specKeyEstaDesativado,
+  getSpecMetaForKey,
+} from "../services/scheduleConfig";
 
 const DAY_LABEL_CURTO = {
   segunda: "Seg",
@@ -34,6 +39,8 @@ export default function TabCronograma({
   cronogramaUbs,
   specKeysDesativados = [],
   profNames = {},
+  profissionaisMap = {},
+  profissionalConfigPorSpec = {},
   podeEditar,
   showToast,
 }) {
@@ -60,8 +67,63 @@ export default function TabCronograma({
       CRONOGRAMA_CATEGORIAS.map((c) => c.key),
       specKeysDesativados
     );
-    return CRONOGRAMA_CATEGORIAS.filter((c) => keys.includes(c.key));
-  }, [specKeysDesativados]);
+    const fixas = CRONOGRAMA_CATEGORIAS.filter((c) => keys.includes(c.key));
+    // Profissionais cadastrados em Config. → "Novo profissional" (specKey `custom_*`) também
+    // entram como categoria aqui — sem isso, eles nunca aparecem para escolha no cronograma.
+    const customKeys = listaSpecKeysCustom(profissionaisMap, profissionalConfigPorSpec).filter(
+      (k) => !specKeyEstaDesativado(k, specKeysDesativados)
+    );
+    const custom = customKeys.map((key) => ({
+      key,
+      label: getSpecMetaForKey(key, { profissionalConfigPorSpec }).role,
+    }));
+    return [...fixas, ...custom];
+  }, [specKeysDesativados, profissionaisMap, profissionalConfigPorSpec]);
+
+  // Rótulo só com a função — usado no badge do item e no filtro "Todos os profissionais",
+  // onde o nome já aparece do lado (não repetir "Fulana — Fulana — Clínico Geral").
+  const categoriaLabels = useMemo(() => {
+    const map = {};
+    for (const c of categoriasAtivas) map[c.key] = c.label;
+    return map;
+  }, [categoriasAtivas]);
+
+  const resolverLabelCategoria = (categoria) => categoriaLabels[categoria] || labelCategoria(categoria);
+
+  // `categoriaLabels` já guarda a função (role) de cada categoria — reaproveita como dica pra
+  // achar os tipos de atendimento certos quando a categoria é um profissional customizado
+  // (ex.: "Clínico Geral" cadastrado avulso ganha os mesmos tipos do médico fixo).
+  const tiposDaCategoria = (categoria) => tiposAtendimentoParaCategoria(categoria, categoriaLabels[categoria]);
+
+  // O formulário de novo atendimento começa com a categoria "medico" (padrão em código). Se esse
+  // profissional (ou o que estiver selecionado) for excluído/desativado enquanto o formulário
+  // não está em edição de um item existente, troca sozinho pela primeira categoria ativa — sem
+  // isso, clicar em "Adicionar" sem mexer no campo Categoria criava um item "fantasma" preso a um
+  // profissional que não existe mais (foi o que gerou o "Dr. Clínico" órfão no cronograma).
+  useEffect(() => {
+    if (itemEditandoId) return;
+    if (categoriasAtivas.length === 0) return;
+    if (categoriasAtivas.some((c) => c.key === form.categoria)) return;
+    const categoria = categoriasAtivas[0].key;
+    const tipos = tiposAtendimentoParaCategoria(categoria, categoriaLabels[categoria]);
+    setForm({
+      ...novoItemCronogramaRascunho(categoria),
+      nome: profNames[categoria] || "",
+      tipos: tipos[0] ? [tipos[0].key] : [],
+    });
+  }, [categoriasAtivas, categoriaLabels, form.categoria, itemEditandoId, profNames]);
+
+  // Rótulo com nome + função — só para o <select> de Categoria no formulário, que é o próprio
+  // seletor de profissional: a função sozinha ("Clínico Geral") não diferencia quem é quem
+  // quando há mais de um profissional cadastrado com a mesma função.
+  const categoriasFormOpcoes = useMemo(
+    () =>
+      categoriasAtivas.map((c) => {
+        const nome = profNames[c.key];
+        return { key: c.key, label: nome ? `${nome} — ${c.label}` : c.label };
+      }),
+    [categoriasAtivas, profNames]
+  );
 
   const mapaPublicado = useMemo(() => itensCronogramaPorDiaTurno(publicado), [publicado]);
   const mapaRascunho = useMemo(() => itensCronogramaPorDiaTurno(rascunho), [rascunho]);
@@ -81,7 +143,7 @@ export default function TabCronograma({
 
   const temFiltroAtivo = profFiltro !== null || diaFiltro !== null;
   const temDados = editando || cronogramaTemItens(publicado);
-  const tiposForm = tiposAtendimentoParaCategoria(form.categoria);
+  const tiposForm = tiposDaCategoria(form.categoria);
   const rascunhoIgualPublicado = cronogramaUbsIguais(rascunho, publicado);
 
   const gradeVazia = useMemo(() => {
@@ -92,7 +154,13 @@ export default function TabCronograma({
   }, [temFiltroAtivo, editando, diasExibicao, mapaExibicao]);
 
   function limparFormulario(categoria = form.categoria) {
-    setForm(novoItemCronogramaRascunho(categoria));
+    const base = novoItemCronogramaRascunho(categoria);
+    const tipos = tiposDaCategoria(categoria);
+    setForm({
+      ...base,
+      nome: profNames[categoria] || base.nome,
+      tipos: tipos[0] ? [tipos[0].key] : [],
+    });
     setItemEditandoId(null);
   }
 
@@ -125,8 +193,8 @@ export default function TabCronograma({
         nome: prof.nome,
         categoria: prof.categoria,
         dia: diaFiltro || prev.dia,
-        tipos: tiposAtendimentoParaCategoria(prof.categoria)[0]
-          ? [tiposAtendimentoParaCategoria(prof.categoria)[0].key]
+        tipos: tiposDaCategoria(prof.categoria)[0]
+          ? [tiposDaCategoria(prof.categoria)[0].key]
           : [],
       }));
     }
@@ -171,7 +239,7 @@ export default function TabCronograma({
   }
 
   function aoMudarCategoria(categoria) {
-    const tipos = tiposAtendimentoParaCategoria(categoria);
+    const tipos = tiposDaCategoria(categoria);
     setForm((prev) => ({
       ...prev,
       categoria,
@@ -216,8 +284,8 @@ export default function TabCronograma({
           categoria: profFiltro.categoria,
           nome: profFiltro.nome,
           dia: diaFiltro || novoItemCronogramaRascunho(profFiltro.categoria).dia,
-          tipos: tiposAtendimentoParaCategoria(profFiltro.categoria)[0]
-            ? [tiposAtendimentoParaCategoria(profFiltro.categoria)[0].key]
+          tipos: tiposDaCategoria(profFiltro.categoria)[0]
+            ? [tiposDaCategoria(profFiltro.categoria)[0].key]
             : [],
         }
       : diaFiltro
@@ -281,7 +349,7 @@ export default function TabCronograma({
               <option value="">Todos os profissionais</option>
               {profissionaisLista.map((p) => (
                 <option key={p.chave} value={p.chave}>
-                  {p.nome} — {labelCategoria(p.categoria)}
+                  {p.nome} — {resolverLabelCategoria(p.categoria)}
                 </option>
               ))}
             </select>
@@ -303,7 +371,7 @@ export default function TabCronograma({
                   onChange={(e) => aoMudarCategoria(e.target.value)}
                   disabled={salvando}
                 >
-                  {categoriasAtivas.map((c) => (
+                  {categoriasFormOpcoes.map((c) => (
                     <option key={c.key} value={c.key}>
                       {c.label}
                     </option>
@@ -387,8 +455,8 @@ export default function TabCronograma({
                           categoria: profFiltro.categoria,
                           nome: profFiltro.nome,
                           dia: diaFiltro || novoItemCronogramaRascunho(cat).dia,
-                          tipos: tiposAtendimentoParaCategoria(cat)[0]
-                            ? [tiposAtendimentoParaCategoria(cat)[0].key]
+                          tipos: tiposDaCategoria(cat)[0]
+                            ? [tiposDaCategoria(cat)[0].key]
                             : [],
                         }
                       : diaFiltro
@@ -410,6 +478,7 @@ export default function TabCronograma({
             onRemover={removerItem}
             onEditar={iniciarEdicaoItem}
             itemEditandoId={itemEditandoId}
+            categoriaLabels={categoriaLabels}
           />
 
           <div style={S.actions}>
@@ -437,6 +506,7 @@ export default function TabCronograma({
             mapa={mapaExibicao}
             diasParaExibir={diasExibicao}
             ocultarVazios={temFiltroAtivo}
+            categoriaLabels={categoriaLabels}
           />
         )
       ) : (
@@ -461,6 +531,7 @@ function CronogramaGrade({
   onEditar,
   itemEditandoId = null,
   ocultarVazios = false,
+  categoriaLabels = {},
 }) {
   return (
     <div style={S.grade}>
@@ -505,7 +576,7 @@ function CronogramaGrade({
                               <div style={S.itemInfo}>
                                 <strong style={S.itemNome}>{item.nome}</strong>
                                 <span style={S.itemCategoriaBadge}>
-                                  {labelCategoria(item.categoria)}
+                                  {categoriaLabels[item.categoria] || labelCategoria(item.categoria)}
                                 </span>
                               </div>
                               {editavel && (

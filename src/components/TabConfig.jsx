@@ -6,6 +6,7 @@ import {
   deleteUser,
   updateProfissional,
   createProfissional,
+  createProfissionalComSpecKeyCustom,
   deleteProfissionalComRelacionados,
   restaurarSpecKeyNaAgenda,
   patchProfissionalConfigPorSpec,
@@ -55,6 +56,8 @@ import {
   gradeMapFromEnfermeiraSessoes,
   normalizarAgendaModo,
   normalizeDiasAgendamentoLista,
+  normalizePainelVagasSpecKeys,
+  PAINEL_VAGAS_MAX_PROFISSIONAIS,
 } from "../services/scheduleConfig";
 import PasswordInput from "./PasswordInput";
 
@@ -208,6 +211,10 @@ export default function TabConfig({
   const [dentQuartaVisitaDomiciliarDesde, setDentQuartaVisitaDomiciliarDesde] = useState("");
   const [whatsappDirecaoEncaixe, setWhatsappDirecaoEncaixe] = useState("");
   const [savingRegras, setSavingRegras] = useState(false);
+  const [painelSpecKeysForm, setPainelSpecKeysForm] = useState(
+    Array(PAINEL_VAGAS_MAX_PROFISSIONAIS).fill("")
+  );
+  const [savingPainel, setSavingPainel] = useState(false);
 
   useEffect(() => {
     getAllUsers().then(setUsers);
@@ -225,6 +232,11 @@ export default function TabConfig({
           : ""
       );
       setWhatsappDirecaoEncaixe(String(s.whatsappDirecaoEncaixe || "").replace(/\D/g, "").slice(0, 11));
+      const painelKeys = normalizePainelVagasSpecKeys(s.painelVagasSpecKeys);
+      setPainelSpecKeysForm([
+        ...painelKeys,
+        ...Array(PAINEL_VAGAS_MAX_PROFISSIONAIS - painelKeys.length).fill(""),
+      ]);
     });
     return un;
   }, []);
@@ -308,31 +320,37 @@ export default function TabConfig({
       enfermeiraSessoes: extras.enfermeiraSessoes,
     });
     try {
-      await restaurarSpecKeyNaAgenda(specKey);
-      if (existente?.id) {
-        await updateProfissional(existente.id, {
-          nome: n,
-          specKey,
-          ...(role ? { role } : {}),
-          ...(igualAoPadraoDoCodigo
-            ? { atendimentoDiasTurnos: deleteField() }
-            : { atendimentoDiasTurnos: normalized }),
-        });
-      } else {
-        await createProfissional({
-          nome: n,
-          specKey,
-          ...(role ? { role } : {}),
-          ...(isSpecKeyCustom(specKey) ? { custom: true } : {}),
-          ...(igualAoPadraoDoCodigo ? {} : { atendimentoDiasTurnos: normalized }),
-        });
-      }
-      await patchProfissionalConfigPorSpec(specKey, cfgPatch);
+      // Writes independentes (docs/campos diferentes) disparados em paralelo — evita que o
+      // cartão do profissional demore a aparecer em Vagas/Cronograma por causa de round-trips
+      // sequenciais desnecessários.
+      const tasks = [
+        restaurarSpecKeyNaAgenda(specKey),
+        existente?.id
+          ? updateProfissional(existente.id, {
+              nome: n,
+              specKey,
+              ...(role ? { role } : {}),
+              ...(igualAoPadraoDoCodigo
+                ? { atendimentoDiasTurnos: deleteField() }
+                : { atendimentoDiasTurnos: normalized }),
+            })
+          : createProfissional({
+              nome: n,
+              specKey,
+              ...(role ? { role } : {}),
+              ...(isSpecKeyCustom(specKey) ? { custom: true } : {}),
+              ...(igualAoPadraoDoCodigo ? {} : { atendimentoDiasTurnos: normalized }),
+            }),
+        patchProfissionalConfigPorSpec(specKey, cfgPatch),
+      ];
       if (diasAtivos.length) {
-        await updateSettings({
-          atendimentoDiasAtivosPorSpec: { [specKey]: diasAtivos },
-        });
+        tasks.push(
+          updateSettings({
+            atendimentoDiasAtivosPorSpec: { [specKey]: diasAtivos },
+          })
+        );
       }
+      await Promise.all(tasks);
       showToast(`Profissional ${existente?.id ? "atualizado" : "cadastrado"}: ${n}`, "success");
     } catch {
       showToast("Erro ao salvar o profissional.", "danger");
@@ -378,14 +396,12 @@ export default function TabConfig({
       }
     }
     try {
-      const docId = await createProfissional({
+      const { specKey } = await createProfissionalComSpecKeyCustom({
         nome: n,
         role,
         custom: true,
         atendimentoDiasTurnos: normalized,
       });
-      const specKey = `custom_${docId}`;
-      await updateProfissional(docId, { specKey });
       const cfgPatch = montarPatchProfissionalConfig(specKey, {
         agendaModo: payload.agendaModo || AGENDA_MODO.DIA_UTIL_ANTERIOR,
         vagasBase: vagas,
@@ -393,10 +409,14 @@ export default function TabConfig({
         isCustom: true,
         diasAgendamento: payload.diasAgendamento,
       });
-      await patchProfissionalConfigPorSpec(specKey, cfgPatch);
-      await updateSettings({
-        atendimentoDiasAtivosPorSpec: { [specKey]: Object.keys(normalized) },
-      });
+      // Writes independentes em paralelo — reduz o atraso até o profissional aparecer em
+      // Vagas e Cronograma (antes eram 2 round-trips sequenciais extras).
+      await Promise.all([
+        patchProfissionalConfigPorSpec(specKey, cfgPatch),
+        updateSettings({
+          atendimentoDiasAtivosPorSpec: { [specKey]: Object.keys(normalized) },
+        }),
+      ]);
       showToast(`${n} adicionado à agenda da unidade.`, "success");
     } catch {
       showToast("Erro ao cadastrar o novo profissional.", "danger");
@@ -405,7 +425,7 @@ export default function TabConfig({
 
   async function excluirProfissional(specKey) {
     const d = resolverDocumentoProfissional(specKey, profissionaisMap);
-    const meta = SPEC_META[specKey];
+    const meta = getSpecMetaForKey(specKey, { profissionalConfigPorSpec });
     const rotulo = meta?.role || DEFAULT_PROF_NAMES[specKey] || specKey;
     if (
       !window.confirm(
@@ -468,6 +488,25 @@ export default function TabConfig({
       showToast("Erro ao salvar configurações.", "danger");
     } finally {
       setSavingRegras(false);
+    }
+  }
+
+  async function salvarPainelVagas() {
+    const escolhidos = painelSpecKeysForm.filter(Boolean);
+    if (new Set(escolhidos).size !== escolhidos.length) {
+      showToast("Escolha profissionais diferentes em cada linha.", "danger");
+      return;
+    }
+    setSavingPainel(true);
+    try {
+      await updateSettings({
+        painelVagasSpecKeys: normalizePainelVagasSpecKeys(painelSpecKeysForm),
+      });
+      showToast("Painel de vagas salvo.", "success");
+    } catch {
+      showToast("Erro ao salvar configurações.", "danger");
+    } finally {
+      setSavingPainel(false);
     }
   }
 
@@ -600,6 +639,7 @@ export default function TabConfig({
   const tabs = [
     { key: "profissionais", label: "Profissionais" },
     { key: "calendario", label: "Calendário & Regras" },
+    { key: "painel", label: "Painel de vagas" },
     { key: "usuarios", label: "Usuários" },
   ];
 
@@ -894,6 +934,71 @@ export default function TabConfig({
             onClick={salvarRegras}
           >
             {savingRegras ? "Salvando…" : "Salvar calendário e regras"}
+          </button>
+        </div>
+      )}
+
+      {/* ════════════════ PAINEL DE VAGAS (kiosk do balcão) ════════════════ */}
+      {section === "painel" && (
+        <div style={S.calContent}>
+          <div style={S.infoBanner}>
+            <div style={S.infoBannerBody}>
+              <p style={S.infoBannerText}>
+                Escolha até {PAINEL_VAGAS_MAX_PROFISSIONAIS} profissionais que vão alternar no
+                painel de vagas exibido no tablet/celular do balcão. Depois, use o botão "Ativar
+                painel" na aba Vagas para ligar a exibição.
+              </p>
+            </div>
+          </div>
+
+          <div style={S.calCard}>
+            <div style={S.calCardHead}>
+              <span style={S.calCardBadge}>🖥️</span>
+              <p style={S.calCardTitle}>Profissionais exibidos</p>
+            </div>
+            <div style={S.calCardBody}>
+              {painelSpecKeysForm.map((value, i) => (
+                <div
+                  key={i}
+                  style={{ display: "flex", alignItems: "center", gap: 10, marginTop: i ? 10 : 0 }}
+                >
+                  <label style={S.label}>{i + 1}º profissional</label>
+                  <select
+                    style={S.input}
+                    value={value}
+                    onChange={(e) =>
+                      setPainelSpecKeysForm((prev) => {
+                        const next = [...prev];
+                        next[i] = e.target.value;
+                        return next;
+                      })
+                    }
+                  >
+                    <option value="">— selecione —</option>
+                    {[...specKeysAtivos, ...specKeysCustomAtivos].map((key) => (
+                      <option key={key} value={key}>
+                        {profNames[key] || DEFAULT_PROF_NAMES[key] || key}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+              <p style={S.calCardHint}>
+                <a href="/painel-vagas" target="_blank" rel="noreferrer">
+                  Abrir o painel numa nova aba
+                </a>{" "}
+                para testar antes de configurar o tablet.
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            style={{ ...S.btnSalvar, opacity: savingPainel ? 0.6 : 1 }}
+            disabled={savingPainel}
+            onClick={salvarPainelVagas}
+          >
+            {savingPainel ? "Salvando…" : "Salvar painel de vagas"}
           </button>
         </div>
       )}
@@ -1619,6 +1724,7 @@ function ProfRow({
   const meta = getSpecMetaForKey(specKey, {
     profissionalConfigPorSpec: { [specKey]: profCfg },
     roleFallback: doc?.role,
+    nome: val,
   });
   const snapDocGrade = doc?.id
     ? JSON.stringify(doc?.atendimentoDiasTurnos || {})

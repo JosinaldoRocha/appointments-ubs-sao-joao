@@ -24,6 +24,7 @@ import {
   tryReservaSolicitacaoAgente,
   liberarReservaSolicitacaoAgente,
   updateUser,
+  updatePainelVagasPublico,
 } from "../services/db";
 import {
   buildVisibleSegments,
@@ -31,13 +32,16 @@ import {
   toDateStr,
   DEFAULT_PCCU_TOTAL,
   collectAtendimentoDatesForListener,
-  SPEC_META,
+  getSpecMetaForKey,
   sessionTotalEffective,
   estaDentroJanelaSolicitacaoAgendamento,
   msgForaJanelaSolicitacaoAgendamento,
   msgForaDiaAgendamentoPrev,
   normalizeAtendimentoDiasTurnosParaSpec,
   listaSpecKeysCustom,
+  normalizePainelVagasSpecKeys,
+  proximoAtendimentoParaSpec,
+  painelVagasNomeExibicao,
 } from "../services/scheduleConfig";
 import {
   uploadDocumentoPacienteSolicitacao,
@@ -789,7 +793,9 @@ export default function Dashboard() {
           ? "WhatsApp aberto. Envie para a direção."
           : "WhatsApp aberto. Envie para a recepção.";
 
-      const meta = SPEC_META[specKey] || {};
+      const meta = getSpecMetaForKey(specKey, {
+        profissionalConfigPorSpec: settings.profissionalConfigPorSpec || {},
+      });
       const nomeProf = profNames[specKey] || specKey;
       const funcao = meta.role || "";
       const profissionalLinha =
@@ -1064,6 +1070,93 @@ export default function Dashboard() {
     ]
   );
 
+  // Igual a `specsVisiveis`, mas sem a deduplicação que prioriza o cartão de "hoje" sobre os
+  // futuros do mesmo dia da semana — o painel do balcão precisa enxergar o próximo atendimento
+  // futuro mesmo quando existe um cartão de hoje (nutrição/psicologia atendem 1x por semana).
+  const specsVisiveisParaPainel = useMemo(
+    () =>
+      buildVisibleSegments({
+        today: new Date(),
+        feriados: settings.feriados,
+        pontosFacultativos: settings.pontosFacultativos,
+        vagasMap,
+        pccuTotal: settings.pccuTotal,
+        recepcao: isRecepcao,
+        dentQuartaVisitaDomiciliarDesde: settings.dentQuartaVisitaDomiciliarDesde,
+        atendimentoSuspensoPorSpec: settings.atendimentoSuspensoPorSpec || {},
+        atendimentoSuspensoSlots: settings.atendimentoSuspensoSlots || {},
+        atendimentoDiasAtivosPorSpec: settings.atendimentoDiasAtivosPorSpec || {},
+        atendimentoDiasTurnosPorSpec,
+        specKeysDesativados: settings.specKeysDesativados || [],
+        profissionalConfigPorSpec: settings.profissionalConfigPorSpec || {},
+        customSpecKeys,
+        semDedupe: true,
+      }),
+    [
+      todayStr,
+      settings.feriados,
+      settings.pontosFacultativos,
+      vagasMap,
+      settings.pccuTotal,
+      isRecepcao,
+      settings.dentQuartaVisitaDomiciliarDesde,
+      settings.atendimentoSuspensoPorSpec,
+      settings.atendimentoSuspensoSlots,
+      settings.atendimentoDiasAtivosPorSpec,
+      atendimentoDiasTurnosPorSpec,
+      settings.specKeysDesativados,
+      settings.profissionalConfigPorSpec,
+      customSpecKeys,
+    ]
+  );
+
+  // Painel de vagas do balcão: espelha só specKey/nome/contagem (sem PII) no doc público,
+  // pra recepção não precisar duplicar a lógica de agenda em nenhum outro lugar.
+  const painelVagasItensRef = useRef(null);
+  useEffect(() => {
+    if (!isRecepcao) return;
+    const specKeys = normalizePainelVagasSpecKeys(settings.painelVagasSpecKeys);
+    if (specKeys.length === 0) return;
+
+    const itens = specKeys.map((sk) => {
+      const proximo = proximoAtendimentoParaSpec(specsVisiveisParaPainel, sk);
+      return {
+        specKey: sk,
+        nome: painelVagasNomeExibicao(sk, profNames[sk] || sk),
+        livre: proximo?.livre ?? null,
+        atendimentoDate: proximo?.atendimentoDate ?? null,
+      };
+    });
+
+    const anteriores = painelVagasItensRef.current;
+    const iguais =
+      anteriores &&
+      anteriores.length === itens.length &&
+      anteriores.every(
+        (a, i) =>
+          a.specKey === itens[i].specKey &&
+          a.nome === itens[i].nome &&
+          a.livre === itens[i].livre &&
+          a.atendimentoDate === itens[i].atendimentoDate
+      );
+    if (iguais) return;
+
+    painelVagasItensRef.current = itens;
+    updatePainelVagasPublico({ itens }).catch(() => {});
+  }, [isRecepcao, settings.painelVagasSpecKeys, specsVisiveisParaPainel, profNames]);
+
+  // Heartbeat do painel: mantém `atualizadoEm` fresco mesmo quando as vagas ficam paradas por
+  // um tempo (sem isso, a tela do balcão entende "sem atualização" como dado desatualizado e
+  // cai na tela de "Atualizando informações..." mesmo com tudo certo).
+  useEffect(() => {
+    if (!isRecepcao) return;
+    if (normalizePainelVagasSpecKeys(settings.painelVagasSpecKeys).length === 0) return;
+    const id = setInterval(() => {
+      updatePainelVagasPublico({}).catch(() => {});
+    }, 2 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [isRecepcao, settings.painelVagasSpecKeys]);
+
   const avisosPreview = useMemo(
     () =>
       computeAvisosPreview({
@@ -1219,6 +1312,8 @@ export default function Dashboard() {
             onSolicitar={isRecepcao ? undefined : abrirModalSolicitacao}
             dentQuartaVisitaDomiciliarDesde={settings.dentQuartaVisitaDomiciliarDesde}
             profissionalConfigPorSpec={settings.profissionalConfigPorSpec || {}}
+            atendimentoDiasAtivosPorSpec={settings.atendimentoDiasAtivosPorSpec || {}}
+            atendimentoDiasTurnosPorSpec={atendimentoDiasTurnosPorSpec}
             usuarioUid={user?.uid ?? ""}
             isDiretor={isDiretor}
             avisosPreview={avisosPreviewVisivel}
@@ -1249,6 +1344,8 @@ export default function Dashboard() {
             cronogramaUbs={settings.cronogramaUbs ?? cronogramaUbsVazio()}
             specKeysDesativados={settings.specKeysDesativados || []}
             profNames={profNames}
+            profissionaisMap={profissionaisMap}
+            profissionalConfigPorSpec={settings.profissionalConfigPorSpec || {}}
             podeEditar={podeEditarCronogramaUbs(perfil)}
             showToast={showToast}
           />

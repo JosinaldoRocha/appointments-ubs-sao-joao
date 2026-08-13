@@ -145,6 +145,74 @@ export function filtrarSpecKeysAtivos(keys, specKeysDesativados) {
   return keys.filter((k) => !off.has(k));
 }
 
+/** Profissionais exibidos no painel de vagas do balcão (`settings/ubs.painelVagasSpecKeys`), no máximo 5. */
+export const PAINEL_VAGAS_MAX_PROFISSIONAIS = 5;
+
+export function normalizePainelVagasSpecKeys(raw) {
+  if (!Array.isArray(raw)) return [];
+  return [
+    ...new Set(
+      raw
+        .filter((k) => typeof k === "string" && specKeyValido(k.trim()))
+        .map((k) => k.trim())
+    ),
+  ].slice(0, PAINEL_VAGAS_MAX_PROFISSIONAIS);
+}
+
+/**
+ * Nome exibido no painel de vagas do balcão. A maioria mostra o nome do profissional; o
+ * técnico de enfermagem faz "coleta de exames" — mais útil ao paciente ver o serviço do que
+ * o nome de quem está de plantão.
+ */
+const PAINEL_VAGAS_NOME_OVERRIDE = {
+  tecnicoEnfermagem: "Coleta de exames",
+};
+
+export function painelVagasNomeExibicao(specKey, nomeProfissional) {
+  return PAINEL_VAGAS_NOME_OVERRIDE[specKey] || nomeProfissional;
+}
+
+/** Soma as vagas livres de um segmento (todas as sessões/turnos), sem contar encaixe. */
+function livreAgregadoDoSegmento(seg) {
+  return (seg?.sessions || []).reduce((acc, sess) => {
+    const total = sess?.total ?? 0;
+    const encaixe = sess?.encaixeExtra ?? 0;
+    const used = sess?.used ?? 0;
+    const reserved = sess?.reserved ?? 0;
+    const totalSemEncaixe = Math.max(0, total - encaixe);
+    return acc + Math.max(0, totalSemEncaixe - used - reserved);
+  }, 0);
+}
+
+/**
+ * Próximo atendimento do `specKey`, a partir do `specsVisiveis` já calculado por
+ * `buildVisibleSegments` — considera TODOS os dias da semana em que ele atende (não só
+ * "amanhã"), pegando a `atendimentoDate` mais próxima **depois de hoje** (vagas de hoje não
+ * entram, mesmo que a agenda abra no mesmo dia). Cobre tanto o caso comum (sexta-feira abrir
+ * agenda pra segunda) quanto agendas com antecedência maior (ex.: coleta de exames é na
+ * quarta, mas a agenda já abre na sexta anterior — mostra "quarta-feira" já na sexta).
+ *
+ * Exceção: nutrição e psicologia atendem uma vez por semana, mas o agendamento continua
+ * aberto no próprio dia até as 14h (`specAgendaVesperaOuMesmoDiaAte14`). Nesse caso, "hoje"
+ * só é excluído depois que essa janela se fecha — antes disso, mostrar hoje é o correto (é o
+ * único dia com atendimento, e ainda dá pra agendar).
+ *
+ * Retorna `null` se não houver nenhum atendimento futuro visível pra esse specKey.
+ */
+export function proximoAtendimentoParaSpec(specsVisiveis, specKey) {
+  const agora = new Date();
+  const hojeStr = toDateStr(agora);
+  const hojeAindaValido =
+    specAgendaVesperaOuMesmoDiaAte14(specKey) && estaDentroJanelaAgendamentoMesmoDia(agora, specKey);
+  const segs = (Array.isArray(specsVisiveis) ? specsVisiveis : [])
+    .filter((s) => s?.key === specKey && s?.atendimentoDate)
+    .filter((s) => (s.atendimentoDate === hojeStr ? hojeAindaValido : s.atendimentoDate > hojeStr))
+    .sort((a, b) => a.atendimentoDate.localeCompare(b.atendimentoDate));
+  const seg = segs[0];
+  if (!seg) return null;
+  return { atendimentoDate: seg.atendimentoDate, livre: livreAgregadoDoSegmento(seg) };
+}
+
 /** Tipos de sessão do médico (UI / filtros / configuração na recepção) */
 export const MEDICO_TIPO = {
   receitas:  { label: "Troca de receitas", short: "Receitas",  color: "#7C3AED", bg: "#EDE9FE" },
@@ -778,8 +846,8 @@ export function getSessionDefsForSpecKey(specKey) {
   return [...seen.values()];
 }
 
-function iniciaisDeRole(role) {
-  const w = String(role || "PR")
+function iniciaisDeTexto(texto) {
+  const w = String(texto || "PR")
     .trim()
     .split(/\s+/)
     .filter(Boolean);
@@ -787,14 +855,21 @@ function iniciaisDeRole(role) {
   return (w[0]?.slice(0, 2) || "PR").toUpperCase();
 }
 
-/** Meta visual do card (grade fixa ou profissional customizado). */
-export function getSpecMetaForKey(specKey, { profissionalConfigPorSpec = {}, roleFallback = "" } = {}) {
-  if (SPEC_META[specKey]) return SPEC_META[specKey];
+/**
+ * Meta visual do card (grade fixa ou profissional customizado). As iniciais do avatar (`av`)
+ * sempre vêm do NOME cadastrado do profissional (`nome`), nunca da função/especialidade — um
+ * "Dr. Clínico" renomeado para "Dr. Saulo" em Config. deve virar "DS" no avatar, em vez de ficar
+ * com uma inicial fixa da especialidade. Sem `nome` informado, cai para a inicial da função.
+ */
+export function getSpecMetaForKey(specKey, { profissionalConfigPorSpec = {}, roleFallback = "", nome = "" } = {}) {
+  const base = SPEC_META[specKey];
   const cfg = profissionalConfigPorSpec[specKey];
-  const role = cfg?.role || roleFallback || "Profissional";
+  const role = base?.role || cfg?.role || roleFallback || "Profissional";
+  const av = iniciaisDeTexto(nome || role);
+  if (base) return { ...base, av };
   return {
     role,
-    av: iniciaisDeRole(role),
+    av,
     bg: "#F1F5F9",
     tc: "#334155",
   };
@@ -904,6 +979,48 @@ export function diasAtendimentoEfetivosParaSpec(specKey, atendimentoDiasAtivosPo
     return [...new Set(raw.filter((d) => ORDEM_DIA_SEMANA_GRADE.includes(d)))];
   }
   return diasAtendimentoDefaultParaSpec(specKey);
+}
+
+/**
+ * Dias efetivos de atendimento de QUALQUER `specKey` (fixo ou `custom_*`), consolidando as
+ * mesmas regras usadas em `buildVisibleSegments` (médico e enfermeira por sessões configuradas,
+ * demais por `atendimentoDiasAtivosPorSpec` ou, para customizados, por `atendimentoDiasTurnosPorSpec`).
+ * Usado fora do cálculo de cartões (ex.: cartões-placeholder "agenda abre na véspera") para não
+ * duplicar essa lógica.
+ */
+export function diasAtendimentoEfetivosCompletoParaSpec(specKey, opts = {}) {
+  const {
+    atendimentoDiasAtivosPorSpec = {},
+    atendimentoDiasTurnosPorSpec = {},
+    profissionalConfigPorSpec = {},
+    pccuTotal = DEFAULT_PCCU_TOTAL,
+  } = opts;
+  const profCfgMap = normalizeProfissionalConfigPorSpec(profissionalConfigPorSpec);
+  const diasCfgRaw = atendimentoDiasAtivosPorSpec?.[specKey];
+  if (Array.isArray(diasCfgRaw) && diasCfgRaw.length > 0) {
+    return [...new Set(diasCfgRaw.filter((d) => ORDEM_DIA_SEMANA_GRADE.includes(d)))];
+  }
+  if (specKey === "medico") return diasAtendimentoMedicoEfetivos(profCfgMap);
+  if (specKey === "enfermeira") return diasAtendimentoEnfermeiraEfetivos(profCfgMap, pccuTotal);
+  if (isSpecKeyCustom(specKey)) {
+    return Object.keys(
+      normalizeAtendimentoDiasTurnosParaSpec(specKey, atendimentoDiasTurnosPorSpec?.[specKey]) || {}
+    );
+  }
+  return diasAtendimentoDefaultParaSpec(specKey);
+}
+
+/**
+ * O cartão desse `specKey` só abre na véspera (dia útil anterior) — nunca fica visível com
+ * antecedência maior. Usado para decidir quem precisa de cartão-placeholder "agenda abre na
+ * véspera" nos demais dias em que atende.
+ */
+export function especialidadeUsaPlaceholderVespera(specKey, profissionalConfigPorSpec = {}) {
+  const tmpl = findSpecTemplateInBaseSchedule(specKey) || { key: specKey };
+  return cartaoPrevApenasDiaUtilAnterior(
+    tmpl,
+    normalizeProfissionalConfigPorSpec(profissionalConfigPorSpec)
+  );
 }
 
 /** Grade do dia + profissionais com dia extra em `atendimentoDiasAtivosPorSpec`. */
@@ -1607,6 +1724,13 @@ export function buildVisibleSegments({
   profissionalConfigPorSpec = {},
   /** Profissionais `custom_*` ativos (além da grade em código). */
   customSpecKeys = [],
+  /**
+   * Pula a deduplicação final (que prioriza o cartão "hoje" sobre os futuros do mesmo dia da
+   * semana). Usado pelo painel de vagas do balcão, que precisa enxergar o próximo atendimento
+   * futuro mesmo quando existe um cartão de hoje (ex.: nutrição/psicologia, que atendem só uma
+   * vez por semana) — a tela de cartões da recepção continua deduplicando normalmente.
+   */
+  semDedupe = false,
 }) {
   const holidaySet = nonWorkingDaySet(feriados, pontosFacultativos);
   const todayStr = toDateStr(today);
@@ -1842,7 +1966,7 @@ export function buildVisibleSegments({
     }
   }
 
-  return dedupePorProximoAtendimento(result);
+  return semDedupe ? result : dedupePorProximoAtendimento(result);
 }
 
 /** @deprecated use buildVisibleSegments */

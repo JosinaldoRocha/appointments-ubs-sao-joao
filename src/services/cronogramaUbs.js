@@ -3,6 +3,7 @@ import {
   DEFAULT_PROF_NAMES,
   ORDEM_DIA_SEMANA_GRADE,
   SPEC_META,
+  isSpecKeyCustom,
 } from "./scheduleConfig";
 
 export const CRONOGRAMA_VERSAO = 1;
@@ -52,17 +53,67 @@ const TIPOS_VALIDOS_POR_CATEGORIA = Object.fromEntries(
   ])
 );
 
+/** Profissionais cadastrados na unidade além dos perfis fixos (`specKey` = `custom_*`) não têm
+ * tipos de atendimento pré-definidos — usam este tipo genérico único quando a função não bate
+ * com nenhuma das conhecidas abaixo. */
+const TIPO_GENERICO_CUSTOM = [{ key: "atendimento", label: "Atendimento" }];
+
+/**
+ * Função (campo "Função ou área" do cadastro em Config.) → tipos de atendimento já existentes
+ * para o papel fixo equivalente. Ex.: um "Clínico Geral" cadastrado avulso (porque o médico fixo
+ * foi excluído e recriado) ganha as mesmas opções (Clínico geral, Gestantes, Troca de receitas…)
+ * do médico da grade em código, em vez de só um tipo genérico "Atendimento".
+ */
+const CRONOGRAMA_TIPOS_POR_FUNCAO = {
+  "Clínico Geral": CRONOGRAMA_TIPOS_POR_CATEGORIA.medico,
+  "Odontologia": CRONOGRAMA_TIPOS_POR_CATEGORIA.dentFernando,
+  "Enfermagem": CRONOGRAMA_TIPOS_POR_CATEGORIA.enfermeira,
+  "Psicologia": CRONOGRAMA_TIPOS_POR_CATEGORIA.psicologa,
+  "Fisioterapia": CRONOGRAMA_TIPOS_POR_CATEGORIA.fisio,
+  "Nutrição": CRONOGRAMA_TIPOS_POR_CATEGORIA.nutricionista,
+  "Téc. Enfermagem": CRONOGRAMA_TIPOS_POR_CATEGORIA.tecnicoEnfermagem,
+};
+
+/** Rótulo de qualquer tipo conhecido (de qualquer categoria) — usado para exibir itens salvos
+ * mesmo sem saber a função do profissional (ex.: badge no cronograma publicado). */
+const TODOS_TIPOS_LABEL_POR_KEY = (() => {
+  const map = {};
+  for (const arr of Object.values(CRONOGRAMA_TIPOS_POR_CATEGORIA)) {
+    for (const t of arr) map[t.key] = t.label;
+  }
+  for (const t of TIPO_GENERICO_CUSTOM) map[t.key] = t.label;
+  return map;
+})();
+
+const TIPOS_VALIDOS_CUSTOM = new Set(Object.keys(TODOS_TIPOS_LABEL_POR_KEY));
+
+function categoriaValida(categoria) {
+  return CATEGORIAS_VALIDAS.has(categoria) || isSpecKeyCustom(categoria);
+}
+
 export function cronogramaUbsVazio() {
   return { versao: CRONOGRAMA_VERSAO, itens: [] };
 }
 
-export function tiposAtendimentoParaCategoria(categoria) {
-  return CRONOGRAMA_TIPOS_POR_CATEGORIA[categoria] || [];
+/**
+ * Tipos de atendimento disponíveis para escolher no formulário. `role` (opcional) é a função do
+ * profissional (`getSpecMetaForKey(...).role`) — só importa para categorias customizadas, pra
+ * decidir entre a lista específica (`CRONOGRAMA_TIPOS_POR_FUNCAO`) e o genérico.
+ */
+export function tiposAtendimentoParaCategoria(categoria, role) {
+  if (CRONOGRAMA_TIPOS_POR_CATEGORIA[categoria]) return CRONOGRAMA_TIPOS_POR_CATEGORIA[categoria];
+  if (isSpecKeyCustom(categoria)) {
+    const porFuncao = role && CRONOGRAMA_TIPOS_POR_FUNCAO[String(role).trim()];
+    if (porFuncao) return porFuncao;
+    return TIPO_GENERICO_CUSTOM;
+  }
+  return [];
 }
 
-export function labelTipoAtendimento(categoria, tipoKey) {
-  const t = tiposAtendimentoParaCategoria(categoria).find((x) => x.key === tipoKey);
-  return t?.label || tipoKey;
+export function labelTipoAtendimento(categoria, tipoKey, role) {
+  const direto = tiposAtendimentoParaCategoria(categoria, role).find((x) => x.key === tipoKey);
+  if (direto) return direto.label;
+  return TODOS_TIPOS_LABEL_POR_KEY[tipoKey] || tipoKey;
 }
 
 export function labelCategoria(categoria) {
@@ -72,14 +123,16 @@ export function labelCategoria(categoria) {
 function normalizarItem(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const categoria = typeof raw.categoria === "string" ? raw.categoria.trim() : "";
-  if (!CATEGORIAS_VALIDAS.has(categoria)) return null;
+  if (!categoriaValida(categoria)) return null;
   const dia = typeof raw.dia === "string" ? raw.dia.trim() : "";
   if (!ORDEM_DIA_SEMANA_GRADE.includes(dia)) return null;
   const turno = raw.turno === "manha" || raw.turno === "tarde" ? raw.turno : null;
   if (!turno) return null;
   const nome = typeof raw.nome === "string" ? raw.nome.trim().slice(0, MAX_NOME_PROFISSIONAL) : "";
   if (!nome) return null;
-  const permitidos = TIPOS_VALIDOS_POR_CATEGORIA[categoria] || new Set();
+  const permitidos =
+    TIPOS_VALIDOS_POR_CATEGORIA[categoria] ||
+    (isSpecKeyCustom(categoria) ? TIPOS_VALIDOS_CUSTOM : new Set());
   const tipos = [
     ...new Set(
       (Array.isArray(raw.tipos) ? raw.tipos : [])

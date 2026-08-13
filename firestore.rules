@@ -164,5 +164,11 @@ service cloud.firestore {
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['cronogramaUbs', 'atualizadoEm']));
     }
 
+    // Painel de vagas (kiosk do balcão): leitura pública, sem PII (só specKey/nome/contagem agregada)
+    match /settings/painelVagasPublico {
+      allow read: if true;
+      allow write: if isRecepcao();
+    }
+
   }
 }

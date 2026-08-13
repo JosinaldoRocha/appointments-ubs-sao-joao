@@ -1,11 +1,11 @@
 // src/components/ModalAgendar.jsx
 import { useState, useEffect, useRef } from "react";
 import {
-  SPEC_META,
   toDateStr,
   estaDentroJanelaSolicitacaoAgendamento,
   msgForaJanelaSolicitacaoAgendamento,
   msgForaDiaAgendamentoPrev,
+  getSpecMetaForKey,
 } from "../services/scheduleConfig";
 import {
   fraseVagasEsgotadasEncaixe,
@@ -98,7 +98,7 @@ export default function ModalAgendar({
     sessLabel: ctx.sessLabel,
   });
   const nome = profNames[ctx.specKey] || ctx.specKey || "Fisioterapeuta";
-  const meta = SPEC_META[ctx.specKey] || {};
+  const meta = getSpecMetaForKey(ctx.specKey, { profissionalConfigPorSpec, nome });
   const dataAtendimentoFmt =
     ctx.atendimentoDate &&
     new Date(ctx.atendimentoDate + "T12:00:00").toLocaleDateString("pt-BR", {
@@ -590,11 +590,11 @@ export default function ModalAgendar({
               <div
                 style={{
                   ...S.av,
-                  background: (SPEC_META[ctx.specKey] || {}).bg || "#F1F5F9",
-                  color: (SPEC_META[ctx.specKey] || {}).tc || "#475569",
+                  background: meta.bg || "#F1F5F9",
+                  color: meta.tc || "#475569",
                 }}
               >
-                {(SPEC_META[ctx.specKey] || {}).av || "?"}
+                {meta.av || "?"}
               </div>
             )}
             <div>
