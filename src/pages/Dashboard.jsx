@@ -15,6 +15,8 @@ import {
   setSpecAtendimentoSuspenso,
   addAtendimentoSuspensoSlot,
   removeAtendimentoSuspensoSlot,
+  addAvisoManual,
+  removeAvisoManual,
   clearSpecAtendimentoSuspenso,
   limparSuspensoesExpiradasSeNecessario,
   updateProfissional,
@@ -188,6 +190,7 @@ function settingsIguaisParaDashboard(prev, next) {
     }
   }
   if (!mapaSuspensoSlotsIgual(prev.atendimentoSuspensoSlots, next.atendimentoSuspensoSlots)) return false;
+  if (!mapaAvisosManuaisIgual(prev.avisosManuais, next.avisosManuais)) return false;
   if (!cronogramaUbsIguais(prev.cronogramaUbs, next.cronogramaUbs)) return false;
   const prevOff = [...(prev.specKeysDesativados || [])].sort().join(",");
   const nextOff = [...(next.specKeysDesativados || [])].sort().join(",");
@@ -215,6 +218,21 @@ function mapaSuspensoSlotsIgual(pa, pb) {
   const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
   for (const k of keys) {
     if (slotSuspensaoSnapshot(a[k]) !== slotSuspensaoSnapshot(b[k])) return false;
+  }
+  return true;
+}
+
+function avisoManualSnapshot(val) {
+  if (!val || typeof val !== "object") return "";
+  return [val.tone || "", val.titulo || "", val.texto || "", val.ate || ""].join("|");
+}
+
+function mapaAvisosManuaisIgual(pa, pb) {
+  const a = pa || {};
+  const b = pb || {};
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) {
+    if (avisoManualSnapshot(a[k]) !== avisoManualSnapshot(b[k])) return false;
   }
   return true;
 }
@@ -291,6 +309,7 @@ export default function Dashboard() {
     atendimentoEncerradoPorSpecData: {},
     atendimentoSuspensoPorSpec: {},
     atendimentoSuspensoSlots: {},
+    avisosManuais: {},
     atendimentoDiasAtivosPorSpec: {},
     atendimentoDiasTurnosPorSpec: {},
     profissionalConfigPorSpec: {},
@@ -589,6 +608,34 @@ export default function Dashboard() {
       try {
         await removeAtendimentoSuspensoSlot(slotKey);
         showToast("Suspensão pontual removida.", "success");
+      } catch (e) {
+        console.error(e);
+        showToast("Não foi possível remover. Tente de novo.", "danger");
+      }
+    },
+    [isRecepcao]
+  );
+
+  const handleAdicionarAvisoManual = useCallback(
+    async (dados) => {
+      if (!isRecepcao) return;
+      try {
+        await addAvisoManual(dados);
+        showToast("Aviso publicado para todos.", "success");
+      } catch (e) {
+        console.error(e);
+        showToast(e?.message || "Não foi possível publicar o aviso. Tente de novo.", "danger");
+      }
+    },
+    [isRecepcao]
+  );
+
+  const handleRemoverAvisoManual = useCallback(
+    async (id) => {
+      if (!isRecepcao) return;
+      try {
+        await removeAvisoManual(id);
+        showToast("Aviso removido.", "success");
       } catch (e) {
         console.error(e);
         showToast("Não foi possível remover. Tente de novo.", "danger");
@@ -1174,6 +1221,7 @@ export default function Dashboard() {
         atendimentoSuspensoSlots: settings.atendimentoSuspensoSlots || {},
         atendimentoDiasAtivosPorSpec: settings.atendimentoDiasAtivosPorSpec || {},
         specKeysDesativados: settings.specKeysDesativados || [],
+        avisosManuais: settings.avisosManuais || {},
       }),
     [
       todayStr,
@@ -1190,6 +1238,7 @@ export default function Dashboard() {
       settings.atendimentoSuspensoSlots,
       settings.atendimentoDiasAtivosPorSpec,
       settings.specKeysDesativados,
+      settings.avisosManuais,
     ]
   );
 
@@ -1335,8 +1384,11 @@ export default function Dashboard() {
             atendimentoSuspensoSlots={settings.atendimentoSuspensoSlots || {}}
             atendimentoDiasAtivosPorSpec={settings.atendimentoDiasAtivosPorSpec || {}}
             specKeysDesativados={settings.specKeysDesativados || []}
+            avisosManuais={settings.avisosManuais || {}}
             onRemoverSuspensaoPontual={isRecepcao ? handleRemoverSuspensaoPontual : undefined}
             onReativarAtendimentoSpec={isRecepcao ? handleReativarAtendimentoSpec : undefined}
+            onAdicionarAvisoManual={isRecepcao ? handleAdicionarAvisoManual : undefined}
+            onRemoverAvisoManual={isRecepcao ? handleRemoverAvisoManual : undefined}
           />
         )}
         {tab === "cronograma" && (

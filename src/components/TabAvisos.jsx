@@ -96,6 +96,24 @@ function labelEscopoSuspensaoPontual(escopo) {
   return escopo;
 }
 
+function listaAvisosManuais(avisosManuais, hojeStr) {
+  const m = avisosManuais && typeof avisosManuais === "object" ? avisosManuais : {};
+  const out = [];
+  for (const [id, v] of Object.entries(m)) {
+    if (!v || typeof v !== "object") continue;
+    const texto = typeof v.texto === "string" ? v.texto.trim() : "";
+    if (!texto) continue;
+    const ate = typeof v.ate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v.ate.trim()) ? v.ate.trim() : "";
+    if (ate && ate < hojeStr) continue;
+    const tone = v.tone === "warn" || v.tone === "danger" || v.tone === "info" ? v.tone : "info";
+    const titulo = typeof v.titulo === "string" ? v.titulo.trim() : "";
+    const criadoEm = typeof v.criadoEm === "number" && Number.isFinite(v.criadoEm) ? v.criadoEm : 0;
+    out.push({ id, texto, tone, titulo, ate, criadoEm });
+  }
+  out.sort((a, b) => b.criadoEm - a.criadoEm || a.id.localeCompare(b.id));
+  return out;
+}
+
 function hasAnyVacancy(specs) {
   return specs.some((spec) =>
     spec.sessions.some((s) => {
@@ -254,9 +272,20 @@ export function computeAvisosPreview({
   atendimentoSuspensoSlots = {},
   atendimentoDiasAtivosPorSpec = {},
   specKeysDesativados = [],
+  avisosManuais = {},
 }) {
   const hoje = hojeStr || toDateStr(new Date());
   const items = [];
+
+  // Avisos livres publicados pela recepção
+  for (const a of listaAvisosManuais(avisosManuais, hoje)) {
+    items.push({
+      badge: "Aviso",
+      tone: a.tone,
+      title: a.titulo || "Aviso da recepção",
+      preview: a.texto.length > 140 ? `${a.texto.slice(0, 137)}…` : a.texto,
+    });
+  }
 
   // Suspensões por período
   const susp = atendimentoSuspensoPorSpec || {};
@@ -430,14 +459,20 @@ export default function TabAvisos({
   atendimentoSuspensoSlots = {},
   atendimentoDiasAtivosPorSpec = {},
   specKeysDesativados = [],
+  avisosManuais = {},
   onRemoverSuspensaoPontual,
   onReativarAtendimentoSpec,
+  onAdicionarAvisoManual,
+  onRemoverAvisoManual,
 }) {
   const hoje = dataHojeIso();
   const [agoraRef, setAgoraRef] = useState(() => new Date());
   const [modalReativarSpecKey, setModalReativarSpecKey] = useState(null);
   const [reativarDiasSel, setReativarDiasSel] = useState(() => new Set());
   const [reativarTurnosPorDia, setReativarTurnosPorDia] = useState({});
+  const [modalAvisoAberto, setModalAvisoAberto] = useState(false);
+  const [avisoForm, setAvisoForm] = useState({ titulo: "", texto: "", tone: "info", ate: "" });
+  const [avisoSalvando, setAvisoSalvando] = useState(false);
   useEffect(() => {
     const t = setInterval(() => setAgoraRef(new Date()), 30_000);
     return () => clearInterval(t);
@@ -598,19 +633,52 @@ export default function TabAvisos({
     [specs, atendimentoEncerradoMap]
   );
 
+  const avisosManuaisLista = useMemo(
+    () => listaAvisosManuais(avisosManuais, hoje),
+    [avisosManuais, hoje]
+  );
+
+  const podeGerenciarAvisos = isRecepcao && typeof onAdicionarAvisoManual === "function";
+
+  async function submeterAvisoManual() {
+    const texto = avisoForm.texto.trim();
+    if (!texto) {
+      window.alert("Escreva o texto do aviso.");
+      return;
+    }
+    setAvisoSalvando(true);
+    try {
+      await Promise.resolve(
+        onAdicionarAvisoManual({
+          titulo: avisoForm.titulo.trim(),
+          texto,
+          tone: avisoForm.tone,
+          ate: avisoForm.ate,
+        })
+      );
+      setAvisoForm({ titulo: "", texto: "", tone: "info", ate: "" });
+      setModalAvisoAberto(false);
+    } finally {
+      setAvisoSalvando(false);
+    }
+  }
+
   const temAmanha = !!avisoVisitaDomiciliarAmanha || !!avisoSemAtendimentoAmanha;
   const temCalendario = calendarioFuturo.length > 0;
   const temSuspensao = suspensaoPeriodo.length > 0 || suspensaoPontual.length > 0;
   const temEncerrado = encerrados.length > 0;
   const temHorarioVagas = foraExpedienteAgente || semVagasLivresAgente;
   const temVisitaDomicCard = visitasDomicNoCard.length > 0;
+  const temAvisosManuais = avisosManuaisLista.length > 0;
   const vazio =
     !temAmanha &&
     !temCalendario &&
     !temSuspensao &&
     !temEncerrado &&
     !temHorarioVagas &&
-    !temVisitaDomicCard;
+    !temVisitaDomicCard &&
+    !temAvisosManuais &&
+    !podeGerenciarAvisos;
 
   return (
     <div style={S.wrap}>
@@ -618,7 +686,7 @@ export default function TabAvisos({
         <h1 style={S.title}>Avisos</h1>
         <p style={S.lead}>
           {isRecepcao
-            ? "Suspensões, encerramentos e situações que afetam a agenda — gerencie reativações aqui."
+            ? "Suspensões, encerramentos e situações que afetam a agenda — gerencie reativações e publique avisos livres aqui."
             : "Suspensões, feriados, encerramentos e informações que afetam o agendamento."}
         </p>
       </header>
@@ -630,6 +698,61 @@ export default function TabAvisos({
             Feriados, pontos facultativos, suspensões e demais situações relevantes aparecerão aqui.
           </p>
         </div>
+      ) : null}
+
+      {temAvisosManuais || podeGerenciarAvisos ? (
+        <section style={S.section}>
+          <div style={S.avisoManualHead}>
+            <div style={S.sectionHead}>
+              <h2 style={S.sectionTitle}>Avisos da recepção</h2>
+              <p style={S.sectionHint}>Recados livres publicados para toda a equipe.</p>
+            </div>
+            {podeGerenciarAvisos ? (
+              <button
+                type="button"
+                style={S.avisoManualAddBtn}
+                onClick={() => {
+                  setAvisoForm({ titulo: "", texto: "", tone: "info", ate: "" });
+                  setModalAvisoAberto(true);
+                }}
+              >
+                + Novo aviso
+              </button>
+            ) : null}
+          </div>
+          {temAvisosManuais ? (
+            <div style={S.cardList}>
+              {avisosManuaisLista.map((a) => (
+                <NoticeCard
+                  key={a.id}
+                  tone={a.tone}
+                  badge="Aviso"
+                  title={a.titulo || "Aviso da recepção"}
+                >
+                  <p style={S.avisoManualTexto}>{a.texto}</p>
+                  {a.ate ? (
+                    <p style={S.avisoManualValidade}>Válido até {formatDataLonga(a.ate)}</p>
+                  ) : null}
+                  {podeGerenciarAvisos && typeof onRemoverAvisoManual === "function" ? (
+                    <div style={{ marginTop: 10 }}>
+                      <button
+                        type="button"
+                        style={S.cardActionBtnSecondary}
+                        onClick={() => {
+                          if (window.confirm("Remover este aviso?")) onRemoverAvisoManual(a.id);
+                        }}
+                      >
+                        Remover aviso
+                      </button>
+                    </div>
+                  ) : null}
+                </NoticeCard>
+              ))}
+            </div>
+          ) : (
+            <p style={S.sectionEmpty}>Nenhum aviso publicado. Use “Novo aviso” para adicionar um recado.</p>
+          )}
+        </section>
       ) : null}
 
       {temHorarioVagas ? (
@@ -1014,6 +1137,114 @@ export default function TabAvisos({
           </div>
         </div>
       )}
+
+      {modalAvisoAberto && podeGerenciarAvisos && (
+        <div
+          style={S.modalBackdrop}
+          role="presentation"
+          onClick={() => (avisoSalvando ? null : setModalAvisoAberto(false))}
+        >
+          <div
+            style={S.modalBox}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="titulo-novo-aviso"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="titulo-novo-aviso" style={S.modalTitle}>
+              Novo aviso
+            </h2>
+            <p style={S.modalHint}>
+              O aviso aparece nesta aba para toda a equipe e agentes. Use para recados livres que não
+              se encaixam em suspensões ou feriados.
+            </p>
+
+            <label style={S.avisoField}>
+              <span style={S.avisoLabel}>Título (opcional)</span>
+              <input
+                type="text"
+                value={avisoForm.titulo}
+                maxLength={120}
+                placeholder="Ex.: Coleta de exames"
+                style={S.avisoInput}
+                onChange={(e) => setAvisoForm((f) => ({ ...f, titulo: e.target.value }))}
+              />
+            </label>
+
+            <label style={S.avisoField}>
+              <span style={S.avisoLabel}>Mensagem</span>
+              <textarea
+                value={avisoForm.texto}
+                maxLength={800}
+                rows={4}
+                placeholder="Escreva o aviso…"
+                style={S.avisoTextarea}
+                onChange={(e) => setAvisoForm((f) => ({ ...f, texto: e.target.value }))}
+              />
+            </label>
+
+            <div style={S.avisoField}>
+              <span style={S.avisoLabel}>Tipo</span>
+              <div style={S.avisoToneRow}>
+                {[
+                  { v: "info", label: "Informativo" },
+                  { v: "warn", label: "Atenção" },
+                  { v: "danger", label: "Urgente" },
+                ].map((opt) => (
+                  <button
+                    key={opt.v}
+                    type="button"
+                    style={{
+                      ...S.avisoToneBtn,
+                      ...(avisoForm.tone === opt.v
+                        ? {
+                            borderColor: TONE[opt.v].accent,
+                            background: TONE[opt.v].accent,
+                            color: "#fff",
+                          }
+                        : {}),
+                    }}
+                    onClick={() => setAvisoForm((f) => ({ ...f, tone: opt.v }))}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <label style={S.avisoField}>
+              <span style={S.avisoLabel}>Válido até (opcional)</span>
+              <input
+                type="date"
+                value={avisoForm.ate}
+                min={hoje}
+                style={S.avisoInput}
+                onChange={(e) => setAvisoForm((f) => ({ ...f, ate: e.target.value }))}
+              />
+              <span style={S.avisoHelp}>Depois dessa data o aviso some sozinho.</span>
+            </label>
+
+            <div style={S.modalFooter}>
+              <button
+                type="button"
+                style={S.modalBtnGhost}
+                disabled={avisoSalvando}
+                onClick={() => setModalAvisoAberto(false)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                style={S.modalBtnPrimary}
+                disabled={avisoSalvando || !avisoForm.texto.trim()}
+                onClick={submeterAvisoManual}
+              >
+                {avisoSalvando ? "Publicando…" : "Publicar aviso"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1037,6 +1268,72 @@ const S = {
   sectionHint: { margin: 0, fontSize: 12, color: "#94A3B8" },
   sectionEmpty: { margin: 0, fontSize: 13, color: "#64748B" },
   cardList: { display: "flex", flexDirection: "column", gap: 8 },
+  avisoManualHead: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+    flexWrap: "wrap",
+  },
+  avisoManualAddBtn: {
+    flexShrink: 0,
+    padding: "8px 14px",
+    fontSize: 13,
+    fontWeight: 700,
+    borderRadius: 9,
+    border: "none",
+    background: "linear-gradient(135deg, #6366F1 0%, #4338CA 100%)",
+    color: "#fff",
+    cursor: "pointer",
+    boxShadow: "0 2px 8px rgba(67,56,202,0.28)",
+  },
+  avisoManualTexto: {
+    margin: 0,
+    fontSize: 14,
+    lineHeight: 1.5,
+    color: "inherit",
+    whiteSpace: "pre-wrap",
+  },
+  avisoManualValidade: {
+    margin: "8px 0 0",
+    fontSize: 12,
+    fontWeight: 600,
+    opacity: 0.7,
+  },
+  avisoField: { display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 },
+  avisoLabel: { fontSize: 13, fontWeight: 700, color: "#334155" },
+  avisoInput: {
+    padding: "9px 11px",
+    fontSize: 14,
+    borderRadius: 9,
+    border: "1.5px solid #E2E8F0",
+    background: "#fff",
+    color: "#0F172A",
+    fontFamily: "inherit",
+  },
+  avisoTextarea: {
+    padding: "9px 11px",
+    fontSize: 14,
+    borderRadius: 9,
+    border: "1.5px solid #E2E8F0",
+    background: "#fff",
+    color: "#0F172A",
+    fontFamily: "inherit",
+    lineHeight: 1.5,
+    resize: "vertical",
+  },
+  avisoToneRow: { display: "flex", gap: 8, flexWrap: "wrap" },
+  avisoToneBtn: {
+    padding: "7px 13px",
+    fontSize: 12.5,
+    fontWeight: 700,
+    borderRadius: 999,
+    border: "1.5px solid #E2E8F0",
+    background: "#fff",
+    color: "#475569",
+    cursor: "pointer",
+  },
+  avisoHelp: { fontSize: 12, color: "#94A3B8" },
   cardActionBtn: {
     padding: "8px 14px",
     fontSize: 12,

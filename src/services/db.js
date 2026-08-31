@@ -53,6 +53,7 @@ const EMPTY_SETTINGS = {
   atendimentoEncerradoPorSpecData: {},
   atendimentoSuspensoPorSpec: {},
   atendimentoSuspensoSlots: {},
+  avisosManuais: {},
   atendimentoDiasAtivosPorSpec: {},
   atendimentoDiasTurnosPorSpec: {},
   profissionalConfigPorSpec: {},
@@ -109,6 +110,31 @@ function normalizeAtendimentoSuspensoSlots(raw) {
   return out;
 }
 
+const AVISO_MANUAL_TONES = new Set(["info", "warn", "danger"]);
+
+/**
+ * Avisos livres criados pela recepção em `settings/ubs.avisosManuais`.
+ * Mapa `{ [id]: { titulo?, texto, tone, criadoEm, ate? } }`.
+ * `ate` (AAAA-MM-DD) é opcional: quando informado, o aviso some depois dessa data.
+ */
+function normalizeAvisosManuais(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [id, v] of Object.entries(raw)) {
+    if (typeof id !== "string" || !id.trim()) continue;
+    if (!v || typeof v !== "object" || Array.isArray(v)) continue;
+    const texto = typeof v.texto === "string" ? v.texto.trim().slice(0, 800) : "";
+    if (!texto) continue;
+    const titulo = typeof v.titulo === "string" ? v.titulo.trim().slice(0, 120) : "";
+    const tone = AVISO_MANUAL_TONES.has(v.tone) ? v.tone : "info";
+    const criadoEm = typeof v.criadoEm === "number" && Number.isFinite(v.criadoEm) ? v.criadoEm : 0;
+    const ateRaw = typeof v.ate === "string" ? v.ate.trim() : "";
+    const ate = /^\d{4}-\d{2}-\d{2}$/.test(ateRaw) ? ateRaw : "";
+    out[id] = { texto, tone, criadoEm, ...(titulo ? { titulo } : {}), ...(ate ? { ate } : {}) };
+  }
+  return out;
+}
+
 function normalizeAtendimentoDiasTurnosPorSpecGlobal(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   const out = {};
@@ -145,6 +171,7 @@ function normalizeSettingsData(raw = {}) {
       encMap && typeof encMap === "object" && !Array.isArray(encMap) ? { ...encMap } : {},
     atendimentoSuspensoPorSpec: normalizeAtendimentoSuspensoPorSpec(d.atendimentoSuspensoPorSpec),
     atendimentoSuspensoSlots: normalizeAtendimentoSuspensoSlots(d.atendimentoSuspensoSlots),
+    avisosManuais: normalizeAvisosManuais(d.avisosManuais),
     atendimentoDiasAtivosPorSpec: normalizeAtendimentoDiasAtivosPorSpec(d.atendimentoDiasAtivosPorSpec),
     atendimentoDiasTurnosPorSpec: normalizeAtendimentoDiasTurnosPorSpecGlobal(d.atendimentoDiasTurnosPorSpec),
     profissionalConfigPorSpec: normalizeProfissionalConfigPorSpec(d.profissionalConfigPorSpec),
@@ -427,12 +454,23 @@ export function buildPatchLimparSuspensoesExpiradas(settings, hoje = toDateStr(n
     settings?.atendimentoSuspensoSlots,
     hoje
   );
-  if (!periodoSpecKeys.length && !slotKeys.length) return null;
+  const avisosVencidos = [];
+  for (const [id, v] of Object.entries(settings?.avisosManuais || {})) {
+    const ate = typeof v?.ate === "string" ? v.ate.trim() : "";
+    if (/^\d{4}-\d{2}-\d{2}$/.test(ate) && ate < hoje) avisosVencidos.push(id);
+  }
+  if (!periodoSpecKeys.length && !slotKeys.length && !avisosVencidos.length) return null;
   const atendimentoSuspensoPorSpec = {};
   for (const sk of periodoSpecKeys) atendimentoSuspensoPorSpec[sk] = deleteField();
   const atendimentoSuspensoSlots = {};
   for (const k of slotKeys) atendimentoSuspensoSlots[k] = deleteField();
-  return { atendimentoSuspensoPorSpec, atendimentoSuspensoSlots };
+  const patch = { atendimentoSuspensoPorSpec, atendimentoSuspensoSlots };
+  if (avisosVencidos.length) {
+    const avisosManuais = {};
+    for (const id of avisosVencidos) avisosManuais[id] = deleteField();
+    patch.avisosManuais = avisosManuais;
+  }
+  return patch;
 }
 
 /**
@@ -587,6 +625,49 @@ export async function removeAtendimentoSuspensoSlot(slotKey) {
     {
       atualizadoEm: serverTimestamp(),
       atendimentoSuspensoSlots: { [slotKey.trim()]: deleteField() },
+    },
+    { merge: true }
+  );
+}
+
+/**
+ * Cria um aviso livre da recepção em `settings/ubs.avisosManuais`.
+ * `tone`: `info` | `warn` | `danger`. `ate` (AAAA-MM-DD) opcional: some depois dessa data.
+ */
+export async function addAvisoManual({ titulo, texto, tone, ate } = {}) {
+  const corpo = typeof texto === "string" ? texto.trim().slice(0, 800) : "";
+  if (!corpo) throw new Error("Escreva o texto do aviso.");
+  const t = tone === "warn" || tone === "danger" || tone === "info" ? tone : "info";
+  const tit = typeof titulo === "string" ? titulo.trim().slice(0, 120) : "";
+  const ateRaw = typeof ate === "string" ? ate.trim() : "";
+  const ateOk = /^\d{4}-\d{2}-\d{2}$/.test(ateRaw) ? ateRaw : "";
+  const id = `am_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  await setDoc(
+    doc(db, "settings", SETTINGS_ID),
+    {
+      atualizadoEm: serverTimestamp(),
+      avisosManuais: {
+        [id]: {
+          texto: corpo,
+          tone: t,
+          criadoEm: Date.now(),
+          ...(tit ? { titulo: tit } : {}),
+          ...(ateOk ? { ate: ateOk } : {}),
+        },
+      },
+    },
+    { merge: true }
+  );
+  return id;
+}
+
+export async function removeAvisoManual(id) {
+  if (typeof id !== "string" || !id.trim()) return;
+  await setDoc(
+    doc(db, "settings", SETTINGS_ID),
+    {
+      atualizadoEm: serverTimestamp(),
+      avisosManuais: { [id.trim()]: deleteField() },
     },
     { merge: true }
   );
