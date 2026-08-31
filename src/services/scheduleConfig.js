@@ -6,15 +6,17 @@
 //  (ou "Tarde" genérico). Exceção: coleta de exames de rotina permanece às quartas-feiras, 7h.
 // ─────────────────────────────────────────────────────────────────
 
+// `role` guarda a FUNÇÃO/CARGO do profissional (é o que aparece abaixo do nome nos cards,
+// painel do balcão, avisos, cronograma e modal de agendamento).
 export const SPEC_META = {
-  medico:         { role: "Clínico Geral",  av: "MC", bg: "#EEF2FF", tc: "#4338CA" },
-  dentFernando:   { role: "Odontologia",    av: "DF", bg: "#E1F5EE", tc: "#085041" },
-  dentPatrick:    { role: "Odontologia",    av: "DP", bg: "#E1F5EE", tc: "#085041" },
-  psicologa:      { role: "Psicologia",     av: "DK", bg: "#FBEAF0", tc: "#72243E" },
-  fisio:          { role: "Fisioterapia",   av: "DA", bg: "#FAEEDA", tc: "#633806" },
-  enfermeira:     { role: "Enfermagem",     av: "EN", bg: "#EAF3DE", tc: "#27500A" },
-  tecnicoEnfermagem: { role: "Téc. Enfermagem", av: "TE", bg: "#E0F2FE", tc: "#075985" },
-  nutricionista:  { role: "Nutrição",       av: "NT", bg: "#ECFDF5", tc: "#065F46" },
+  medico:         { role: "Médico(a)",                av: "MC", bg: "#EEF2FF", tc: "#4338CA" },
+  dentFernando:   { role: "Cirurgião(ã)-Dentista",    av: "DF", bg: "#E1F5EE", tc: "#085041" },
+  dentPatrick:    { role: "Cirurgião(ã)-Dentista",    av: "DP", bg: "#E1F5EE", tc: "#085041" },
+  psicologa:      { role: "Psicólogo(a)",             av: "DK", bg: "#FBEAF0", tc: "#72243E" },
+  fisio:          { role: "Fisioterapeuta",           av: "DA", bg: "#FAEEDA", tc: "#633806" },
+  enfermeira:     { role: "Enfermeiro(a)",            av: "EN", bg: "#EAF3DE", tc: "#27500A" },
+  tecnicoEnfermagem: { role: "Técnico(a) de Enfermagem", av: "TE", bg: "#E0F2FE", tc: "#075985" },
+  nutricionista:  { role: "Nutricionista",            av: "NT", bg: "#ECFDF5", tc: "#065F46" },
 };
 
 export const DEFAULT_PROF_NAMES = {
@@ -463,6 +465,8 @@ export function enfermeiraConfigParaSessaoAgenda(linha) {
   };
   if (linha.enfermeiraTipo === "pccu") {
     sess.pccuOnly = true;
+    // Vagas vindas da linha configurada na recepção — não substituir pelo total PCCU legado.
+    sess.pccuVagasConfiguradas = true;
   }
   return sess;
 }
@@ -500,6 +504,104 @@ export function gradeMapFromEnfermeiraSessoes(sessoes) {
     out[s.dia].sort();
   }
   return out;
+}
+
+/**
+ * Função ("Função" do cadastro) → categoria que usa agenda por sessões com tipo de atendimento.
+ * Médico(a) e enfermeiro(a) escolhem o tipo de cada turno; as demais funções usam a grade
+ * simples de dias/turnos.
+ */
+export const CATEGORIA_SESSOES_POR_ROLE = {
+  "medico(a)": "medico",
+  "médico(a)": "medico",
+  "medico": "medico",
+  "médico": "medico",
+  "medica": "medico",
+  "médica": "medico",
+  "clinico geral": "medico",
+  "clínico geral": "medico",
+  "enfermeiro(a)": "enfermeira",
+  "enfermeira": "enfermeira",
+  "enfermeiro": "enfermeira",
+  "enfermagem": "enfermeira",
+};
+
+/**
+ * Categoria de agenda por sessões (`"medico" | "enfermeira" | null`) do `specKey`. Os perfis
+ * fixos `medico`/`enfermeira` retornam direto; profissionais avulsos (`custom_*`) são
+ * classificados pela função salva em `profCfg.role`.
+ */
+export function categoriaSessoesParaSpec(specKey, profCfg) {
+  if (specKey === "medico") return "medico";
+  if (specKey === "enfermeira") return "enfermeira";
+  const role = typeof profCfg?.role === "string" ? profCfg.role.trim().toLowerCase() : "";
+  return CATEGORIA_SESSOES_POR_ROLE[role] || null;
+}
+
+/**
+ * Rótulos antigos de área/especialidade → função/cargo padronizado. Aplicado só na EXIBIÇÃO,
+ * para que profissionais cadastrados antes da padronização apareçam com a função nova sem
+ * precisar reeditar o cadastro.
+ */
+export const FUNCAO_EXIBICAO_NORMALIZADA = {
+  "clinico geral": "Médico(a)",
+  "clínico geral": "Médico(a)",
+  "medico": "Médico(a)",
+  "médico": "Médico(a)",
+  "medica": "Médico(a)",
+  "médica": "Médico(a)",
+  "pediatria": "Médico(a)",
+  "odontologia": "Cirurgião(ã)-Dentista",
+  "dentista": "Cirurgião(ã)-Dentista",
+  "cirurgião-dentista": "Cirurgião(ã)-Dentista",
+  "cirurgiã-dentista": "Cirurgião(ã)-Dentista",
+  "psicologia": "Psicólogo(a)",
+  "psicólogo": "Psicólogo(a)",
+  "psicóloga": "Psicólogo(a)",
+  "fisioterapia": "Fisioterapeuta",
+  "enfermagem": "Enfermeiro(a)",
+  "enfermeira": "Enfermeiro(a)",
+  "enfermeiro": "Enfermeiro(a)",
+  "nutrição": "Nutricionista",
+  "nutricao": "Nutricionista",
+  "téc. enfermagem": "Técnico(a) de Enfermagem",
+  "tec. enfermagem": "Técnico(a) de Enfermagem",
+  "técnico de enfermagem": "Técnico(a) de Enfermagem",
+  "técnica de enfermagem": "Técnico(a) de Enfermagem",
+};
+
+/** Função exibida ao usuário (converte rótulos antigos de área para o cargo padronizado). */
+export function normalizarFuncaoExibicao(role) {
+  const r = typeof role === "string" ? role.trim() : "";
+  if (!r) return r;
+  return FUNCAO_EXIBICAO_NORMALIZADA[r.toLowerCase()] || r;
+}
+
+/** Profissional tem categoria médico(a)/enfermeira E já tem sessões configuradas. */
+export function specUsaSessoesComTipo(specKey, profCfg) {
+  const cat = categoriaSessoesParaSpec(specKey, profCfg);
+  return Boolean(cat) && Array.isArray(profCfg?.sessoes) && profCfg.sessoes.length > 0;
+}
+
+/**
+ * Spec sintético (rótulos, vagas, flags) de um dia a partir das `sessoes` configuradas —
+ * usado por profissionais avulsos (`custom_*`) cuja função os classifique como médico(a) ou
+ * enfermeira, reaproveitando os mesmos conversores dos perfis fixos.
+ */
+export function buildSpecPorSessoesParaDia(specKey, categoria, atendimentoDia, profCfg) {
+  const ehEnfermeira = categoria === "enfermeira";
+  const linhas = (
+    ehEnfermeira
+      ? normalizeEnfermeiraSessoesConfig(profCfg?.sessoes)
+      : normalizeMedicoSessoesConfig(profCfg?.sessoes)
+  ).filter((s) => s.dia === atendimentoDia);
+  if (!linhas.length) return null;
+  const tmpl = findSpecTemplateInBaseSchedule(specKey) || { key: specKey };
+  return {
+    ...tmpl,
+    key: specKey,
+    sessions: linhas.map(ehEnfermeira ? enfermeiraConfigParaSessaoAgenda : medicoConfigParaSessaoAgenda),
+  };
 }
 
 // Dia útil anterior ao atendimento = dia de agendamento normal
@@ -802,11 +904,12 @@ export function normalizeProfissionalConfigPorSpec(raw) {
       }
       if (Object.keys(porTipo).length) entry.vagasPorTipo = porTipo;
     }
-    if ((sk === "medico" || sk === "enfermeira") && Array.isArray(v.sessoes)) {
+    const catSessoes = categoriaSessoesParaSpec(sk, { role: entry.role || v.role });
+    if (catSessoes && Array.isArray(v.sessoes)) {
       const sessoes =
-        sk === "medico"
-          ? normalizeMedicoSessoesConfig(v.sessoes)
-          : normalizeEnfermeiraSessoesConfig(v.sessoes);
+        catSessoes === "enfermeira"
+          ? normalizeEnfermeiraSessoesConfig(v.sessoes)
+          : normalizeMedicoSessoesConfig(v.sessoes);
       if (sessoes.length) entry.sessoes = sessoes;
     }
     if (Object.keys(entry).length) out[sk] = entry;
@@ -864,9 +967,9 @@ function iniciaisDeTexto(texto) {
 export function getSpecMetaForKey(specKey, { profissionalConfigPorSpec = {}, roleFallback = "", nome = "" } = {}) {
   const base = SPEC_META[specKey];
   const cfg = profissionalConfigPorSpec[specKey];
-  const role = base?.role || cfg?.role || roleFallback || "Profissional";
+  const role = normalizarFuncaoExibicao(base?.role || cfg?.role || roleFallback || "Profissional");
   const av = iniciaisDeTexto(nome || role);
-  if (base) return { ...base, av };
+  if (base) return { ...base, role, av };
   return {
     role,
     av,
@@ -915,7 +1018,9 @@ function applyVagasOverrideToSessions(sessions, specKey, profissionalConfigPorSp
   if (
     (specKey === "medico" && medicoTemSessoesConfiguradasNoFirestore(profissionalConfigPorSpec.medico)) ||
     (specKey === "enfermeira" &&
-      enfermeiraTemSessoesConfiguradasNoFirestore(profissionalConfigPorSpec.enfermeira))
+      enfermeiraTemSessoesConfiguradasNoFirestore(profissionalConfigPorSpec.enfermeira)) ||
+    (isSpecKeyCustom(specKey) &&
+      specUsaSessoesComTipo(specKey, profissionalConfigPorSpec[specKey]))
   ) {
     return sessions;
   }
@@ -1003,6 +1108,14 @@ export function diasAtendimentoEfetivosCompletoParaSpec(specKey, opts = {}) {
   if (specKey === "medico") return diasAtendimentoMedicoEfetivos(profCfgMap);
   if (specKey === "enfermeira") return diasAtendimentoEnfermeiraEfetivos(profCfgMap, pccuTotal);
   if (isSpecKeyCustom(specKey)) {
+    if (specUsaSessoesComTipo(specKey, profCfgMap[specKey])) {
+      const cat = categoriaSessoesParaSpec(specKey, profCfgMap[specKey]);
+      const grade =
+        cat === "enfermeira"
+          ? gradeMapFromEnfermeiraSessoes(profCfgMap[specKey].sessoes)
+          : gradeMapFromMedicoSessoes(profCfgMap[specKey].sessoes);
+      return Object.keys(grade);
+    }
     return Object.keys(
       normalizeAtendimentoDiasTurnosParaSpec(specKey, atendimentoDiasTurnosPorSpec?.[specKey]) || {}
     );
@@ -1207,11 +1320,17 @@ export function sessionTotalEffective(dayKey, specKey, sessIdx, pccuTotal, opts 
     sess = built?.sessions?.[sessIdx];
   }
   if (!sess && isSpecKeyCustom(specKey)) {
-    const turnos = opts.atendimentoDiasTurnosPorSpec?.[specKey]?.[dayKey];
-    const built = buildCustomSpecForDay(specKey, dayKey, profCfg[specKey], {
-      [dayKey]: turnos,
-    });
-    sess = built?.sessions?.[sessIdx];
+    const catSessoes = categoriaSessoesParaSpec(specKey, profCfg[specKey]);
+    if (specUsaSessoesComTipo(specKey, profCfg[specKey])) {
+      const built = buildSpecPorSessoesParaDia(specKey, catSessoes, dayKey, profCfg[specKey]);
+      sess = built?.sessions?.[sessIdx];
+    } else {
+      const turnos = opts.atendimentoDiasTurnosPorSpec?.[specKey]?.[dayKey];
+      const built = buildCustomSpecForDay(specKey, dayKey, profCfg[specKey], {
+        [dayKey]: turnos,
+      });
+      sess = built?.sessions?.[sessIdx];
+    }
   }
   if (!sess) return 0;
   if (sess.visitaDomiciliarSemUnidade) return 0;
@@ -1227,7 +1346,10 @@ export function sessionTotalEffective(dayKey, specKey, sessIdx, pccuTotal, opts 
   }
   const overridden = applyVagasOverrideToSessions([sess], specKey, profCfg);
   sess = overridden[0] || sess;
-  const base = sess.pccuOnly ? (pccuTotal ?? sess.total ?? DEFAULT_PCCU_TOTAL) : sess.total;
+  const base =
+    sess.pccuOnly && !sess.pccuVagasConfiguradas
+      ? (pccuTotal ?? sess.total ?? DEFAULT_PCCU_TOTAL)
+      : sess.total;
   return base + encaixeExtraForSpec(specKey);
 }
 
@@ -1554,7 +1676,10 @@ function cloneSessionsWithTotals(spec, pccuTotal, profissionalConfigPorSpec = {}
     if (sess.visitaDomiciliarSemUnidade) {
       return { ...sess, total: 0, encaixeExtra: 0 };
     }
-    const base = sess.pccuOnly ? (pccuTotal ?? sess.total ?? DEFAULT_PCCU_TOTAL) : sess.total;
+    const base =
+      sess.pccuOnly && !sess.pccuVagasConfiguradas
+        ? (pccuTotal ?? sess.total ?? DEFAULT_PCCU_TOTAL)
+        : sess.total;
     const total = base + extra;
     return { ...sess, total, encaixeExtra: extra };
   });
@@ -1961,7 +2086,10 @@ export function buildVisibleSegments({
         specKey,
         atendimentoDiasTurnosPorSpec?.[specKey]
       );
-      const built = buildCustomSpecForDay(specKey, atendimentoDia, profCfgMap[specKey], mapaTurnos);
+      const catSessoes = categoriaSessoesParaSpec(specKey, profCfgMap[specKey]);
+      const built = specUsaSessoesComTipo(specKey, profCfgMap[specKey])
+        ? buildSpecPorSessoesParaDia(specKey, catSessoes, atendimentoDia, profCfgMap[specKey])
+        : buildCustomSpecForDay(specKey, atendimentoDia, profCfgMap[specKey], mapaTurnos);
       if (built) processarSpecNoDia(built, atendimentoDia);
     }
   }

@@ -59,18 +59,26 @@ const TIPOS_VALIDOS_POR_CATEGORIA = Object.fromEntries(
 const TIPO_GENERICO_CUSTOM = [{ key: "atendimento", label: "Atendimento" }];
 
 /**
- * Função (campo "Função ou área" do cadastro em Config.) → tipos de atendimento já existentes
- * para o papel fixo equivalente. Ex.: um "Clínico Geral" cadastrado avulso (porque o médico fixo
- * foi excluído e recriado) ganha as mesmas opções (Clínico geral, Gestantes, Troca de receitas…)
- * do médico da grade em código, em vez de só um tipo genérico "Atendimento".
+ * Função (campo "Função" do cadastro em Config.) → tipos de atendimento já existentes para o
+ * papel fixo equivalente. Ex.: um "Médico(a)" cadastrado avulso ganha as mesmas opções (Clínico
+ * geral, Gestantes, Troca de receitas…) do médico da grade em código, em vez de só um tipo
+ * genérico "Atendimento". Rótulos antigos mantidos para cadastros já salvos.
  */
 const CRONOGRAMA_TIPOS_POR_FUNCAO = {
+  "Médico(a)": CRONOGRAMA_TIPOS_POR_CATEGORIA.medico,
   "Clínico Geral": CRONOGRAMA_TIPOS_POR_CATEGORIA.medico,
-  "Odontologia": CRONOGRAMA_TIPOS_POR_CATEGORIA.dentFernando,
+  "Enfermeiro(a)": CRONOGRAMA_TIPOS_POR_CATEGORIA.enfermeira,
+  "Enfermeira": CRONOGRAMA_TIPOS_POR_CATEGORIA.enfermeira,
   "Enfermagem": CRONOGRAMA_TIPOS_POR_CATEGORIA.enfermeira,
+  "Cirurgião(ã)-Dentista": CRONOGRAMA_TIPOS_POR_CATEGORIA.dentFernando,
+  "Odontologia": CRONOGRAMA_TIPOS_POR_CATEGORIA.dentFernando,
+  "Psicólogo(a)": CRONOGRAMA_TIPOS_POR_CATEGORIA.psicologa,
   "Psicologia": CRONOGRAMA_TIPOS_POR_CATEGORIA.psicologa,
+  "Fisioterapeuta": CRONOGRAMA_TIPOS_POR_CATEGORIA.fisio,
   "Fisioterapia": CRONOGRAMA_TIPOS_POR_CATEGORIA.fisio,
+  "Nutricionista": CRONOGRAMA_TIPOS_POR_CATEGORIA.nutricionista,
   "Nutrição": CRONOGRAMA_TIPOS_POR_CATEGORIA.nutricionista,
+  "Técnico(a) de Enfermagem": CRONOGRAMA_TIPOS_POR_CATEGORIA.tecnicoEnfermagem,
   "Téc. Enfermagem": CRONOGRAMA_TIPOS_POR_CATEGORIA.tecnicoEnfermagem,
 };
 

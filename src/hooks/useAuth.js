@@ -12,8 +12,8 @@ export const STORAGE_LOGOUT_SESSAO_RECEPCAO = "ubsLogoutSessaoRecepcao";
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [user, setUser]       = useState(undefined); // undefined = carregando
-  const [perfil, setPerfil]   = useState(null);
+  const [user, setUser]       = useState(undefined);   // undefined = auth carregando
+  const [perfil, setPerfil]   = useState(undefined);   // undefined = perfil carregando
 
   useEffect(() => {
     const unsub = onAuthChange(async (firebaseUser) => {
@@ -23,21 +23,35 @@ export function AuthProvider({ children }) {
         return;
       }
       setUser(firebaseUser);
-      const dados = await getUser(firebaseUser.uid);
+
+      let dados = null;
+      try {
+        dados = await getUser(firebaseUser.uid);
+      } catch {
+        dados = null;
+      }
+      // Publica o perfil ANTES de qualquer efeito colateral (claim de sessão, updateSettings,
+      // token de notificação). Assim a UI já renderiza com o papel certo e não pisca a versão
+      // de agente antes de virar recepcionista.
+      setPerfil(dados);
+
       if (dados && isRecepcaoPerfil(dados)) {
-        await claimRecepcaoSession(firebaseUser.uid);
-        const digits = String(dados.telefoneWhatsapp || "").replace(/\D/g, "");
-        if (digits.length >= 10) {
-          const first = dados.nome?.trim().split(/\s+/)[0] || "Recepção";
-          await updateSettings({
-            ultimoRecepcionistaWhatsapp: digits,
-            ultimoRecepcionistaNome: first,
-            recepcionistaAtivoWhatsapp: digits,
-            recepcionistaAtivoNome: first,
-          }).catch(() => {});
+        try {
+          await claimRecepcaoSession(firebaseUser.uid);
+          const digits = String(dados.telefoneWhatsapp || "").replace(/\D/g, "");
+          if (digits.length >= 10) {
+            const first = dados.nome?.trim().split(/\s+/)[0] || "Recepção";
+            await updateSettings({
+              ultimoRecepcionistaWhatsapp: digits,
+              ultimoRecepcionistaNome: first,
+              recepcionistaAtivoWhatsapp: digits,
+              recepcionistaAtivoNome: first,
+            }).catch(() => {});
+          }
+        } catch {
+          /* claim/settings falhou — não bloqueia o carregamento da tela */
         }
       }
-      setPerfil(dados);
 
       // Solicita permissão de notificação e salva token do dispositivo
       const token = await requestNotificationToken();
@@ -66,8 +80,11 @@ export function AuthProvider({ children }) {
     return unsub;
   }, [user, perfil]);
 
+  // Ainda carregando enquanto o auth não resolveu OU (logado, mas) o perfil não chegou.
+  const loading = user === undefined || (user !== null && perfil === undefined);
+
   return (
-    <AuthContext.Provider value={{ user, perfil, loading: user === undefined }}>
+    <AuthContext.Provider value={{ user, perfil, loading }}>
       {children}
     </AuthContext.Provider>
   );

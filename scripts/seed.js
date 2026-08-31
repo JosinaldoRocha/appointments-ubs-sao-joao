@@ -15,13 +15,13 @@ const db = getFirestore();
 
 /** Chaves iguais às de `scheduleConfig` (BASE_SCHEDULE / SPEC_META). */
 const profissionais = {
-  medico:         { nome: "Dr. Clínico",   role: "Clínico Geral"  },
-  dentFernando:   { nome: "Dr. Fernando",  role: "Odontologia"    },
-  dentPatrick:    { nome: "Dr. Patrick",   role: "Odontologia"    },
-  psicologa:      { nome: "Dra. Kauane",   role: "Psicologia"     },
-  fisio:          { nome: "Dra. Aracele",  role: "Fisioterapia"   },
-  enfermeira:     { nome: "Enfermeira",    role: "Enfermagem"     },
-  nutricionista:  { nome: "Nutricionista", role: "Nutrição"       },
+  medico:         { nome: "Dr. Clínico",   role: "Médico(a)"                },
+  dentFernando:   { nome: "Dr. Fernando",  role: "Cirurgião(ã)-Dentista"    },
+  dentPatrick:    { nome: "Dr. Patrick",   role: "Cirurgião(ã)-Dentista"    },
+  psicologa:      { nome: "Dra. Kauane",   role: "Psicólogo(a)"            },
+  fisio:          { nome: "Dra. Aracele",  role: "Fisioterapeuta"          },
+  enfermeira:     { nome: "Enfermeira",    role: "Enfermeiro(a)"           },
+  nutricionista:  { nome: "Nutricionista", role: "Nutricionista"           },
 };
 
 async function seed() {

@@ -304,55 +304,65 @@ export default function TabCronograma({
 
   return (
     <div>
-      <div style={S.header}>
-        <div>
-          <h2 style={S.title}>Cronograma semanal</h2>
-          <p style={S.sub}>Atendimentos fixos por profissional, dia e turno.</p>
+      {/* ── Header ── */}
+      <div style={S.pageHeader}>
+        <div style={S.pageHeaderRow}>
+          <div style={S.pageHeaderIcon} aria-hidden>📅</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <h2 style={S.pageHeaderTitle}>Cronograma semanal</h2>
+            <p style={S.pageHeaderSub}>Atendimentos por dia e turno</p>
+          </div>
+          {podeEditar && !editando && (
+            <button type="button" style={S.btnEditar} onClick={iniciarEdicao}>
+              ✎ Editar
+            </button>
+          )}
         </div>
-        {podeEditar && !editando && (
-          <button type="button" style={S.btnEditar} onClick={iniciarEdicao}>
-            Editar
-          </button>
-        )}
       </div>
 
       {temDados && (
         <div style={S.filtroBar}>
-          <div style={S.diaChips}>
-            <button
-              type="button"
-              style={{ ...S.diaChip, ...(diaFiltro === null ? S.diaChipAtivo : {}) }}
-              onClick={() => aoSelecionarDia(null)}
-              disabled={salvando}
-            >
-              Todos
-            </button>
-            {ORDEM_DIA_SEMANA_GRADE.map((dia) => (
+          <div style={S.filtroLinha}>
+            <span style={S.filtroLabel}>Dia</span>
+            <div style={S.diaChips}>
               <button
-                key={dia}
                 type="button"
-                style={{ ...S.diaChip, ...(diaFiltro === dia ? S.diaChipAtivo : {}) }}
-                onClick={() => aoSelecionarDia(diaFiltro === dia ? null : dia)}
+                style={{ ...S.diaChip, ...(diaFiltro === null ? S.diaChipAtivo : {}) }}
+                onClick={() => aoSelecionarDia(null)}
                 disabled={salvando}
               >
-                {DAY_LABEL_CURTO[dia]}
+                Todos
               </button>
-            ))}
+              {ORDEM_DIA_SEMANA_GRADE.map((dia) => (
+                <button
+                  key={dia}
+                  type="button"
+                  style={{ ...S.diaChip, ...(diaFiltro === dia ? S.diaChipAtivo : {}) }}
+                  onClick={() => aoSelecionarDia(diaFiltro === dia ? null : dia)}
+                  disabled={salvando}
+                >
+                  {DAY_LABEL_CURTO[dia]}
+                </button>
+              ))}
+            </div>
           </div>
           {profissionaisLista.length > 0 && (
-            <select
-              style={S.inputFiltro}
-              value={profFiltro?.chave || ""}
-              onChange={(e) => aoSelecionarProfissional(e.target.value)}
-              disabled={salvando}
-            >
-              <option value="">Todos os profissionais</option>
-              {profissionaisLista.map((p) => (
-                <option key={p.chave} value={p.chave}>
-                  {p.nome} — {resolverLabelCategoria(p.categoria)}
-                </option>
-              ))}
-            </select>
+            <div style={S.filtroLinha}>
+              <span style={S.filtroLabel}>Profissional</span>
+              <select
+                style={S.inputFiltro}
+                value={profFiltro?.chave || ""}
+                onChange={(e) => aoSelecionarProfissional(e.target.value)}
+                disabled={salvando}
+              >
+                <option value="">Todos os profissionais</option>
+                {profissionaisLista.map((p) => (
+                  <option key={p.chave} value={p.chave}>
+                    {p.nome} — {resolverLabelCategoria(p.categoria)}
+                  </option>
+                ))}
+              </select>
+            </div>
           )}
         </div>
       )}
@@ -479,6 +489,7 @@ export default function TabCronograma({
             onEditar={iniciarEdicaoItem}
             itemEditandoId={itemEditandoId}
             categoriaLabels={categoriaLabels}
+            profissionalConfigPorSpec={profissionalConfigPorSpec}
           />
 
           <div style={S.actions}>
@@ -498,7 +509,8 @@ export default function TabCronograma({
       ) : cronogramaTemItens(publicado) ? (
         gradeVazia ? (
           <div style={S.vazio} role="status">
-            <p style={S.vazioTitulo}>Nenhum resultado para este filtro.</p>
+            <div style={S.vazioIcone} aria-hidden>🔍</div>
+            <p style={S.vazioTitulo}>Nenhum resultado para este filtro</p>
             <p style={S.vazioSub}>Tente selecionar outro dia ou profissional.</p>
           </div>
         ) : (
@@ -507,11 +519,13 @@ export default function TabCronograma({
             diasParaExibir={diasExibicao}
             ocultarVazios={temFiltroAtivo}
             categoriaLabels={categoriaLabels}
+            profissionalConfigPorSpec={profissionalConfigPorSpec}
           />
         )
       ) : (
         <div style={S.vazio} role="status">
-          <p style={S.vazioTitulo}>Nenhum cronograma publicado ainda.</p>
+          <div style={S.vazioIcone} aria-hidden>📅</div>
+          <p style={S.vazioTitulo}>Nenhum cronograma publicado ainda</p>
           <p style={S.vazioSub}>
             {podeEditar
               ? "Use Editar para cadastrar profissionais, dias e tipos de atendimento."
@@ -532,7 +546,18 @@ function CronogramaGrade({
   itemEditandoId = null,
   ocultarVazios = false,
   categoriaLabels = {},
+  profissionalConfigPorSpec = {},
 }) {
+  const soUmDia = diasParaExibir.length === 1;
+  const [diasAbertos, setDiasAbertos] = useState(() => new Set());
+  const toggleDia = (dia) =>
+    setDiasAbertos((prev) => {
+      const next = new Set(prev);
+      if (next.has(dia)) next.delete(dia);
+      else next.add(dia);
+      return next;
+    });
+
   return (
     <div style={S.grade}>
       {diasParaExibir.map((dia) => {
@@ -544,80 +569,141 @@ function CronogramaGrade({
           : CRONOGRAMA_TURNOS.filter(
               (t) => !ocultarVazios || (mapa[dia]?.[t] || []).length > 0
             );
+        const totalDia = CRONOGRAMA_TURNOS.reduce(
+          (acc, t) => acc + (mapa[dia]?.[t] || []).length,
+          0
+        );
+        // Igual à aba Vagas: mostra só o dia da semana; clica pra abrir/fechar o conteúdo.
+        // No modo edição ou com um único dia filtrado, fica sempre aberto.
+        const podeColapsar = !editavel && !soUmDia;
+        const aberto = !podeColapsar || diasAbertos.has(dia);
 
         return (
           <section key={dia} style={S.diaCard}>
-            <div style={S.diaHeader}>
+            <div
+              style={{ ...S.diaHeader, cursor: podeColapsar ? "pointer" : "default" }}
+              onClick={podeColapsar ? () => toggleDia(dia) : undefined}
+              role={podeColapsar ? "button" : undefined}
+              tabIndex={podeColapsar ? 0 : undefined}
+              aria-expanded={podeColapsar ? aberto : undefined}
+              onKeyDown={
+                podeColapsar
+                  ? (e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        toggleDia(dia);
+                      }
+                    }
+                  : undefined
+              }
+            >
               <span style={S.diaBadge}>{DAY_LABEL_CURTO[dia]}</span>
               <h3 style={S.diaTitulo}>{DAY_LABEL[dia]}</h3>
+              <span style={S.diaContagem}>
+                {totalDia} {totalDia === 1 ? "atendimento" : "atendimentos"}
+              </span>
+              {podeColapsar && (
+                <span
+                  style={{
+                    ...S.diaChevron,
+                    transform: aberto ? "rotate(180deg)" : "rotate(0deg)",
+                  }}
+                  aria-hidden
+                >
+                  ▾
+                </span>
+              )}
             </div>
+            {aberto && (
             <div style={S.diaCorpo}>
               {turnosVisiveis.map((turno) => {
                 const itens = mapa[dia]?.[turno] || [];
                 const isManha = turno === "manha";
                 return (
                   <div key={turno} style={S.turnoBloco}>
-                    <span style={isManha ? S.turnoBadgeManha : S.turnoBadgeTarde}>
-                      {CRONOGRAMA_TURNO_LABEL[turno]}
-                    </span>
+                    <div style={S.turnoHeader}>
+                      <span style={isManha ? S.turnoBadgeManha : S.turnoBadgeTarde}>
+                        <span aria-hidden>{isManha ? "☀️" : "🌤️"}</span>
+                        {CRONOGRAMA_TURNO_LABEL[turno]}
+                      </span>
+                      <span style={S.turnoLinha} aria-hidden />
+                    </div>
                     {itens.length === 0 ? (
-                      <p style={S.turnoVazio}>Sem atendimentos.</p>
+                      <p style={S.turnoVazio}>Sem atendimentos neste turno.</p>
                     ) : (
-                      <ul style={S.lista}>
-                        {itens.map((item) => (
-                          <li
-                            key={item.id}
-                            style={{
-                              ...S.item,
-                              borderLeft: `3px solid ${isManha ? "#F59E0B" : "#6366F1"}`,
-                            }}
-                          >
-                            <div style={S.itemTopo}>
-                              <div style={S.itemInfo}>
-                                <strong style={S.itemNome}>{item.nome}</strong>
-                                <span style={S.itemCategoriaBadge}>
-                                  {categoriaLabels[item.categoria] || labelCategoria(item.categoria)}
-                                </span>
+                      <div style={S.itemGrid}>
+                        {itens.map((item) => {
+                          const meta = getSpecMetaForKey(item.categoria, {
+                            profissionalConfigPorSpec,
+                            nome: item.nome,
+                          });
+                          const emEdicao = itemEditandoId === item.id;
+                          return (
+                            <div
+                              key={item.id}
+                              style={{
+                                ...S.item,
+                                borderLeftColor: meta.tc || "#6366F1",
+                                ...(emEdicao ? S.itemEditando : {}),
+                              }}
+                            >
+                              <div style={S.itemTopo}>
+                                <div
+                                  style={{
+                                    ...S.itemAvatar,
+                                    background: meta.bg || "#EEF2FF",
+                                    color: meta.tc || "#4338CA",
+                                  }}
+                                  aria-hidden
+                                >
+                                  {meta.av || "?"}
+                                </div>
+                                <div style={S.itemInfo}>
+                                  <strong style={S.itemNome}>{item.nome}</strong>
+                                  <span style={S.itemFuncao}>
+                                    {categoriaLabels[item.categoria] || labelCategoria(item.categoria)}
+                                  </span>
+                                </div>
+                                {editavel && (
+                                  <div style={S.itemAcoes}>
+                                    <button
+                                      type="button"
+                                      aria-label="Editar atendimento"
+                                      style={{ ...S.btnIcone, ...(emEdicao ? S.btnIconeAtivo : {}) }}
+                                      onClick={() => onEditar?.(item)}
+                                    >
+                                      ✎
+                                    </button>
+                                    <button
+                                      type="button"
+                                      aria-label="Remover atendimento"
+                                      style={{ ...S.btnIcone, ...S.btnIconeRemover }}
+                                      onClick={() => onRemover(item.id)}
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+                                )}
                               </div>
-                              {editavel && (
-                                <div style={S.itemAcoes}>
-                                  <button
-                                    type="button"
-                                    style={{
-                                      ...S.btnEditarItem,
-                                      ...(itemEditandoId === item.id ? S.btnEditarItemAtivo : {}),
-                                    }}
-                                    onClick={() => onEditar?.(item)}
-                                  >
-                                    Editar
-                                  </button>
-                                  <button
-                                    type="button"
-                                    style={S.btnRemover}
-                                    onClick={() => onRemover(item.id)}
-                                  >
-                                    Remover
-                                  </button>
+                              {item.tipos.length > 0 && (
+                                <div style={S.tags}>
+                                  {item.tipos.map((tipo) => (
+                                    <span key={tipo} style={S.tag}>
+                                      {labelTipoAtendimento(item.categoria, tipo)}
+                                    </span>
+                                  ))}
                                 </div>
                               )}
                             </div>
-                            {item.tipos.length > 0 && (
-                              <div style={S.tags}>
-                                {item.tipos.map((tipo) => (
-                                  <span key={tipo} style={S.tag}>
-                                    {labelTipoAtendimento(item.categoria, tipo)}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
+                          );
+                        })}
+                      </div>
                     )}
                   </div>
                 );
               })}
             </div>
+            )}
           </section>
         );
       })}
@@ -635,282 +721,379 @@ function Field({ label, children }) {
 }
 
 const S = {
-  header: {
-    display: "flex",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: 12,
-    marginBottom: 14,
-    flexWrap: "wrap",
-  },
-  title: { fontSize: 17, fontWeight: 700, color: "#0F172A", margin: "0 0 4px" },
-  sub: { fontSize: 13, color: "#64748B", margin: 0 },
-  btnEditar: {
-    fontSize: 13,
-    fontWeight: 600,
-    color: "#4338CA",
-    background: "#EEF2FF",
+  // ── Header ──
+  pageHeader: {
+    marginBottom: 16,
+    padding: "14px 16px",
+    background: "linear-gradient(135deg, #EEF2FF 0%, #F5F3FF 100%)",
+    borderRadius: 14,
     border: "1px solid #C7D2FE",
-    borderRadius: 8,
-    padding: "8px 14px",
+  },
+  pageHeaderRow: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" },
+  pageHeaderIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    background: "linear-gradient(135deg, #6366F1 0%, #4338CA 100%)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 19,
+    flexShrink: 0,
+    boxShadow: "0 4px 10px rgba(67,56,202,0.30)",
+  },
+  pageHeaderTitle: {
+    fontSize: 16,
+    fontWeight: 700,
+    color: "#1E1B4B",
+    margin: "0 0 2px",
+    letterSpacing: "-0.01em",
+  },
+  pageHeaderSub: {
+    fontSize: 11,
+    color: "#6366F1",
+    margin: 0,
+    fontWeight: 700,
+    textTransform: "uppercase",
+    letterSpacing: "0.05em",
+  },
+  btnEditar: {
+    fontFamily: "inherit",
+    fontSize: 13,
+    fontWeight: 700,
+    color: "#fff",
+    background: "linear-gradient(135deg, #6366F1 0%, #4338CA 100%)",
+    border: "none",
+    borderRadius: 9,
+    padding: "9px 16px",
     cursor: "pointer",
     flexShrink: 0,
+    boxShadow: "0 2px 8px rgba(67,56,202,0.28)",
   },
 
+  // ── Filtros ──
   filtroBar: {
     display: "flex",
-    flexWrap: "wrap",
+    flexDirection: "column",
     gap: 10,
-    alignItems: "center",
-    marginBottom: 14,
-    padding: "10px 12px",
-    background: "#F8FAFC",
-    border: "0.5px solid #E2E8F0",
-    borderRadius: 10,
+    marginBottom: 16,
+    padding: "12px 14px",
+    background: "#fff",
+    border: "1px solid #E2E8F0",
+    borderRadius: 12,
+    boxShadow: "0 1px 3px rgba(15,23,42,0.05)",
   },
-  diaChips: { display: "flex", flexWrap: "wrap", gap: 5 },
+  filtroLinha: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
+  filtroLabel: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: "#94A3B8",
+    textTransform: "uppercase",
+    letterSpacing: "0.06em",
+    minWidth: 78,
+  },
+  diaChips: { display: "flex", flexWrap: "wrap", gap: 6 },
   diaChip: {
     fontFamily: "inherit",
     fontSize: 12,
-    fontWeight: 600,
+    fontWeight: 700,
     color: "#475569",
-    background: "#fff",
-    border: "1px solid #E2E8F0",
+    background: "#F1F5F9",
+    border: "1px solid transparent",
     borderRadius: 999,
-    padding: "5px 11px",
+    padding: "6px 13px",
     cursor: "pointer",
+    transition: "all .12s ease",
   },
   diaChipAtivo: {
-    color: "#4338CA",
-    background: "#EEF2FF",
-    borderColor: "#A5B4FC",
+    color: "#fff",
+    background: "linear-gradient(135deg, #6366F1 0%, #4338CA 100%)",
+    borderColor: "transparent",
+    boxShadow: "0 2px 6px rgba(67,56,202,0.30)",
   },
   inputFiltro: {
     fontFamily: "inherit",
     fontSize: 13,
     color: "#0F172A",
     border: "1px solid #CBD5E1",
-    borderRadius: 8,
-    padding: "7px 10px",
+    borderRadius: 9,
+    padding: "8px 11px",
     background: "#fff",
     flex: 1,
     minWidth: 180,
   },
 
+  // ── Form de edição ──
   card: {
     background: "#fff",
-    border: "0.5px solid #E2E8F0",
-    borderRadius: 10,
-    padding: "14px 16px",
-    boxShadow: "0 1px 2px rgba(15,23,42,0.04)",
+    border: "1px solid #E2E8F0",
+    borderRadius: 12,
+    padding: "16px 18px",
+    boxShadow: "0 1px 3px rgba(15,23,42,0.05)",
     marginBottom: 14,
   },
-  sectionTitle: { fontSize: 13, fontWeight: 600, color: "#0F172A", margin: "0 0 12px" },
+  sectionTitle: {
+    fontSize: 13,
+    fontWeight: 700,
+    color: "#0F172A",
+    margin: "0 0 14px",
+    display: "flex",
+    alignItems: "center",
+    gap: 7,
+  },
   formGrid: {
     display: "grid",
     gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
     gap: 12,
   },
   fieldWrap: { display: "flex", flexDirection: "column", gap: 5 },
-  label: { fontSize: 12, fontWeight: 600, color: "#334155", margin: 0 },
+  label: { fontSize: 12, fontWeight: 700, color: "#334155", margin: 0 },
   input: {
     fontFamily: "inherit",
     fontSize: 13,
     color: "#0F172A",
     border: "1px solid #CBD5E1",
-    borderRadius: 8,
-    padding: "8px 10px",
+    borderRadius: 9,
+    padding: "9px 11px",
     background: "#F8FAFC",
+    outline: "none",
   },
-  tiposWrap: { marginTop: 12 },
-  tiposLista: { display: "flex", flexDirection: "column", gap: 8, marginTop: 6 },
+  tiposWrap: { marginTop: 14 },
+  tiposLista: { display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 },
   tipoChk: {
     display: "flex",
     alignItems: "center",
     gap: 8,
-    fontSize: 13,
+    fontSize: 12.5,
+    fontWeight: 600,
     color: "#334155",
     cursor: "pointer",
-  },
-  formAcoes: { display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" },
-  btnAdicionar: {
-    fontSize: 13,
-    fontWeight: 600,
-    color: "#4338CA",
-    background: "#EEF2FF",
-    border: "1px solid #C7D2FE",
-    borderRadius: 8,
-    padding: "8px 14px",
-    cursor: "pointer",
-  },
-  btnCancelarForm: {
-    fontSize: 13,
-    fontWeight: 600,
-    color: "#475569",
-    background: "#F1F5F9",
+    background: "#F8FAFC",
     border: "1px solid #E2E8F0",
     borderRadius: 8,
-    padding: "8px 14px",
-    cursor: "pointer",
+    padding: "7px 11px",
   },
-  actions: { display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" },
-  btnSalvar: {
+  formAcoes: { display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" },
+  btnAdicionar: {
+    fontFamily: "inherit",
     fontSize: 13,
     fontWeight: 700,
     color: "#fff",
     background: "linear-gradient(135deg, #6366F1 0%, #4338CA 100%)",
     border: "none",
-    borderRadius: 8,
-    padding: "8px 16px",
+    borderRadius: 9,
+    padding: "9px 16px",
     cursor: "pointer",
-    boxShadow: "0 2px 6px rgba(67,56,202,0.28)",
+    boxShadow: "0 2px 6px rgba(67,56,202,0.24)",
   },
-  btnCancelar: {
+  btnCancelarForm: {
+    fontFamily: "inherit",
     fontSize: 13,
     fontWeight: 600,
     color: "#475569",
     background: "#F1F5F9",
     border: "1px solid #E2E8F0",
-    borderRadius: 8,
-    padding: "8px 16px",
+    borderRadius: 9,
+    padding: "9px 16px",
+    cursor: "pointer",
+  },
+  actions: { display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" },
+  btnSalvar: {
+    fontFamily: "inherit",
+    fontSize: 13,
+    fontWeight: 700,
+    color: "#fff",
+    background: "linear-gradient(135deg, #6366F1 0%, #4338CA 100%)",
+    border: "none",
+    borderRadius: 9,
+    padding: "10px 18px",
+    cursor: "pointer",
+    boxShadow: "0 3px 10px rgba(67,56,202,0.30)",
+  },
+  btnCancelar: {
+    fontFamily: "inherit",
+    fontSize: 13,
+    fontWeight: 600,
+    color: "#475569",
+    background: "#F1F5F9",
+    border: "1px solid #E2E8F0",
+    borderRadius: 9,
+    padding: "10px 18px",
     cursor: "pointer",
   },
 
-  grade: { display: "flex", flexDirection: "column", gap: 10 },
+  // ── Grade ──
+  grade: { display: "flex", flexDirection: "column", gap: 12 },
   diaCard: {
     background: "#fff",
-    border: "0.5px solid #E2E8F0",
-    borderRadius: 10,
-    boxShadow: "0 1px 2px rgba(15,23,42,0.04)",
+    border: "1px solid #E2E8F0",
+    borderRadius: 14,
+    boxShadow: "0 2px 10px rgba(15,23,42,0.05)",
     overflow: "hidden",
   },
   diaHeader: {
     display: "flex",
     alignItems: "center",
-    gap: 8,
-    padding: "9px 14px",
-    background: "linear-gradient(90deg, #EEF2FF 0%, #F8FAFC 100%)",
-    borderBottom: "1px solid #E0E7FF",
+    gap: 10,
+    padding: "12px 16px",
+    background: "linear-gradient(135deg, #4F46E5 0%, #4338CA 100%)",
   },
   diaBadge: {
+    fontSize: 12,
+    fontWeight: 800,
+    color: "#4338CA",
+    background: "#fff",
+    borderRadius: 8,
+    padding: "3px 9px",
+    textTransform: "uppercase",
+    letterSpacing: "0.04em",
+    flexShrink: 0,
+  },
+  diaTitulo: { fontSize: 14, fontWeight: 700, color: "#fff", margin: 0, flex: 1 },
+  diaContagem: {
     fontSize: 11,
     fontWeight: 700,
-    color: "#4338CA",
-    background: "#C7D2FE",
-    borderRadius: 6,
-    padding: "2px 7px",
-    textTransform: "uppercase",
-    letterSpacing: "0.03em",
+    color: "#E0E7FF",
+    background: "rgba(255,255,255,0.16)",
+    borderRadius: 999,
+    padding: "3px 10px",
+    flexShrink: 0,
   },
-  diaTitulo: { fontSize: 13, fontWeight: 700, color: "#1E1B4B", margin: 0 },
+  diaChevron: {
+    color: "#C7D2FE",
+    fontSize: 12,
+    lineHeight: 1,
+    transition: "transform .2s ease",
+    flexShrink: 0,
+  },
   diaCorpo: {
-    padding: "10px 14px",
+    padding: "14px 16px",
     display: "flex",
     flexDirection: "column",
-    gap: 10,
+    gap: 16,
   },
   turnoBloco: {},
+  turnoHeader: { display: "flex", alignItems: "center", gap: 10, marginBottom: 10 },
+  turnoLinha: { flex: 1, height: 1, background: "#E2E8F0" },
   turnoBadgeManha: {
-    display: "inline-block",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 5,
     fontSize: 11,
-    fontWeight: 700,
-    color: "#92400E",
+    fontWeight: 800,
+    color: "#B45309",
     background: "#FEF3C7",
     border: "1px solid #FDE68A",
     borderRadius: 999,
-    padding: "2px 9px",
-    marginBottom: 8,
+    padding: "4px 11px",
     textTransform: "uppercase",
-    letterSpacing: "0.04em",
+    letterSpacing: "0.05em",
+    flexShrink: 0,
   },
   turnoBadgeTarde: {
-    display: "inline-block",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 5,
     fontSize: 11,
-    fontWeight: 700,
-    color: "#1E40AF",
-    background: "#DBEAFE",
-    border: "1px solid #BFDBFE",
+    fontWeight: 800,
+    color: "#3730A3",
+    background: "#E0E7FF",
+    border: "1px solid #C7D2FE",
     borderRadius: 999,
-    padding: "2px 9px",
-    marginBottom: 8,
+    padding: "4px 11px",
     textTransform: "uppercase",
-    letterSpacing: "0.04em",
+    letterSpacing: "0.05em",
+    flexShrink: 0,
   },
-  turnoVazio: { fontSize: 12, color: "#94A3B8", margin: "0 0 2px" },
-  lista: {
-    listStyle: "none",
-    margin: 0,
-    padding: 0,
-    display: "flex",
-    flexDirection: "column",
-    gap: 8,
+  turnoVazio: { fontSize: 12, color: "#94A3B8", margin: 0, fontStyle: "italic" },
+  itemGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))",
+    gap: 10,
   },
   item: {
-    background: "#F8FAFC",
-    border: "0.5px solid #E2E8F0",
-    borderRadius: 8,
-    padding: "10px 12px",
+    background: "#fff",
+    border: "1px solid #E2E8F0",
+    borderLeft: "4px solid #6366F1",
+    borderRadius: 10,
+    padding: "11px 13px",
+    boxShadow: "0 1px 3px rgba(15,23,42,0.05)",
+  },
+  itemEditando: {
+    borderColor: "#A5B4FC",
+    boxShadow: "0 0 0 3px rgba(99,102,241,0.18)",
   },
   itemTopo: {
     display: "flex",
-    justifyContent: "space-between",
-    gap: 8,
+    gap: 9,
     alignItems: "flex-start",
   },
-  itemInfo: { display: "flex", flexDirection: "column", gap: 4 },
-  itemNome: { display: "block", fontSize: 13, fontWeight: 600, color: "#0F172A" },
-  itemCategoriaBadge: {
-    display: "inline-block",
-    fontSize: 11,
-    color: "#475569",
-    background: "#F1F5F9",
-    border: "1px solid #E2E8F0",
-    borderRadius: 999,
-    padding: "1px 7px",
+  itemAvatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 9,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 12,
+    fontWeight: 800,
+    flexShrink: 0,
   },
-  itemAcoes: { display: "flex", gap: 6, flexShrink: 0 },
-  btnEditarItem: {
-    fontFamily: "inherit",
+  itemInfo: { display: "flex", flexDirection: "column", gap: 1, flex: 1, minWidth: 0 },
+  itemNome: { fontSize: 13, fontWeight: 700, color: "#0F172A", lineHeight: 1.25 },
+  itemFuncao: {
     fontSize: 11,
+    fontWeight: 600,
+    color: "#64748B",
+    textTransform: "uppercase",
+    letterSpacing: "0.03em",
+  },
+  itemAcoes: { display: "flex", gap: 5, flexShrink: 0 },
+  btnIcone: {
+    fontFamily: "inherit",
+    width: 26,
+    height: 26,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 12,
     color: "#4338CA",
     background: "#EEF2FF",
     border: "1px solid #C7D2FE",
-    borderRadius: 6,
-    padding: "4px 8px",
+    borderRadius: 7,
     cursor: "pointer",
+    padding: 0,
   },
-  btnEditarItemAtivo: {
+  btnIconeAtivo: {
     background: "#4338CA",
     color: "#fff",
     borderColor: "#4338CA",
   },
-  btnRemover: {
-    fontFamily: "inherit",
-    fontSize: 11,
+  btnIconeRemover: {
     color: "#B91C1C",
     background: "#FEF2F2",
-    border: "1px solid #FECACA",
-    borderRadius: 6,
-    padding: "4px 8px",
-    cursor: "pointer",
+    borderColor: "#FECACA",
   },
-  tags: { display: "flex", flexWrap: "wrap", gap: 5, marginTop: 8 },
+  tags: { display: "flex", flexWrap: "wrap", gap: 5, marginTop: 9 },
   tag: {
-    fontSize: 11,
+    fontSize: 10.5,
+    fontWeight: 700,
     color: "#4338CA",
     background: "#EEF2FF",
-    border: "1px solid #C7D2FE",
+    border: "1px solid #E0E7FF",
     borderRadius: 999,
-    padding: "3px 8px",
+    padding: "3px 9px",
   },
 
+  // ── Vazio ──
   vazio: {
     background: "#F8FAFC",
     border: "1px dashed #CBD5E1",
-    borderRadius: 10,
-    padding: "26px 18px",
+    borderRadius: 14,
+    padding: "34px 20px",
     textAlign: "center",
   },
-  vazioTitulo: { fontSize: 14, fontWeight: 600, color: "#334155", margin: "0 0 6px" },
+  vazioIcone: { fontSize: 30, marginBottom: 8, opacity: 0.85 },
+  vazioTitulo: { fontSize: 14, fontWeight: 700, color: "#334155", margin: "0 0 6px" },
   vazioSub: { fontSize: 13, color: "#64748B", margin: 0, lineHeight: 1.45 },
 };

@@ -66,7 +66,7 @@ function ConteudoItem({ item }) {
     <>
       <p style={{ ...S.profName, color: accent }}>{item.nome}</p>
       {meta.role && (
-        <p style={{ ...S.profArea, background: meta.bg || "#EEF2FF", color: accent }}>
+        <p style={{ ...S.profFuncao, background: meta.bg || "#EEF2FF", color: accent }}>
           {meta.role}
         </p>
       )}
@@ -372,7 +372,7 @@ const S = {
     fontWeight: 700,
     marginTop: "2vmin",
   },
-  profArea: {
+  profFuncao: {
     fontSize: "min(7vmin, 44px)",
     fontWeight: 800,
     marginTop: "1.5vmin",
